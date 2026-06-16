@@ -27,24 +27,26 @@ python -m venv .venv
 .\start_paper_scraper_ui.bat
 ```
 
+首次双击启动会自动创建 `.venv` 并安装依赖；如果安装失败，窗口会保留错误信息。
+
 ## 当前推荐用法：DOI 批量下载 PDF
 
 适用于你已经有一批文献表格，表格中包含 DOI 列，并且已经用浏览器 Cookie Editor 导出了 `cookies.json` 的情况。
 
-界面操作顺序：
+界面默认打开“DOI 批量下载”页。推荐操作顺序：
 
-1. 在“检索模式”中选择 `doi_batch`。
-2. 选择“输出目录”，用于保存解析结果、失败报告和 PDF。
-3. 在“DOI 批量输入表”中选择你的文献文件，支持 `.xlsx`、`.xlsm`、`.csv`、`.tsv`、`.txt`、`.md`、`.markdown`。
-4. 在“DOI 列名”中填写 DOI 所在列名，例如 `doi`、`DOI` 或 `DOI号`。
-5. 在“Cookie JSON 文件”中选择 Cookie Editor 导出的 `cookies.json`。
-6. 点击“预览解析”，确认 DOI 总数和前 200 条预览。
-7. 只勾选“检索后下载 PDF”。
-8. 点击“开始运行”。
+1. 在“1 数据来源”中选择 DOI 表格，或直接粘贴 DOI/表格内容。
+2. 如需指定 Excel 工作表或 DOI 列名，填写“Excel 工作表名”和“DOI 列名”。
+3. 在“2 权限与输出”中选择输出目录和 Cookie Editor 导出的 `cookies.json`。
+4. 保持“检索后下载 PDF”勾选；如果不用 Cookie JSON，再按需选择高级登录方式。
+5. 点击“预览解析”，在“3 预览检查”中确认 DOI 总数、列识别方式和前 200 条预览。
+6. 点击底部固定操作栏中的“开始运行”，运行后会自动切到“运行日志”页。
 
 注意：使用 `cookies.json` 时，不需要勾选“从本机 Chrome 读取 Cookie”，也不需要勾选“先弹出 Chrome 手动登录”。
 
 如果不想导入文件，也可以把 DOI 列表或从 Excel 复制出的表格直接粘贴到“直接粘贴 DOI 或表格内容”。点击“开始运行”时，程序会自动生成临时 CSV 文件。大批量导入时，界面只预览前 200 条并统计总数，避免一次性渲染全部数据导致卡死。
+
+界面会记住最近的输出目录、Cookie 文件、窗口尺寸和常用登录选项，配置保存在 `results/_ui_settings.json`。请不要把该文件和 Cookie 一起上传到公开平台。
 
 ## DOI 表格格式
 
@@ -56,7 +58,7 @@ python -m venv .venv
 
 程序会自动尝试识别 `doi`、`DOI`、`Doi`、`DOI号`、`doi号`。如果识别失败，请在界面中手动填写“DOI 列名”。
 
-对于 `.txt`、`.md`、`.markdown`、`.tsv`，程序会逐行扫描 DOI，不要求表头。Windows 上 Excel/WPS 导出的 CSV 或文本文件可能是 GBK/ANSI 编码，程序会自动尝试 `utf-8-sig`、`utf-8`、`gb18030`、`gbk`、`cp936`。
+对于 `.txt`、`.md`、`.markdown`，程序会逐行扫描 DOI，不要求表头；`.tsv` 会先按表格解析，失败时再逐行扫描。Windows 上 Excel/WPS 导出的 CSV 或文本文件可能是 GBK/ANSI 编码，程序会自动尝试 `utf-8-sig`、`utf-8`、`gb18030`、`gbk`、`cp936`。
 
 ## 输出文件
 
@@ -66,11 +68,15 @@ DOI 批量模式会在输出目录下生成一个时间戳子目录，例如：
 results\doi_batch_20260616_120000\
 ├── doi_batch_resolved.xlsx
 ├── doi_batch_failed.csv
+├── pdf_download_report.csv
+├── run_summary.txt
 └── pdfs\
 ```
 
 - `doi_batch_resolved.xlsx`：成功解析到 ScienceDirect PII 的记录。
 - `doi_batch_failed.csv`：空 DOI、重复 DOI、非 ScienceDirect DOI 或解析失败的记录。
+- `pdf_download_report.csv`：逐篇记录 PDF 下载成功、失败或跳过原因。
+- `run_summary.txt`：本次任务摘要、失败原因分组和下一步建议。
 - `pdfs`：下载成功的 PDF 文件。
 
 ## 命令行等价示例

@@ -41,6 +41,15 @@ from datetime import datetime
 from urllib.parse import urlencode, unquote
 
 from curl_cffi import requests as curl_requests
+from doi_batch_utils import (
+    PdfDownloadRecord,
+    RunSummary,
+    check_cookie_json,
+    failure_reason_counts,
+    load_doi_records,
+    write_pdf_download_report,
+    write_run_summary,
+)
 from windows_paths import chrome_bin, chrome_debug_log, chrome_debug_profile, chrome_default_profile
 
 try:
@@ -807,35 +816,20 @@ class ScienceDirectScraper:
         return rows
 
     def _read_doi_rows(self, input_path, doi_column=None, sheet_name=None):
-        ext = os.path.splitext(input_path)[1].lower()
-        if ext == ".csv":
-            raw_rows = self._read_doi_rows_from_csv(input_path)
-        elif ext in (".txt", ".md", ".markdown", ".tsv"):
-            raw_rows = self._read_doi_rows_from_text(input_path)
-        elif ext in (".xlsx", ".xlsm"):
-            raw_rows = self._read_doi_rows_from_xlsx(input_path, sheet_name)
-        else:
-            raise ValueError("仅支持 .csv、.xlsx、.xlsm、.txt、.md、.markdown、.tsv 文件")
-
-        if not raw_rows:
+        records = load_doi_records(input_path, doi_column=doi_column, sheet_name=sheet_name)
+        if not records:
             return [], "输入文件没有可读取的数据行"
 
-        headers = list(raw_rows[0][1].keys())
-        doi_col = doi_column or self._find_column(headers, self.DOI_COLUMN_CANDIDATES)
-        if not doi_col or doi_col not in headers:
-            return [], f"未找到 DOI 列，请使用 --doi-column 指定。现有列：{', '.join(headers)}"
-
         rows = []
-        for row_number, row in raw_rows:
-            doi = self._clean_doi(row.get(doi_col, ""))
+        for record in records:
             rows.append({
-                "row_number": row_number,
-                "doi": doi,
-                "title": self._row_value(row, "title"),
-                "authors": self._row_value(row, "authors"),
-                "journal": self._row_value(row, "journal"),
-                "year": self._row_value(row, "year"),
-                "date": self._row_value(row, "date"),
+                "row_number": record.row_number,
+                "doi": record.doi,
+                "title": record.title,
+                "authors": record.authors,
+                "journal": record.journal,
+                "year": record.year,
+                "date": record.date,
             })
         return rows, ""
 
@@ -901,6 +895,8 @@ class ScienceDirectScraper:
             print(f"[错误] {error}")
             return [], [{"row_number": "", "doi": "", "reason": error}]
 
+        self.last_doi_batch_total_rows = len(rows)
+        self.last_doi_batch_total_doi = sum(1 for item in rows if item.get("doi"))
         print(f"\n[DOI 批量解析] 从 {input_path} 读取 {len(rows)} 条记录")
         resolved = []
         failed = []
@@ -1329,18 +1325,32 @@ class ScienceDirectScraper:
 
         前提：Chrome 已通过机构账号（CARSI/深技大）登录 ScienceDirect。
         """
+        total = len(results)
+        pdf_records = []
+
+        def _record(article, status, file="", reason=""):
+            pdf_records.append(PdfDownloadRecord(
+                doi=article.get("doi", ""),
+                pii=article.get("pii", ""),
+                title=article.get("title", ""),
+                status=status,
+                file=file,
+                reason=reason,
+            ))
+
         try:
             import websocket
         except ImportError:
             print("[错误] 需要 websocket-client：pip install websocket-client")
-            return
+            for article in results:
+                _record(article, "failed", reason="缺少 websocket-client 依赖")
+            return 0, total, 0, pdf_records
 
         from urllib.request import Request as _Req, urlopen as _urlopen
         from urllib.parse import quote as _quote
 
         pdf_dir = os.path.join(output_dir, "pdfs")
         os.makedirs(pdf_dir, exist_ok=True)
-        total = len(results)
         success = skip = fail = 0
 
         print(f"\n[DevTools PDF 下载]  共 {total} 篇，保存至 {pdf_dir}")
@@ -1352,7 +1362,9 @@ class ScienceDirectScraper:
             self._launch_chrome_with_debug()
             if not self._is_chrome_debug_ready():
                 print("[错误] Chrome 调试端口仍不可用，PDF 下载中止")
-                return
+                for article in results:
+                    _record(article, "failed", reason="Chrome 调试端口不可用")
+                return success, total, skip, pdf_records
         else:
             print("  已检测到 Chrome 调试端口 ✓")
 
@@ -1450,7 +1462,9 @@ class ScienceDirectScraper:
             fail += total
             print(f"  [错误] 无法创建 Chrome 调试标签页，PDF 下载中止：{e}")
             print(f"\n[完成] 成功: {success}  失败: {fail}  跳过: {skip}")
-            return
+            for article in results:
+                _record(article, "failed", reason=f"无法创建 Chrome 调试标签页: {e}")
+            return success, fail, skip, pdf_records
 
         def _tab_navigate(url, wait=5.0):
             """在持久标签页内导航到 url，等待页面加载，不抛异常。"""
@@ -1522,6 +1536,7 @@ class ScienceDirectScraper:
                 if not pii:
                     print(f"  [{idx}/{total}] 跳过（无 PII）: {title_short}")
                     skip += 1
+                    _record(article, "skipped", reason="无 PII")
                     continue
 
                 filename = self._make_pdf_filename(idx, article)
@@ -1530,6 +1545,7 @@ class ScienceDirectScraper:
                 if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
                     print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
                     skip += 1
+                    _record(article, "skipped", file=filename, reason="文件已存在")
                     continue
 
                 pdf_url = article.get("pdf_url") or ""
@@ -1577,11 +1593,13 @@ class ScienceDirectScraper:
                     print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)")
                     success += 1
                     downloads_since_break += 1
+                    _record(article, "success", file=filename)
                 else:
                     is_blocked = str(note).startswith("blocked:")
                     tag = "被封锁" if is_blocked else "未捕获PDF"
                     print(f"  [{idx}/{total}] ✗ {tag}: {title_short[:40]}  ({str(note)[:80]})")
                     fail += 1
+                    _record(article, "failed", reason=f"{tag}: {str(note)[:160]}")
 
                 if idx < total:
                     # 每 SESSION_BREAK_N 篇成功后主动歇息，避免触发封锁
@@ -1596,6 +1614,7 @@ class ScienceDirectScraper:
             close_tab(p_tab["id"])
 
         print(f"\n[完成] 成功: {success}  失败: {fail}  跳过: {skip}")
+        return success, fail, skip, pdf_records
 
     # ── Chrome CDP（保留为备用，调试用）──────────────────────────────────────
 
@@ -2261,6 +2280,18 @@ def main():
             print("错误: doi_batch 模式需要 --input 参数")
             return
 
+        cookie_message = ""
+        if args.cookies:
+            cookie_check = check_cookie_json(args.cookies)
+            cookie_message = cookie_check.message
+            print(f"[Cookie 检查] {cookie_message}")
+            if not cookie_check.is_usable:
+                print("[警告] Cookie 文件可能无法用于 ScienceDirect PDF 下载，将继续尝试。")
+        elif args.download_pdfs and args.browser_cookies:
+            cookie_message = "未选择 Cookie JSON 文件；将尝试从本机 Chrome/调试会话获取 Cookie"
+        elif args.download_pdfs:
+            cookie_message = "未选择 Cookie JSON 文件；PDF 下载可能需要手动登录 Chrome"
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base = args.filename or f"doi_batch_{timestamp}"
         output_root = args.output or os.path.join(
@@ -2271,17 +2302,68 @@ def main():
         results, failures = scraper.resolve_doi_batch(
             args.input_file, doi_column=args.doi_column, sheet_name=args.sheet)
 
+        resolved_path = ""
         if results:
-            scraper.save_to_xlsx(results, "doi_batch_resolved.xlsx", output_dir)
+            resolved_path = scraper.save_to_xlsx(results, "doi_batch_resolved.xlsx", output_dir)
         else:
             print("\n未解析到任何 ScienceDirect DOI。")
 
-        scraper.save_failed_doi_report(failures, "doi_batch_failed.csv", output_dir)
+        failed_path = scraper.save_failed_doi_report(failures, "doi_batch_failed.csv", output_dir)
 
+        pdf_success = pdf_failed = pdf_skipped = 0
+        pdf_records = []
         if args.download_pdfs and results:
-            scraper.download_pdfs_devtools(results, output_dir)
+            download_result = scraper.download_pdfs_devtools(results, output_dir)
+            if download_result:
+                pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
+            else:
+                pdf_failed = len(results)
+                pdf_records = [
+                    PdfDownloadRecord(
+                        doi=item.get("doi", ""),
+                        pii=item.get("pii", ""),
+                        title=item.get("title", ""),
+                        status="failed",
+                        reason="PDF 下载流程未返回状态",
+                    )
+                    for item in results
+                ]
         elif args.download_pdfs:
             print("没有可下载的解析结果，跳过 PDF 下载。")
+        else:
+            pdf_records = [
+                PdfDownloadRecord(
+                    doi=item.get("doi", ""),
+                    pii=item.get("pii", ""),
+                    title=item.get("title", ""),
+                    status="not_requested",
+                    reason="未勾选 PDF 下载",
+                )
+                for item in results
+            ]
+
+        pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
+        total_doi = getattr(
+            scraper,
+            "last_doi_batch_total_doi",
+            len(results) + sum(1 for item in failures if item.get("doi")),
+        )
+        summary_path = write_run_summary(RunSummary(
+            input_path=args.input_file,
+            output_dir=output_dir,
+            total_doi=total_doi,
+            resolved_count=len(results),
+            failure_reasons=failure_reason_counts(failures),
+            pdf_success=pdf_success,
+            pdf_failed=pdf_failed,
+            pdf_skipped=pdf_skipped,
+            resolved_path=resolved_path,
+            failed_path=failed_path,
+            pdf_report_path=str(pdf_report_path),
+            cookie_message=cookie_message,
+        ))
+        print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")
+        print(f"[报告] 任务摘要已保存 -> {summary_path}")
         return
 
     results = []

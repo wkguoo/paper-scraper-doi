@@ -1,0 +1,475 @@
+"""Shared helpers for DOI batch input, cookie checks, and user reports."""
+
+from __future__ import annotations
+
+import csv
+import json
+import re
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Iterable
+
+
+PREVIEW_LIMIT = 200
+TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk", "cp936")
+DOI_COLUMN_CANDIDATES = ("doi", "DOI", "Doi", "DOI号", "doi号", "DOI號", "doi號")
+COLUMN_ALIASES = {
+    "title": ("title", "article title", "paper title", "标题", "题名", "文献标题"),
+    "authors": ("authors", "author", "作者", "作者列表"),
+    "journal": ("journal", "source", "publication", "期刊", "期刊名称"),
+    "year": ("year", "publication year", "年份", "发表年份"),
+    "date": ("date", "publication date", "日期", "发表日期"),
+    "doi": DOI_COLUMN_CANDIDATES,
+}
+COOKIE_DOMAINS = ("sciencedirect.com", "elsevier.com", "sciencedirectassets.com")
+
+
+@dataclass(frozen=True)
+class DoiRecord:
+    row_number: int
+    doi: str
+    title: str = ""
+    authors: str = ""
+    journal: str = ""
+    year: str = ""
+    date: str = ""
+
+
+@dataclass(frozen=True)
+class DoiPreviewRow:
+    row_number: int
+    doi: str
+    title: str = ""
+
+
+@dataclass(frozen=True)
+class DoiPreview:
+    rows: list[DoiPreviewRow]
+    total_doi: int
+    total_rows: int
+    source: str
+    doi_column: str = ""
+    encoding: str = ""
+    sheet_name: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CookieCheck:
+    path: str
+    exists: bool
+    readable: bool
+    valid_json: bool
+    cookie_count: int
+    relevant_cookie_count: int
+    has_sciencedirect_cookie: bool
+    is_usable: bool
+    message: str
+
+
+@dataclass(frozen=True)
+class PdfDownloadRecord:
+    doi: str
+    pii: str
+    title: str
+    status: str
+    file: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class RunSummary:
+    input_path: str
+    output_dir: str
+    total_doi: int
+    resolved_count: int
+    failure_reasons: dict[str, int]
+    pdf_success: int
+    pdf_failed: int
+    pdf_skipped: int
+    resolved_path: str = ""
+    failed_path: str = ""
+    pdf_report_path: str = ""
+    cookie_message: str = ""
+
+
+def normalize_column_name(name: object) -> str:
+    return re.sub(r"[\s_\-]+", "", str(name or "")).lower()
+
+
+def find_column(headers: Iterable[str], candidates: Iterable[str]) -> str | None:
+    normalized = {normalize_column_name(header): header for header in headers}
+    for candidate in candidates:
+        key = normalize_column_name(candidate)
+        if key in normalized:
+            return normalized[key]
+    return None
+
+
+def row_value(row: dict[str, object], field: str) -> str:
+    column = find_column(row.keys(), COLUMN_ALIASES[field])
+    if not column:
+        return ""
+    value = row.get(column, "")
+    return "" if value is None else str(value).strip()
+
+
+def clean_doi(doi: object) -> str:
+    value = str(doi or "").strip()
+    value = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", value, flags=re.I)
+    value = re.sub(r"^doi\s*:\s*", "", value, flags=re.I)
+    value = re.split(r"[\]\)\}\s<>,;]+", value, maxsplit=1)[0]
+    return value.strip().strip(".;,")
+
+
+def extract_doi_from_text(text: object) -> str:
+    match = re.search(r"10\.\d{4,9}/[^\s,;\"'<>\]\)\}]+", str(text or ""), flags=re.I)
+    if not match:
+        return ""
+    return clean_doi(match.group(0))
+
+
+def load_doi_records(
+    input_path: str | Path,
+    doi_column: str | None = None,
+    sheet_name: str | None = None,
+) -> list[DoiRecord]:
+    path = Path(input_path)
+    ext = path.suffix.lower()
+    if ext == ".csv":
+        records, _, _ = _read_delimited_records(path, ",", doi_column)
+        return records
+    if ext == ".tsv":
+        try:
+            records, _, _ = _read_delimited_records(path, "\t", doi_column)
+            return records
+        except ValueError:
+            return _read_text_records(path)
+    if ext in {".txt", ".md", ".markdown"}:
+        return _read_text_records(path)
+    if ext in {".xlsx", ".xlsm"}:
+        records, _ = _read_xlsx_records(path, doi_column, sheet_name)
+        return records
+    raise ValueError("仅支持 .csv、.xlsx、.xlsm、.txt、.md、.markdown、.tsv 文件")
+
+
+def preview_doi_input(
+    input_path: str | Path | None = None,
+    pasted_text: str = "",
+    doi_column: str | None = None,
+    sheet_name: str | None = None,
+    limit: int = PREVIEW_LIMIT,
+) -> DoiPreview:
+    if input_path:
+        path = Path(input_path)
+        ext = path.suffix.lower()
+        if ext == ".csv":
+            records, encoding, found_column = _read_delimited_records(path, ",", doi_column)
+            return _preview_from_records(records, str(path), found_column, encoding, "", limit)
+        if ext == ".tsv":
+            try:
+                records, encoding, found_column = _read_delimited_records(path, "\t", doi_column)
+                return _preview_from_records(records, str(path), found_column, encoding, "", limit)
+            except ValueError:
+                records = _read_text_records(path)
+                return _preview_from_records(records, str(path), "逐行扫描", "", "", limit)
+        if ext in {".txt", ".md", ".markdown"}:
+            records = _read_text_records(path)
+            return _preview_from_records(records, str(path), "逐行扫描", "", "", limit)
+        if ext in {".xlsx", ".xlsm"}:
+            records, found_sheet = _read_xlsx_records(path, doi_column, sheet_name)
+            found_column = _find_doi_column_from_records_source(path, doi_column, found_sheet)
+            return _preview_from_records(records, str(path), found_column, "", found_sheet, limit)
+        raise ValueError("仅支持 .csv、.xlsx、.xlsm、.txt、.md、.markdown、.tsv 文件")
+
+    records = _records_from_pasted_text(pasted_text)
+    return _preview_from_records(records, "粘贴内容", "逐行扫描", "", "", limit)
+
+
+def check_cookie_json(path: str | Path) -> CookieCheck:
+    cookie_path = Path(path)
+    if not str(path).strip():
+        return CookieCheck("", False, False, False, 0, 0, False, False, "未选择 Cookie JSON 文件")
+    if not cookie_path.exists():
+        return CookieCheck(str(cookie_path), False, False, False, 0, 0, False, False, "找不到 Cookie JSON 文件")
+
+    data = None
+    last_decode_error: Exception | None = None
+    for encoding in TEXT_ENCODINGS:
+        try:
+            data = json.loads(cookie_path.read_text(encoding=encoding))
+            break
+        except UnicodeDecodeError as exc:
+            last_decode_error = exc
+        except json.JSONDecodeError as exc:
+            return CookieCheck(str(cookie_path), True, True, False, 0, 0, False, False, f"Cookie 文件不是有效 JSON: {exc}")
+        except OSError as exc:
+            return CookieCheck(str(cookie_path), True, False, False, 0, 0, False, False, f"无法读取 Cookie 文件: {exc}")
+
+    if data is None:
+        return CookieCheck(
+            str(cookie_path),
+            True,
+            False,
+            False,
+            0,
+            0,
+            False,
+            False,
+            f"无法识别 Cookie 文件编码: {last_decode_error}",
+        )
+
+    cookie_items = _cookie_items_from_json(data)
+    cookie_count = len(cookie_items)
+    relevant_count = sum(1 for item in cookie_items if _is_relevant_cookie(item))
+    has_relevant = relevant_count > 0
+
+    if cookie_count == 0:
+        message = "Cookie 文件可读，但没有识别到 Cookie 项"
+    elif not has_relevant:
+        message = f"已识别 {cookie_count} 个 Cookie，但未发现 ScienceDirect/Elsevier 相关域"
+    else:
+        message = f"已识别 {cookie_count} 个 Cookie，其中 {relevant_count} 个与 ScienceDirect/Elsevier 相关"
+
+    return CookieCheck(
+        str(cookie_path),
+        True,
+        True,
+        True,
+        cookie_count,
+        relevant_count,
+        has_relevant,
+        has_relevant,
+        message,
+    )
+
+
+def write_pdf_download_report(records: list[PdfDownloadRecord], output_dir: str | Path) -> Path:
+    path = Path(output_dir) / "pdf_download_report.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+        writer.writeheader()
+        for record in records:
+            writer.writerow({
+                "doi": record.doi,
+                "pii": record.pii,
+                "title": record.title,
+                "status": record.status,
+                "file": record.file,
+                "reason": record.reason,
+            })
+    return path
+
+
+def write_run_summary(summary: RunSummary) -> Path:
+    output_dir = Path(summary.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "run_summary.txt"
+    lines = [
+        "DOI 批量任务报告",
+        "=" * 18,
+        f"输入来源: {summary.input_path or '粘贴内容/临时文件'}",
+        f"输出目录: {summary.output_dir}",
+        f"识别 DOI 数: {summary.total_doi}",
+        f"成功解析数: {summary.resolved_count}",
+        f"解析失败数: {sum(summary.failure_reasons.values())}",
+        "",
+        "解析失败原因:",
+    ]
+    if summary.failure_reasons:
+        for reason, count in sorted(summary.failure_reasons.items(), key=lambda item: (-item[1], item[0])):
+            lines.append(f"- {reason}: {count}")
+    else:
+        lines.append("- 无")
+
+    lines.extend([
+        "",
+        "PDF 下载:",
+        f"- 成功: {summary.pdf_success}",
+        f"- 失败: {summary.pdf_failed}",
+        f"- 跳过: {summary.pdf_skipped}",
+        "",
+        "输出文件:",
+        f"- 解析成功表: {summary.resolved_path or '未生成'}",
+        f"- DOI 失败报告: {summary.failed_path or '未生成'}",
+        f"- PDF 下载报告: {summary.pdf_report_path or '未生成'}",
+    ])
+    if summary.cookie_message:
+        lines.extend(["", f"Cookie 检查: {summary.cookie_message}"])
+    lines.extend(["", "下一步建议:"])
+    if summary.pdf_failed:
+        lines.append("- 若 PDF 大量失败，优先检查 Cookie 是否过期、机构权限是否可访问 PDF、Chrome 中是否出现验证码或限速提示。")
+    if summary.failure_reasons:
+        lines.append("- 先查看 doi_batch_failed.csv，非 ScienceDirect DOI 或重复 DOI 不会中断整个任务。")
+    if not summary.failure_reasons and not summary.pdf_failed:
+        lines.append("- 任务完成，无需处理。")
+
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def failure_reason_counts(failures: Iterable[dict[str, object]]) -> dict[str, int]:
+    counter: Counter[str] = Counter()
+    for item in failures:
+        reason = str(item.get("reason") or "未知原因")
+        counter[reason] += 1
+    return dict(counter)
+
+
+def _read_delimited_records(path: Path, delimiter: str, doi_column: str | None) -> tuple[list[DoiRecord], str, str]:
+    last_error: Exception | None = None
+    for encoding in TEXT_ENCODINGS:
+        try:
+            with path.open("r", newline="", encoding=encoding) as f:
+                reader = csv.DictReader(f, delimiter=delimiter)
+                headers = [header or "" for header in (reader.fieldnames or [])]
+                found_column = _find_doi_column(headers, doi_column)
+                records = [_record_from_row(row_number, row, found_column) for row_number, row in enumerate(reader, start=2)]
+                return records, encoding, found_column
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise ValueError(f"无法识别表格编码，请另存为 UTF-8；最后一次错误: {last_error}")
+
+
+def _read_text_records(path: Path) -> list[DoiRecord]:
+    last_error: Exception | None = None
+    for encoding in TEXT_ENCODINGS:
+        try:
+            records: list[DoiRecord] = []
+            with path.open("r", encoding=encoding) as f:
+                for line_number, line in enumerate(f, start=1):
+                    doi = extract_doi_from_text(line)
+                    if doi:
+                        records.append(DoiRecord(row_number=line_number, doi=doi))
+            return records
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise ValueError(f"无法识别文本编码，请另存为 UTF-8；最后一次错误: {last_error}")
+
+
+def _read_xlsx_records(path: Path, doi_column: str | None, sheet_name: str | None) -> tuple[list[DoiRecord], str]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("读取 xlsx 需要安装 openpyxl") from exc
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        requested_sheet = (sheet_name or "").strip()
+        if requested_sheet and requested_sheet not in wb.sheetnames:
+            raise ValueError(f"找不到工作表：{requested_sheet}。可用工作表：{', '.join(wb.sheetnames)}")
+        found_sheet = requested_sheet or wb.sheetnames[0]
+        ws = wb[found_sheet]
+        rows_iter = ws.iter_rows(values_only=True)
+        headers_raw = next(rows_iter, None)
+        if not headers_raw:
+            return [], found_sheet
+        headers = [str(header).strip() if header is not None else "" for header in headers_raw]
+        found_column = _find_doi_column(headers, doi_column)
+        records: list[DoiRecord] = []
+        for row_number, values in enumerate(rows_iter, start=2):
+            row = {headers[i]: values[i] if i < len(values) else "" for i in range(len(headers))}
+            records.append(_record_from_row(row_number, row, found_column))
+        return records, found_sheet
+    finally:
+        wb.close()
+
+
+def _find_doi_column(headers: list[str], doi_column: str | None) -> str:
+    requested = (doi_column or "").strip()
+    if requested:
+        found = find_column(headers, (requested,))
+        if found:
+            return found
+        raise ValueError(f"找不到 DOI 列：{requested}。现有列：{', '.join(headers)}")
+    found = find_column(headers, DOI_COLUMN_CANDIDATES)
+    if found:
+        return found
+    raise ValueError(f"未识别 DOI 列。请填写 DOI 列名。现有列：{', '.join(headers)}")
+
+
+def _record_from_row(row_number: int, row: dict[str, object], doi_column: str) -> DoiRecord:
+    return DoiRecord(
+        row_number=row_number,
+        doi=clean_doi(row.get(doi_column, "")),
+        title=row_value(row, "title"),
+        authors=row_value(row, "authors"),
+        journal=row_value(row, "journal"),
+        year=row_value(row, "year"),
+        date=row_value(row, "date"),
+    )
+
+
+def _records_from_pasted_text(text: str) -> list[DoiRecord]:
+    records: list[DoiRecord] = []
+    for line_number, line in enumerate((text or "").splitlines(), start=1):
+        doi = extract_doi_from_text(line)
+        if doi:
+            records.append(DoiRecord(row_number=line_number, doi=doi))
+    return records
+
+
+def _preview_from_records(
+    records: list[DoiRecord],
+    source: str,
+    doi_column: str,
+    encoding: str,
+    sheet_name: str,
+    limit: int,
+) -> DoiPreview:
+    doi_records = [
+        DoiPreviewRow(
+            row_number=record.row_number,
+            doi=normalized_doi,
+            title=record.title,
+        )
+        for record in records
+        if (normalized_doi := extract_doi_from_text(record.doi))
+    ]
+    rows = [
+        DoiPreviewRow(row_number=row.row_number, doi=row.doi, title=row.title)
+        for row in doi_records[:limit]
+    ]
+    return DoiPreview(
+        rows=rows,
+        total_doi=len(doi_records),
+        total_rows=len(records),
+        source=source,
+        doi_column=doi_column,
+        encoding=encoding,
+        sheet_name=sheet_name,
+    )
+
+
+def _find_doi_column_from_records_source(path: Path, doi_column: str | None, sheet_name: str) -> str:
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            ws = wb[sheet_name]
+            headers_raw = next(ws.iter_rows(values_only=True), None)
+            headers = [str(header).strip() if header is not None else "" for header in (headers_raw or [])]
+            return _find_doi_column(headers, doi_column)
+        finally:
+            wb.close()
+    except Exception:
+        return doi_column or ""
+
+
+def _cookie_items_from_json(data: object) -> list[dict[str, object]]:
+    if isinstance(data, dict) and isinstance(data.get("cookies"), list):
+        data = data["cookies"]
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        return [{"name": key, "value": value, "domain": ""} for key, value in data.items()]
+    return []
+
+
+def _is_relevant_cookie(item: dict[str, object]) -> bool:
+    domain = str(item.get("domain") or item.get("Domain") or "").lower()
+    name = str(item.get("name") or item.get("Name") or "").lower()
+    return any(cookie_domain in domain for cookie_domain in COOKIE_DOMAINS) or name in {"euid", "sdmsession"}
