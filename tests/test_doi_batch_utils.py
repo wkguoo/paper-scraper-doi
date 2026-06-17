@@ -127,6 +127,44 @@ class DoiBatchUtilsTests(unittest.TestCase):
         self.assertEqual(preview.rows[0].doi, "10.1016/j.matchar.2024.113000")
         self.assertEqual(preview.rows[1].row_number, 3)
 
+    def test_preview_classifies_empty_invalid_and_duplicate_rows(self) -> None:
+        from doi_batch_utils import preview_doi_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "papers.csv"
+            with path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["title", "doi"])
+                writer.writeheader()
+                writer.writerow({"title": "A", "doi": "https://doi.org/10.1016/j.actamat.2024.119999"})
+                writer.writerow({"title": "B", "doi": ""})
+                writer.writerow({"title": "C", "doi": "not-a-doi"})
+                writer.writerow({"title": "D", "doi": "10.1016/j.actamat.2024.119999"})
+
+            preview = preview_doi_input(input_path=path, limit=10)
+
+        self.assertEqual(preview.total_rows, 4)
+        self.assertEqual(preview.total_doi, 1)
+        self.assertEqual(preview.status_counts, {"valid": 1, "empty": 1, "invalid": 1, "duplicate": 1})
+        self.assertEqual([row.status for row in preview.rows], ["valid", "empty", "invalid", "duplicate"])
+        self.assertEqual(preview.rows[2].raw_value, "not-a-doi")
+        self.assertEqual(preview.rows[2].reason, "未识别到 DOI")
+
+    def test_preview_marks_duplicate_pasted_dois(self) -> None:
+        from doi_batch_utils import preview_doi_input
+
+        preview = preview_doi_input(
+            pasted_text=(
+                "10.1016/j.matchar.2024.113000\n"
+                "https://doi.org/10.1016/j.matchar.2024.113000\n"
+            ),
+            limit=10,
+        )
+
+        self.assertEqual(preview.total_doi, 1)
+        self.assertEqual(preview.status_counts["valid"], 1)
+        self.assertEqual(preview.status_counts["duplicate"], 1)
+        self.assertEqual(preview.rows[1].status, "duplicate")
+
 
 class CookieCheckTests(unittest.TestCase):
     def test_check_cookie_json_accepts_cookie_editor_list(self) -> None:
@@ -240,6 +278,65 @@ class ReportTests(unittest.TestCase):
         self.assertIn("重复 DOI，已跳过: 1", summary_text)
         self.assertIn("10.1016/example", report_text)
 
+    def test_collects_retry_rows_from_failed_reports(self) -> None:
+        from doi_batch_utils import collect_retry_input_rows, write_retry_input_csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            pdf_report = out / "pdf_download_report.csv"
+            with pdf_report.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({
+                    "doi": "10.1016/j.failedpdf.2024.1",
+                    "pii": "S1",
+                    "title": "PDF failed",
+                    "status": "failed",
+                    "file": "",
+                    "reason": "未捕获PDF",
+                })
+                writer.writerow({
+                    "doi": "10.1016/j.ok.2024.2",
+                    "pii": "S2",
+                    "title": "OK",
+                    "status": "success",
+                    "file": "ok.pdf",
+                    "reason": "",
+                })
+                writer.writerow({
+                    "doi": "",
+                    "pii": "S3",
+                    "title": "No DOI",
+                    "status": "failed",
+                    "file": "",
+                    "reason": "无 DOI",
+                })
+
+            doi_failed = out / "doi_batch_failed.csv"
+            with doi_failed.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["row_number", "doi", "reason"])
+                writer.writeheader()
+                writer.writerow({"row_number": "2", "doi": "", "reason": "DOI 为空"})
+                writer.writerow({"row_number": "3", "doi": "10.1016/j.dup.2024.3", "reason": "重复 DOI，已跳过"})
+                writer.writerow({
+                    "row_number": "4",
+                    "doi": "10.1016/j.resolvefailed.2024.4",
+                    "reason": "DOI 访问失败",
+                })
+
+            rows = collect_retry_input_rows(pdf_report, doi_failed)
+            retry_path = write_retry_input_csv(rows, out, timestamp="20260617_120000")
+
+            retry_text = retry_path.read_text(encoding="utf-8-sig")
+
+        self.assertEqual(
+            [row["doi"] for row in rows],
+            ["10.1016/j.failedpdf.2024.1", "10.1016/j.resolvefailed.2024.4"],
+        )
+        self.assertEqual(retry_path.name, "retry_failed_doi_20260617_120000.csv")
+        self.assertIn("source_status", retry_text)
+        self.assertIn("PDF failed", retry_text)
+
 
 class UiBehaviorTests(unittest.TestCase):
     def test_ui_defaults_to_doi_batch_cookie_json_workflow(self) -> None:
@@ -260,6 +357,8 @@ class UiBehaviorTests(unittest.TestCase):
             self.assertEqual(app.mode_var.get(), "doi_batch")
             self.assertFalse(app.browser_cookies_var.get())
             self.assertTrue(app.download_pdf_var.get())
+            self.assertTrue(hasattr(app, "preview_tree"))
+            self.assertTrue(hasattr(app, "retry_failed_button"))
         finally:
             root.destroy()
 

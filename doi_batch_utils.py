@@ -7,6 +7,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -34,6 +35,7 @@ class DoiRecord:
     journal: str = ""
     year: str = ""
     date: str = ""
+    raw_value: str = ""
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,9 @@ class DoiPreviewRow:
     row_number: int
     doi: str
     title: str = ""
+    raw_value: str = ""
+    status: str = "valid"
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,7 @@ class DoiPreview:
     encoding: str = ""
     sheet_name: str = ""
     warnings: list[str] = field(default_factory=list)
+    status_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -263,6 +269,73 @@ def write_pdf_download_report(records: list[PdfDownloadRecord], output_dir: str 
     return path
 
 
+def collect_retry_input_rows(
+    pdf_report_path: str | Path | None = None,
+    doi_failed_path: str | Path | None = None,
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for row in _read_csv_rows(pdf_report_path):
+        if str(row.get("status") or "").strip().lower() != "failed":
+            continue
+        doi = clean_doi(row.get("doi", ""))
+        if not doi:
+            continue
+        key = doi.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "doi": doi,
+            "title": str(row.get("title") or "").strip(),
+            "source_status": "pdf_failed",
+            "reason": str(row.get("reason") or "").strip(),
+        })
+
+    ignored_reasons = {"DOI 为空", "重复 DOI，已跳过"}
+    for row in _read_csv_rows(doi_failed_path):
+        reason = str(row.get("reason") or "").strip()
+        if reason in ignored_reasons:
+            continue
+        doi = clean_doi(row.get("doi", ""))
+        if not doi:
+            continue
+        key = doi.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "doi": doi,
+            "title": str(row.get("title") or "").strip(),
+            "source_status": "resolve_failed",
+            "reason": reason,
+        })
+
+    return rows
+
+
+def write_retry_input_csv(
+    rows: list[dict[str, str]],
+    output_dir: str | Path,
+    timestamp: str | None = None,
+) -> Path:
+    stamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = Path(output_dir) / f"retry_failed_doi_{stamp}.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=["doi", "title", "source_status", "reason"])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({
+                "doi": row.get("doi", ""),
+                "title": row.get("title", ""),
+                "source_status": row.get("source_status", ""),
+                "reason": row.get("reason", ""),
+            })
+    return path
+
+
 def write_run_summary(summary: RunSummary) -> Path:
     output_dir = Path(summary.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -342,7 +415,7 @@ def _read_text_records(path: Path) -> list[DoiRecord]:
                 for line_number, line in enumerate(f, start=1):
                     doi = extract_doi_from_text(line)
                     if doi:
-                        records.append(DoiRecord(row_number=line_number, doi=doi))
+                        records.append(DoiRecord(row_number=line_number, doi=doi, raw_value=line.strip()))
             return records
         except UnicodeDecodeError as exc:
             last_error = exc
@@ -391,14 +464,16 @@ def _find_doi_column(headers: list[str], doi_column: str | None) -> str:
 
 
 def _record_from_row(row_number: int, row: dict[str, object], doi_column: str) -> DoiRecord:
+    raw_value = "" if row.get(doi_column, "") is None else str(row.get(doi_column, "")).strip()
     return DoiRecord(
         row_number=row_number,
-        doi=clean_doi(row.get(doi_column, "")),
+        doi=clean_doi(raw_value),
         title=row_value(row, "title"),
         authors=row_value(row, "authors"),
         journal=row_value(row, "journal"),
         year=row_value(row, "year"),
         date=row_value(row, "date"),
+        raw_value=raw_value,
     )
 
 
@@ -407,7 +482,7 @@ def _records_from_pasted_text(text: str) -> list[DoiRecord]:
     for line_number, line in enumerate((text or "").splitlines(), start=1):
         doi = extract_doi_from_text(line)
         if doi:
-            records.append(DoiRecord(row_number=line_number, doi=doi))
+            records.append(DoiRecord(row_number=line_number, doi=doi, raw_value=line.strip()))
     return records
 
 
@@ -419,28 +494,66 @@ def _preview_from_records(
     sheet_name: str,
     limit: int,
 ) -> DoiPreview:
-    doi_records = [
-        DoiPreviewRow(
+    status_counts = {"valid": 0, "empty": 0, "invalid": 0, "duplicate": 0}
+    seen: set[str] = set()
+    preview_rows: list[DoiPreviewRow] = []
+
+    for record in records:
+        raw_value = record.raw_value if record.raw_value != "" else record.doi
+        normalized_doi = extract_doi_from_text(record.doi) or extract_doi_from_text(raw_value)
+        if not str(raw_value or record.doi).strip():
+            status = "empty"
+            reason = "DOI 为空"
+        elif not normalized_doi:
+            status = "invalid"
+            reason = "未识别到 DOI"
+        elif normalized_doi.lower() in seen:
+            status = "duplicate"
+            reason = "重复 DOI"
+        else:
+            status = "valid"
+            reason = ""
+            seen.add(normalized_doi.lower())
+        status_counts[status] += 1
+        preview_rows.append(DoiPreviewRow(
             row_number=record.row_number,
             doi=normalized_doi,
             title=record.title,
-        )
-        for record in records
-        if (normalized_doi := extract_doi_from_text(record.doi))
-    ]
-    rows = [
-        DoiPreviewRow(row_number=row.row_number, doi=row.doi, title=row.title)
-        for row in doi_records[:limit]
-    ]
+            raw_value=raw_value,
+            status=status,
+            reason=reason,
+        ))
+
+    rows = preview_rows[:limit]
     return DoiPreview(
         rows=rows,
-        total_doi=len(doi_records),
+        total_doi=status_counts["valid"],
         total_rows=len(records),
         source=source,
         doi_column=doi_column,
         encoding=encoding,
         sheet_name=sheet_name,
+        status_counts=status_counts,
     )
+
+
+def _read_csv_rows(path: str | Path | None) -> list[dict[str, str]]:
+    if not path:
+        return []
+    csv_path = Path(path)
+    if not csv_path.exists():
+        return []
+    last_error: Exception | None = None
+    for encoding in TEXT_ENCODINGS:
+        try:
+            with csv_path.open("r", newline="", encoding=encoding) as f:
+                return [
+                    {str(key or ""): "" if value is None else str(value) for key, value in row.items()}
+                    for row in csv.DictReader(f)
+                ]
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise ValueError(f"无法识别 CSV 编码，请另存为 UTF-8；最后一次错误: {last_error}")
 
 
 def _find_doi_column_from_records_source(path: Path, doi_column: str | None, sheet_name: str) -> str:
