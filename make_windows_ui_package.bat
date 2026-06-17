@@ -10,10 +10,12 @@ if not exist "%PACKAGE_DIR%" mkdir "%PACKAGE_DIR%"
 copy /Y "paper_scraper_ui.py" "%PACKAGE_DIR%\" >nul
 copy /Y "start_paper_scraper_ui.bat" "%PACKAGE_DIR%\" >nul
 copy /Y "sd_scraper.py" "%PACKAGE_DIR%\" >nul
+copy /Y "paper_skill.py" "%PACKAGE_DIR%\" >nul
 copy /Y "doi_batch_utils.py" "%PACKAGE_DIR%\" >nul
 copy /Y "windows_paths.py" "%PACKAGE_DIR%\" >nul
 copy /Y "requirements.txt" "%PACKAGE_DIR%\" >nul
 copy /Y "WINDOWS_UI_README.md" "%PACKAGE_DIR%\" >nul
+xcopy /E /I /Y "paper_automation" "%PACKAGE_DIR%\paper_automation" >nul
 
 echo Package created:
 echo   %CD%\%PACKAGE_DIR%

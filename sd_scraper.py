@@ -53,7 +53,8 @@ from doi_batch_utils import (
 from windows_paths import chrome_bin, chrome_debug_log, chrome_debug_profile, chrome_default_profile
 
 try:
-    sys.stdout.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 except Exception:
     pass
 

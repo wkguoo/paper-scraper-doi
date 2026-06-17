@@ -11,6 +11,8 @@
 - `sd_scraper.py`：中文命令行脚本。
 - `sd_scraper_en.py`：英文命令行脚本。
 - `paper_scraper_ui.py`：Windows 图形界面。
+- `paper_skill.py`：混合论文文本识别 + 公开 OA PDF 合规下载命令行入口。
+- `paper_automation/`：`paper_skill.py` 使用的解析、去重、元数据补全、PDF 候选和 manifest 模块。
 - `start_paper_scraper_ui.bat`：Windows 双击启动入口。
 - `requirements.txt`：依赖清单。
 
@@ -79,6 +81,43 @@ results\doi_batch_20260616_120000\
 - `run_summary.txt`：本次任务摘要、失败原因分组和下一步建议。
 - `pdfs`：下载成功的 PDF 文件。
 
+## 新增：混合文本识别与合法 OA PDF 下载
+
+如果你复制的是一大段格式混乱的论文信息，而不只是标准 DOI 表格，可以使用独立命令 `paper_skill.py`。它会自动识别 DOI 和标题候选、去重、通过公开元数据服务补全文献信息，并且只下载明确可合法开放获取的 PDF 候选。这个流程不使用 ScienceDirect Cookie，不读取本机浏览器 Cookie，不绕过付费墙，也不会使用 Sci-Hub、LibGen 等侵权来源。
+
+推荐先 dry-run 检查识别和可下载情况：
+
+```powershell
+py paper_skill.py --input "papers.txt" --out "D:\Literature\Papers" --email "you@example.com" --dry-run
+```
+
+确认无误后下载开放获取 PDF：
+
+```powershell
+py paper_skill.py --input "papers.txt" --out "D:\Literature\Papers" --email "you@example.com"
+```
+
+也可以直接在命令行传入少量粘贴文本：
+
+```powershell
+py paper_skill.py --text "Example paper DOI: 10.xxxx/example" --out "D:\Literature\Papers" --email "you@example.com"
+```
+
+输出目录结构：
+
+```text
+D:\Literature\Papers\
+├── pdfs\
+├── metadata\
+│   ├── manifest.csv
+│   └── manifest.json
+├── failed\
+│   └── duplicates.csv
+└── logs\
+```
+
+`manifest.csv` / `manifest.json` 会记录每篇论文的输入 DOI/标题、补全后的 DOI/标题、作者、期刊、年份、OA 状态、PDF 来源、下载状态和失败原因。无法合法自动下载的论文不会伪造成功记录，会标记为 `no_legal_open_pdf`、`needs_review`、`response_not_pdf` 等原因。
+
 ## 命令行等价示例
 
 ```powershell
@@ -102,3 +141,4 @@ results\doi_batch_20260616_120000\
 - PDF 下载依赖你的机构权限和 `cookies.json` 是否有效。
 - 请不要把 `cookies.json` 上传到公开平台。
 - 非 ScienceDirect/Elsevier DOI 会跳过并写入失败报告，不会中断整个任务。
+- `paper_skill.py` 只处理公开元数据和合法开放获取 PDF；需要机构登录或出版社禁止自动下载的论文会进入 manifest 的失败/待处理记录。

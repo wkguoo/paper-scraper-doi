@@ -21,6 +21,13 @@ def chrome_bin() -> str:
         ):
             if base:
                 candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+        for base in (
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMFILES(X86)"),
+            os.environ.get("LOCALAPPDATA"),
+        ):
+            if base:
+                candidates.append(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
     elif sys.platform == "darwin":
         candidates.append(Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
     else:
@@ -45,7 +52,14 @@ def chrome_default_profile() -> str:
     if sys.platform.startswith("win"):
         base = os.environ.get("LOCALAPPDATA")
         if base:
-            return str(Path(base) / "Google" / "Chrome" / "User Data" / "Default")
+            candidates = (
+                Path(base) / "Google" / "Chrome" / "User Data" / "Default",
+                Path(base) / "Microsoft" / "Edge" / "User Data" / "Default",
+            )
+            for candidate in candidates:
+                if candidate.exists():
+                    return str(candidate)
+            return str(candidates[0])
     if sys.platform == "darwin":
         return str(Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Default")
     return str(Path.home() / ".config" / "google-chrome" / "Default")

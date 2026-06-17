@@ -39,3 +39,32 @@ Command-line equivalent:
 ```
 
 Outputs are written to `results\doi_batch_timestamp\`, including `doi_batch_resolved.xlsx`, `doi_batch_failed.csv`, `pdf_download_report.csv`, `run_summary.txt`, and `pdfs\`.
+
+## Legal OA Automation CLI
+
+`paper_skill.py` is a separate workflow for messy copied paper text. It identifies DOI/title rows, removes duplicates, resolves metadata from public services, and downloads only legal open-access PDF candidates. It does not use ScienceDirect cookies, browser automation, paywall bypasses, Sci-Hub, or LibGen.
+
+```powershell
+py paper_skill.py --input "papers.txt" --out "D:\Literature\Papers" --email "you@example.com"
+```
+
+For a metadata-only check:
+
+```powershell
+py paper_skill.py --input "papers.txt" --out "D:\Literature\Papers" --email "you@example.com" --dry-run
+```
+
+Outputs are written under the selected directory:
+
+```text
+D:\Literature\Papers\
+├── pdfs\
+├── metadata\
+│   ├── manifest.csv
+│   └── manifest.json
+├── failed\
+│   └── duplicates.csv
+└── logs\
+```
+
+If no legal OA PDF is found, the row stays in the manifest with a clear failure reason such as `no_legal_open_pdf`, `needs_review`, or `response_not_pdf`.
