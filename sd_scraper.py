@@ -45,6 +45,8 @@ from doi_batch_utils import (
     PdfDownloadRecord,
     RunSummary,
     check_cookie_json,
+    clean_doi,
+    extract_doi_from_text,
     failure_reason_counts,
     load_doi_records,
     write_pdf_download_report,
@@ -731,18 +733,11 @@ class ScienceDirectScraper:
 
     @staticmethod
     def _clean_doi(doi):
-        doi = str(doi or "").strip()
-        doi = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", doi, flags=re.I)
-        doi = re.sub(r"^doi\s*:\s*", "", doi, flags=re.I)
-        doi = re.split(r"[\]\)\}\s<>,;]+", doi, maxsplit=1)[0]
-        return doi.strip().strip(".;,")
+        return clean_doi(doi)
 
     @classmethod
     def _extract_doi_from_text(cls, text):
-        match = re.search(r"10\.\d{4,9}/[^\s,;\"'<>\]\)\}]+", str(text or ""), flags=re.I)
-        if not match:
-            return ""
-        return cls._clean_doi(match.group(0))
+        return extract_doi_from_text(text)
 
     @staticmethod
     def _extract_pii_from_text(text):

@@ -125,12 +125,15 @@ def clean_doi(doi: object) -> str:
     value = str(doi or "").strip()
     value = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", value, flags=re.I)
     value = re.sub(r"^doi\s*:\s*", "", value, flags=re.I)
-    value = re.split(r"[\]\)\}\s<>,;]+", value, maxsplit=1)[0]
-    return value.strip().strip(".;,")
+    value = re.split(r"[\]\}\s<>\"']+", value, maxsplit=1)[0]
+    value = value.strip().strip(".,;，。；、")
+    while value.endswith(")") and value.count(")") > value.count("("):
+        value = value[:-1].rstrip().strip(".,;，。；、")
+    return value
 
 
 def extract_doi_from_text(text: object) -> str:
-    match = re.search(r"10\.\d{4,9}/[^\s,;\"'<>\]\)\}]+", str(text or ""), flags=re.I)
+    match = re.search(r"10\.\d{4,9}/[^\s\"'<>\]\}]+", str(text or ""), flags=re.I)
     if not match:
         return ""
     return clean_doi(match.group(0))

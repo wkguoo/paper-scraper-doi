@@ -127,6 +127,46 @@ class DoiBatchUtilsTests(unittest.TestCase):
         self.assertEqual(preview.rows[0].doi, "10.1016/j.matchar.2024.113000")
         self.assertEqual(preview.rows[1].row_number, 3)
 
+    def test_extract_preserves_parenthesized_elsevier_doi(self) -> None:
+        from doi_batch_utils import extract_doi_from_text
+
+        doi = extract_doi_from_text("10.1016/0001-6160(59)90123-4")
+
+        self.assertEqual(doi, "10.1016/0001-6160(59)90123-4")
+
+    def test_preview_does_not_mark_distinct_parenthesized_dois_duplicate(self) -> None:
+        from doi_batch_utils import preview_doi_input
+
+        preview = preview_doi_input(
+            pasted_text=(
+                "10.1016/0001-6160(59)90123-4\n"
+                "10.1016/0001-6160(59)90124-6\n"
+                "10.1016/0001-6160(59)90123-4\n"
+            ),
+            limit=10,
+        )
+
+        self.assertEqual(preview.total_doi, 2)
+        self.assertEqual(preview.status_counts["valid"], 2)
+        self.assertEqual(preview.status_counts["duplicate"], 1)
+        self.assertEqual([row.status for row in preview.rows], ["valid", "valid", "duplicate"])
+
+    def test_extract_parenthesized_doi_from_markdown_link(self) -> None:
+        from doi_batch_utils import extract_doi_from_text
+
+        doi = extract_doi_from_text(
+            "[10.1016/0001-6160(59)90123-4](https://doi.org/10.1016/0001-6160(59)90123-4)"
+        )
+
+        self.assertEqual(doi, "10.1016/0001-6160(59)90123-4")
+
+    def test_extract_strips_outer_closing_parenthesis_from_wrapped_url(self) -> None:
+        from doi_batch_utils import extract_doi_from_text
+
+        doi = extract_doi_from_text("(https://doi.org/10.1016/j.actamat.2024.119999)")
+
+        self.assertEqual(doi, "10.1016/j.actamat.2024.119999")
+
     def test_preview_classifies_empty_invalid_and_duplicate_rows(self) -> None:
         from doi_batch_utils import preview_doi_input
 
