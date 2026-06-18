@@ -337,6 +337,260 @@ class ReportTests(unittest.TestCase):
         self.assertIn("source_status", retry_text)
         self.assertIn("PDF failed", retry_text)
 
+    def test_writes_run_event_jsonl_and_run_summary_json(self) -> None:
+        from doi_batch_utils import (
+            RunEvent,
+            RunSummary,
+            read_run_events,
+            write_run_event,
+            write_run_summary_json,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            event_path = out / "run_events.jsonl"
+            write_run_event(
+                event_path,
+                RunEvent(
+                    stage="resolve",
+                    status="success",
+                    row_number=2,
+                    doi="10.1016/j.actamat.2024.119999",
+                    title="Paper",
+                    pii="S123",
+                    counts={"resolved": 1},
+                ),
+            )
+            summary = RunSummary(
+                input_path="papers.csv",
+                output_dir=str(out),
+                total_doi=2,
+                resolved_count=1,
+                failure_reasons={"DOI 访问失败": 1},
+                pdf_success=1,
+                pdf_failed=0,
+                pdf_skipped=0,
+                resolved_path=str(out / "doi_batch_resolved.xlsx"),
+                failed_path=str(out / "doi_batch_failed.csv"),
+                pdf_report_path=str(out / "pdf_download_report.csv"),
+            )
+            summary_path = write_run_summary_json(summary, event_path=event_path)
+
+            events = read_run_events(event_path)
+            summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["stage"], "resolve")
+        self.assertEqual(events[0]["status"], "success")
+        self.assertEqual(events[0]["counts"]["resolved"], 1)
+        self.assertEqual(summary_data["total_doi"], 2)
+        self.assertEqual(summary_data["resolved_count"], 1)
+        self.assertEqual(summary_data["pdf_success"], 1)
+        self.assertEqual(summary_data["event_path"], str(event_path))
+
+    def test_resume_helpers_skip_only_pdf_success_and_merge_failure_rows(self) -> None:
+        from doi_batch_utils import (
+            collect_failure_table_rows,
+            collect_retry_input_rows,
+            filter_records_for_resume,
+            load_resume_success_dois,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            pdf_report = out / "pdf_download_report.csv"
+            with pdf_report.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({
+                    "doi": "10.1016/j.done.2024.1",
+                    "pii": "S1",
+                    "title": "Done",
+                    "status": "success",
+                    "file": "001_Done.pdf",
+                    "reason": "",
+                })
+                writer.writerow({
+                    "doi": "10.1016/j.pdfailed.2024.2",
+                    "pii": "S2",
+                    "title": "PDF failed",
+                    "status": "failed",
+                    "file": "",
+                    "reason": "未捕获PDF",
+                })
+
+            doi_failed = out / "doi_batch_failed.csv"
+            with doi_failed.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["row_number", "doi", "reason"])
+                writer.writeheader()
+                writer.writerow({
+                    "row_number": "4",
+                    "doi": "10.1016/j.resolvefailed.2024.3",
+                    "reason": "DOI 访问失败",
+                })
+                writer.writerow({"row_number": "5", "doi": "", "reason": "DOI 为空"})
+
+            success_dois = load_resume_success_dois(out)
+            kept, skipped = filter_records_for_resume(
+                [
+                    {"row_number": 2, "doi": "10.1016/j.done.2024.1", "title": "Done"},
+                    {"row_number": 3, "doi": "10.1016/j.pdfailed.2024.2", "title": "PDF failed"},
+                    {"row_number": 4, "doi": "10.1016/j.new.2024.4", "title": "New"},
+                ],
+                success_dois,
+            )
+            failure_rows = collect_failure_table_rows(pdf_report, doi_failed)
+            selected_retry_rows = collect_retry_input_rows(
+                pdf_report,
+                doi_failed,
+                selected_dois={"10.1016/j.resolvefailed.2024.3"},
+            )
+
+        self.assertEqual(success_dois, {"10.1016/j.done.2024.1"})
+        self.assertEqual([row["doi"] for row in kept], ["10.1016/j.pdfailed.2024.2", "10.1016/j.new.2024.4"])
+        self.assertEqual(skipped[0]["reason"], "已在历史结果中成功下载 PDF，断点恢复跳过")
+        self.assertEqual(
+            [(row["kind"], row["doi"]) for row in failure_rows],
+            [("PDF失败", "10.1016/j.pdfailed.2024.2"), ("解析失败", "10.1016/j.resolvefailed.2024.3")],
+        )
+        self.assertEqual([row["doi"] for row in selected_retry_rows], ["10.1016/j.resolvefailed.2024.3"])
+
+    def test_finds_resume_candidates_by_input_name_and_doi_overlap(self) -> None:
+        from doi_batch_utils import find_resume_candidates
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current_input = root / "papers.csv"
+            current_input.write_text("doi\n10.1016/j.done.2024.1\n", encoding="utf-8")
+
+            matched = root / "doi_batch_matched"
+            matched.mkdir()
+            (matched / "run_summary.json").write_text(
+                json.dumps({
+                    "input_path": str(root / "old" / "papers.csv"),
+                    "total_doi": 3,
+                    "pdf_report_path": str(matched / "pdf_download_report.csv"),
+                }),
+                encoding="utf-8",
+            )
+            with (matched / "pdf_download_report.csv").open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({"doi": "10.1016/j.done.2024.1", "status": "success"})
+                writer.writerow({"doi": "10.1016/j.failed.2024.2", "status": "failed"})
+
+            unrelated = root / "doi_batch_unrelated"
+            unrelated.mkdir()
+            with (unrelated / "pdf_download_report.csv").open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({"doi": "10.1016/j.other.2024.1", "status": "success"})
+
+            candidates = find_resume_candidates(
+                root,
+                input_path=current_input,
+                current_dois={"10.1016/j.done.2024.1", "10.1016/j.failed.2024.2"},
+            )
+
+        self.assertGreaterEqual(len(candidates), 2)
+        self.assertEqual(Path(candidates[0].path).name, "doi_batch_matched")
+        self.assertTrue(candidates[0].input_match)
+        self.assertEqual(candidates[0].overlap_count, 2)
+        self.assertGreater(candidates[0].score, candidates[1].score)
+
+    def test_writes_auto_retry_input_with_stats(self) -> None:
+        from doi_batch_utils import write_retry_input_from_reports
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            pdf_report = out / "pdf_download_report.csv"
+            with pdf_report.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({
+                    "doi": "10.1016/j.pdfailed.2024.1",
+                    "title": "PDF failed",
+                    "status": "failed",
+                    "reason": "未捕获PDF",
+                })
+                writer.writerow({
+                    "doi": "10.1016/j.skipped.2024.2",
+                    "title": "Skipped",
+                    "status": "skipped",
+                    "reason": "未请求下载",
+                })
+            doi_failed = out / "doi_batch_failed.csv"
+            with doi_failed.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["row_number", "doi", "title", "reason"])
+                writer.writeheader()
+                writer.writerow({
+                    "row_number": "2",
+                    "doi": "10.1016/j.resolvefailed.2024.3",
+                    "title": "Resolve failed",
+                    "reason": "DOI 访问失败",
+                })
+                writer.writerow({"row_number": "3", "doi": "", "title": "Empty", "reason": "DOI 为空"})
+                writer.writerow({
+                    "row_number": "4",
+                    "doi": "10.1016/j.duplicate.2024.4",
+                    "title": "Duplicate",
+                    "reason": "重复 DOI，已跳过",
+                })
+
+            result = write_retry_input_from_reports(pdf_report, doi_failed, out, timestamp="20260617_130000")
+            retry_text = Path(result.path).read_text(encoding="utf-8-sig")
+
+        self.assertEqual(result.row_count, 2)
+        self.assertGreaterEqual(result.excluded_count, 3)
+        self.assertIn("10.1016/j.pdfailed.2024.1", retry_text)
+        self.assertIn("10.1016/j.resolvefailed.2024.3", retry_text)
+        self.assertNotIn("10.1016/j.skipped.2024.2", retry_text)
+
+
+class CliBehaviorTests(unittest.TestCase):
+    def test_cli_auto_retry_input_generates_retry_csv_without_pdf_retrying(self) -> None:
+        import sd_scraper
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "papers.csv"
+            input_path.write_text("title,doi\nA,10.1016/j.failed.2024.1\nB,\n", encoding="utf-8")
+            output_root = root / "results"
+
+            original_argv = sys.argv[:]
+            original_resolve = sd_scraper.ScienceDirectScraper._resolve_doi_to_article
+            try:
+                sd_scraper.ScienceDirectScraper._resolve_doi_to_article = (
+                    lambda self, item: (None, "DOI 访问失败: synthetic")
+                )
+                sys.argv = [
+                    "sd_scraper.py",
+                    "-m",
+                    "doi_batch",
+                    "--input",
+                    str(input_path),
+                    "--output",
+                    str(output_root),
+                    "--filename",
+                    "run",
+                    "--auto-retry-input",
+                ]
+                sd_scraper.main()
+            finally:
+                sd_scraper.ScienceDirectScraper._resolve_doi_to_article = original_resolve
+                sys.argv = original_argv
+
+            run_dir = output_root / "run"
+            retry_files = list(run_dir.glob("retry_failed_doi_*.csv"))
+            summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+            retry_text = retry_files[0].read_text(encoding="utf-8-sig") if retry_files else ""
+
+        self.assertEqual(len(retry_files), 1)
+        self.assertIn("10.1016/j.failed.2024.1", retry_text)
+        self.assertNotIn("DOI 为空", retry_text)
+        self.assertEqual(summary["retry_input_count"], 1)
+        self.assertEqual(summary["retry_input_path"], str(retry_files[0]))
+
 
 class UiBehaviorTests(unittest.TestCase):
     def test_ui_defaults_to_doi_batch_cookie_json_workflow(self) -> None:
@@ -361,6 +615,236 @@ class UiBehaviorTests(unittest.TestCase):
             self.assertTrue(hasattr(app, "retry_failed_button"))
         finally:
             root.destroy()
+
+    def test_ui_reads_structured_events_summary_and_resume_command(self) -> None:
+        try:
+            from tkinter import Tk, messagebox
+        except Exception as exc:
+            self.skipTest(f"tkinter unavailable: {exc}")
+
+        from doi_batch_utils import RunEvent, RunSummary, write_run_event, write_run_summary_json
+        from paper_scraper_ui import PaperScraperUI
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            event_path = out / "run_events.jsonl"
+            write_run_event(
+                event_path,
+                RunEvent(
+                    stage="pdf",
+                    status="failed",
+                    doi="10.1016/j.pdfailed.2024.2",
+                    title="PDF failed",
+                    reason="未捕获PDF",
+                    counts={"pdf_success": 1, "pdf_failed": 1, "pdf_skipped": 0},
+                ),
+            )
+            pdf_report = out / "pdf_download_report.csv"
+            with pdf_report.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({
+                    "doi": "10.1016/j.pdfailed.2024.2",
+                    "pii": "S2",
+                    "title": "PDF failed",
+                    "status": "failed",
+                    "file": "",
+                    "reason": "未捕获PDF",
+                })
+            failed_report = out / "doi_batch_failed.csv"
+            with failed_report.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["row_number", "doi", "reason"])
+                writer.writeheader()
+                writer.writerow({"row_number": "3", "doi": "10.1016/j.resolvefailed.2024.3", "reason": "DOI 访问失败"})
+            summary_path = write_run_summary_json(
+                RunSummary(
+                    input_path="papers.csv",
+                    output_dir=str(out),
+                    total_doi=3,
+                    resolved_count=2,
+                    failure_reasons={"DOI 访问失败": 1},
+                    pdf_success=1,
+                    pdf_failed=1,
+                    pdf_skipped=0,
+                    failed_path=str(failed_report),
+                    pdf_report_path=str(pdf_report),
+                ),
+                event_path=event_path,
+            )
+
+            try:
+                root = Tk()
+            except Exception as exc:
+                self.skipTest(f"cannot start Tk root: {exc}")
+            root.withdraw()
+            original_info = messagebox.showinfo
+            original_error = messagebox.showerror
+            try:
+                messagebox.showinfo = lambda *args, **kwargs: None
+                messagebox.showerror = lambda *args, **kwargs: None
+                app = PaperScraperUI(root)
+                app.input_file_var.set(str(out / "papers.csv"))
+                app.resume_from_var.set(str(out))
+                cmd = app._build_command(materialize_paste=False)
+                app.last_run_output_dir = out
+                app.last_events_path = event_path
+                app.last_summary_json_path = summary_path
+                app.last_pdf_report_path = pdf_report
+                app.last_failed_report_path = failed_report
+
+                app._poll_run_events_once()
+                app._refresh_result_summary()
+                app._load_failure_table()
+                first_item = app.failure_tree.get_children()[0]
+                app.failure_tree.selection_set(first_item)
+                app.create_retry_input_from_reports(selected_only=True)
+
+                retry_path = Path(app.input_file_var.get())
+                retry_text = retry_path.read_text(encoding="utf-8-sig")
+                failure_count = len(app.failure_tree.get_children())
+                current_task = app.current_task_var.get()
+                result_summary = app.result_summary_var.get()
+            finally:
+                messagebox.showinfo = original_info
+                messagebox.showerror = original_error
+                root.destroy()
+
+        self.assertIn("--resume-from", cmd)
+        self.assertIn(str(out), cmd)
+        self.assertIn("PDF failed", current_task)
+        self.assertIn("PDF 失败: 1", result_summary)
+        self.assertEqual(failure_count, 2)
+        self.assertIn("10.1016/j.pdfailed.2024.2", retry_text)
+
+    def test_ui_smart_wizard_prepares_resume_login_and_auto_retry(self) -> None:
+        try:
+            from tkinter import Tk, messagebox
+        except Exception as exc:
+            self.skipTest(f"tkinter unavailable: {exc}")
+
+        from paper_scraper_ui import PaperScraperUI
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = Path(tmp)
+            input_path = root_dir / "papers.csv"
+            input_path.write_text(
+                "title,doi\n"
+                "A,10.1016/j.done.2024.1\n"
+                "B,10.1016/j.failed.2024.2\n"
+                "C,\n",
+                encoding="utf-8",
+            )
+            history = root_dir / "results" / "doi_batch_old"
+            history.mkdir(parents=True)
+            (history / "run_summary.json").write_text(
+                json.dumps({"input_path": str(root_dir / "old" / "papers.csv"), "total_doi": 2}),
+                encoding="utf-8",
+            )
+            with (history / "pdf_download_report.csv").open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({"doi": "10.1016/j.done.2024.1", "title": "A", "status": "success"})
+            bad_cookie = root_dir / "cookies.json"
+            bad_cookie.write_text(
+                json.dumps([{"domain": ".example.com", "name": "session", "value": "SECRET_COOKIE_VALUE"}]),
+                encoding="utf-8",
+            )
+
+            try:
+                tk_root = Tk()
+            except Exception as exc:
+                self.skipTest(f"cannot start Tk root: {exc}")
+            tk_root.withdraw()
+            original_askyesno = messagebox.askyesno
+            original_info = messagebox.showinfo
+            original_error = messagebox.showerror
+            try:
+                messagebox.askyesno = lambda *args, **kwargs: True
+                messagebox.showinfo = lambda *args, **kwargs: None
+                messagebox.showerror = lambda *args, **kwargs: None
+                app = PaperScraperUI(tk_root)
+                app.input_file_var.set(str(input_path))
+                app.output_var.set(str(root_dir / "results"))
+                app.cookies_file_var.set(str(bad_cookie))
+                app.download_pdf_var.set(True)
+                calls: list[bool] = []
+                app.run_scraper = lambda auto_retry_input=False: calls.append(bool(auto_retry_input))  # type: ignore[method-assign]
+
+                app.run_smart_doi_wizard()
+                cmd = app._build_command(materialize_paste=False, auto_retry_input=True)
+                summary = app.last_smart_wizard_summary
+            finally:
+                messagebox.askyesno = original_askyesno
+                messagebox.showinfo = original_info
+                messagebox.showerror = original_error
+                tk_root.destroy()
+
+        self.assertTrue(hasattr(app, "smart_run_button"))
+        self.assertEqual(calls, [True])
+        self.assertIn("--auto-retry-input", cmd)
+        self.assertIn("--resume-from", cmd)
+        self.assertEqual(app.resume_from_var.get(), str(history))
+        self.assertTrue(app.open_login_var.get())
+        self.assertIn("有效 DOI: 2", summary)
+        self.assertIn("断点恢复: " + str(history), summary)
+        self.assertNotIn("SECRET_COOKIE_VALUE", summary)
+
+    def test_ui_auto_retry_after_completion_fills_input_without_rerun(self) -> None:
+        try:
+            from tkinter import Tk, messagebox
+        except Exception as exc:
+            self.skipTest(f"tkinter unavailable: {exc}")
+
+        from paper_scraper_ui import PaperScraperUI
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            pdf_report = out / "pdf_download_report.csv"
+            with pdf_report.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({
+                    "doi": "10.1016/j.pdfailed.2024.1",
+                    "title": "PDF failed",
+                    "status": "failed",
+                    "reason": "未捕获PDF",
+                })
+            failed_report = out / "doi_batch_failed.csv"
+            with failed_report.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["row_number", "doi", "title", "reason"])
+                writer.writeheader()
+                writer.writerow({"row_number": "3", "doi": "", "title": "Empty", "reason": "DOI 为空"})
+
+            try:
+                tk_root = Tk()
+            except Exception as exc:
+                self.skipTest(f"cannot start Tk root: {exc}")
+            tk_root.withdraw()
+            original_info = messagebox.showinfo
+            original_error = messagebox.showerror
+            try:
+                messagebox.showinfo = lambda *args, **kwargs: None
+                messagebox.showerror = lambda *args, **kwargs: None
+                app = PaperScraperUI(tk_root)
+                app.last_run_output_dir = out
+                app.last_pdf_report_path = pdf_report
+                app.last_failed_report_path = failed_report
+                app.auto_retry_after_run = True
+
+                app._handle_auto_retry_after_completion()
+
+                retry_path = Path(app.input_file_var.get())
+                retry_exists = retry_path.exists()
+                retry_text = retry_path.read_text(encoding="utf-8-sig")
+                summary = app.result_summary_var.get()
+            finally:
+                messagebox.showinfo = original_info
+                messagebox.showerror = original_error
+                tk_root.destroy()
+
+        self.assertTrue(retry_exists)
+        self.assertIn("10.1016/j.pdfailed.2024.1", retry_text)
+        self.assertIn("已生成重试输入", summary)
 
 
 if __name__ == "__main__":

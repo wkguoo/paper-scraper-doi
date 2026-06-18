@@ -6,7 +6,7 @@ import csv
 import json
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -98,6 +98,45 @@ class RunSummary:
     failed_path: str = ""
     pdf_report_path: str = ""
     cookie_message: str = ""
+    retry_input_path: str = ""
+    retry_input_count: int = 0
+    retry_input_excluded_count: int = 0
+
+
+@dataclass(frozen=True)
+class RunEvent:
+    stage: str
+    status: str
+    timestamp: str = ""
+    row_number: int | str = ""
+    doi: str = ""
+    title: str = ""
+    pii: str = ""
+    file: str = ""
+    reason: str = ""
+    counts: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class RetryInputResult:
+    path: str
+    row_count: int
+    excluded_count: int
+    excluded_reasons: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResumeCandidate:
+    path: str
+    updated_at: str
+    has_summary_json: bool
+    has_pdf_report: bool
+    input_match: bool
+    overlap_count: int
+    overlap_total: int
+    overlap_ratio: float
+    score: float
+    reason: str = ""
 
 
 def normalize_column_name(name: object) -> str:
@@ -272,9 +311,11 @@ def write_pdf_download_report(records: list[PdfDownloadRecord], output_dir: str 
 def collect_retry_input_rows(
     pdf_report_path: str | Path | None = None,
     doi_failed_path: str | Path | None = None,
+    selected_dois: set[str] | None = None,
 ) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     seen: set[str] = set()
+    selected = {clean_doi(doi).lower() for doi in (selected_dois or set()) if clean_doi(doi)}
 
     for row in _read_csv_rows(pdf_report_path):
         if str(row.get("status") or "").strip().lower() != "failed":
@@ -283,6 +324,8 @@ def collect_retry_input_rows(
         if not doi:
             continue
         key = doi.lower()
+        if selected and key not in selected:
+            continue
         if key in seen:
             continue
         seen.add(key)
@@ -302,6 +345,8 @@ def collect_retry_input_rows(
         if not doi:
             continue
         key = doi.lower()
+        if selected and key not in selected:
+            continue
         if key in seen:
             continue
         seen.add(key)
@@ -333,6 +378,97 @@ def write_retry_input_csv(
                 "source_status": row.get("source_status", ""),
                 "reason": row.get("reason", ""),
             })
+    return path
+
+
+def write_retry_input_from_reports(
+    pdf_report_path: str | Path | None = None,
+    doi_failed_path: str | Path | None = None,
+    output_dir: str | Path | None = None,
+    timestamp: str | None = None,
+    selected_dois: set[str] | None = None,
+) -> RetryInputResult:
+    rows = collect_retry_input_rows(
+        pdf_report_path,
+        doi_failed_path,
+        selected_dois=selected_dois,
+    )
+    excluded_reasons = _retry_exclusion_counts(
+        pdf_report_path,
+        doi_failed_path,
+        selected_dois=selected_dois,
+    )
+    if not rows:
+        return RetryInputResult("", 0, sum(excluded_reasons.values()), dict(excluded_reasons))
+
+    target_dir = Path(output_dir) if output_dir else _first_existing_parent(pdf_report_path, doi_failed_path)
+    path = write_retry_input_csv(rows, target_dir, timestamp=timestamp)
+    return RetryInputResult(str(path), len(rows), sum(excluded_reasons.values()), dict(excluded_reasons))
+
+
+def write_run_event(path: str | Path, event: RunEvent) -> Path:
+    event_path = Path(path)
+    event_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = asdict(event)
+    if not payload["timestamp"]:
+        payload["timestamp"] = datetime.now().isoformat(timespec="seconds")
+    with event_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    return event_path
+
+
+def safe_write_run_event(path: str | Path | None, event: RunEvent) -> None:
+    if not path:
+        return
+    try:
+        write_run_event(path, event)
+    except Exception:
+        # Structured telemetry must never interrupt a long download task.
+        return
+
+
+def read_run_events(path: str | Path) -> list[dict[str, object]]:
+    event_path = Path(path)
+    if not event_path.exists():
+        return []
+    events: list[dict[str, object]] = []
+    with event_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            events.append(json.loads(line))
+    return events
+
+
+def write_run_summary_json(
+    summary: RunSummary,
+    event_path: str | Path | None = None,
+) -> Path:
+    output_dir = Path(summary.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "run_summary.json"
+    payload = {
+        "input_path": summary.input_path,
+        "output_dir": summary.output_dir,
+        "total_doi": summary.total_doi,
+        "resolved_count": summary.resolved_count,
+        "resolve_failed_count": sum(summary.failure_reasons.values()),
+        "failure_reasons": summary.failure_reasons,
+        "pdf_success": summary.pdf_success,
+        "pdf_failed": summary.pdf_failed,
+        "pdf_skipped": summary.pdf_skipped,
+        "resolved_path": summary.resolved_path,
+        "failed_path": summary.failed_path,
+        "pdf_report_path": summary.pdf_report_path,
+        "cookie_message": summary.cookie_message,
+        "retry_input_path": summary.retry_input_path,
+        "retry_input_count": summary.retry_input_count,
+        "retry_input_excluded_count": summary.retry_input_excluded_count,
+        "event_path": str(event_path) if event_path else "",
+        "written_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 
 
@@ -369,9 +505,13 @@ def write_run_summary(summary: RunSummary) -> Path:
         f"- DOI 失败报告: {summary.failed_path or '未生成'}",
         f"- PDF 下载报告: {summary.pdf_report_path or '未生成'}",
     ])
+    if summary.retry_input_path:
+        lines.append(f"- 重试输入表: {summary.retry_input_path}")
     if summary.cookie_message:
         lines.extend(["", f"Cookie 检查: {summary.cookie_message}"])
     lines.extend(["", "下一步建议:"])
+    if summary.retry_input_path:
+        lines.append(f"- 已生成重试输入 {summary.retry_input_count} 条；请预览确认后再手动运行。")
     if summary.pdf_failed:
         lines.append("- 若 PDF 大量失败，优先检查 Cookie 是否过期、机构权限是否可访问 PDF、Chrome 中是否出现验证码或限速提示。")
     if summary.failure_reasons:
@@ -389,6 +529,153 @@ def failure_reason_counts(failures: Iterable[dict[str, object]]) -> dict[str, in
         reason = str(item.get("reason") or "未知原因")
         counter[reason] += 1
     return dict(counter)
+
+
+def load_resume_success_dois(output_dir: str | Path | None) -> set[str]:
+    if not output_dir:
+        return set()
+    pdf_report = Path(output_dir) / "pdf_download_report.csv"
+    success: set[str] = set()
+    for row in _read_csv_rows(pdf_report):
+        if str(row.get("status") or "").strip().lower() != "success":
+            continue
+        doi = clean_doi(row.get("doi", ""))
+        if doi:
+            success.add(doi.lower())
+    return success
+
+
+def find_resume_candidates(
+    output_root: str | Path | None,
+    input_path: str | Path | None = None,
+    current_dois: Iterable[str] | None = None,
+    limit: int = 5,
+) -> list[ResumeCandidate]:
+    if not output_root:
+        return []
+    root = Path(output_root)
+    if not root.exists() or not root.is_dir():
+        return []
+
+    input_name = Path(input_path).name.lower() if input_path else ""
+    current = {clean_doi(doi).lower() for doi in (current_dois or []) if clean_doi(doi)}
+    candidates: list[ResumeCandidate] = []
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        summary_path = child / "run_summary.json"
+        pdf_report_path = child / "pdf_download_report.csv"
+        if not summary_path.exists() and not pdf_report_path.exists():
+            continue
+
+        summary_data = _read_json_object(summary_path)
+        summary_input = str(summary_data.get("input_path") or "") if summary_data else ""
+        input_match = bool(input_name and summary_input and Path(summary_input).name.lower() == input_name)
+        old_dois = _collect_report_dois(child)
+        overlap_count = len(current & old_dois) if current and old_dois else 0
+        overlap_total = min(len(current), len(old_dois)) if current and old_dois else 0
+        overlap_ratio = (overlap_count / overlap_total) if overlap_total else 0.0
+        updated_ts = _candidate_mtime(child, summary_path, pdf_report_path)
+        updated_at = datetime.fromtimestamp(updated_ts).isoformat(timespec="seconds")
+        score = (
+            (100.0 if input_match else 0.0)
+            + overlap_ratio * 50.0
+            + (10.0 if pdf_report_path.exists() else 0.0)
+            + (5.0 if summary_path.exists() else 0.0)
+            + min(updated_ts / 10_000_000_000, 1.0)
+        )
+        reasons = []
+        if input_match:
+            reasons.append("输入文件名一致")
+        if overlap_count:
+            reasons.append(f"DOI 重合 {overlap_count} 条")
+        if not reasons:
+            reasons.append("最近历史结果")
+        candidates.append(ResumeCandidate(
+            path=str(child),
+            updated_at=updated_at,
+            has_summary_json=summary_path.exists(),
+            has_pdf_report=pdf_report_path.exists(),
+            input_match=input_match,
+            overlap_count=overlap_count,
+            overlap_total=overlap_total,
+            overlap_ratio=overlap_ratio,
+            score=score,
+            reason="；".join(reasons),
+        ))
+    candidates.sort(key=lambda item: (item.score, item.updated_at), reverse=True)
+    return candidates[:limit]
+
+
+def filter_records_for_resume(
+    records: Iterable[dict[str, object]],
+    success_dois: set[str],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    kept: list[dict[str, object]] = []
+    skipped: list[dict[str, object]] = []
+    normalized_success = {doi.lower() for doi in success_dois}
+    for record in records:
+        doi = clean_doi(record.get("doi", ""))
+        if doi and doi.lower() in normalized_success:
+            skipped.append({
+                "row_number": record.get("row_number", ""),
+                "doi": doi,
+                "title": record.get("title", ""),
+                "reason": "已在历史结果中成功下载 PDF，断点恢复跳过",
+            })
+        else:
+            kept.append(dict(record))
+    return kept, skipped
+
+
+def collect_failure_table_rows(
+    pdf_report_path: str | Path | None = None,
+    doi_failed_path: str | Path | None = None,
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for row in _read_csv_rows(pdf_report_path):
+        status = str(row.get("status") or "").strip().lower()
+        if status not in {"failed", "skipped"}:
+            continue
+        doi = clean_doi(row.get("doi", ""))
+        if not doi:
+            continue
+        kind = "PDF失败" if status == "failed" else "跳过"
+        key = (kind, doi.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "kind": kind,
+            "doi": doi,
+            "title": str(row.get("title") or "").strip(),
+            "status": status,
+            "reason": str(row.get("reason") or "").strip(),
+            "source": "pdf_download_report.csv",
+        })
+
+    ignored_reasons = {"DOI 为空", "重复 DOI，已跳过"}
+    for row in _read_csv_rows(doi_failed_path):
+        doi = clean_doi(row.get("doi", ""))
+        reason = str(row.get("reason") or "").strip()
+        if not doi or reason in ignored_reasons:
+            continue
+        key = ("解析失败", doi.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "kind": "解析失败",
+            "doi": doi,
+            "title": str(row.get("title") or "").strip(),
+            "status": "failed",
+            "reason": reason,
+            "source": "doi_batch_failed.csv",
+        })
+
+    return rows
 
 
 def _read_delimited_records(path: Path, delimiter: str, doi_column: str | None) -> tuple[list[DoiRecord], str, str]:
@@ -554,6 +841,77 @@ def _read_csv_rows(path: str | Path | None) -> list[dict[str, str]]:
         except UnicodeDecodeError as exc:
             last_error = exc
     raise ValueError(f"无法识别 CSV 编码，请另存为 UTF-8；最后一次错误: {last_error}")
+
+
+def _first_existing_parent(*paths: str | Path | None) -> Path:
+    for path in paths:
+        if path:
+            candidate = Path(path)
+            if candidate.parent.exists():
+                return candidate.parent
+    return Path.cwd()
+
+
+def _retry_exclusion_counts(
+    pdf_report_path: str | Path | None = None,
+    doi_failed_path: str | Path | None = None,
+    selected_dois: set[str] | None = None,
+) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    selected = {clean_doi(doi).lower() for doi in (selected_dois or set()) if clean_doi(doi)}
+
+    for row in _read_csv_rows(pdf_report_path):
+        status = str(row.get("status") or "").strip().lower()
+        doi = clean_doi(row.get("doi", ""))
+        key = doi.lower()
+        if status == "failed":
+            if not doi:
+                counter["PDF失败 DOI 为空"] += 1
+            elif selected and key not in selected:
+                counter["未选中"] += 1
+        elif status == "skipped":
+            counter[str(row.get("reason") or "PDF 跳过").strip() or "PDF 跳过"] += 1
+
+    ignored_reasons = {"DOI 为空", "重复 DOI，已跳过"}
+    for row in _read_csv_rows(doi_failed_path):
+        reason = str(row.get("reason") or "").strip()
+        doi = clean_doi(row.get("doi", ""))
+        key = doi.lower()
+        if not doi:
+            counter[reason or "DOI 为空"] += 1
+        elif reason in ignored_reasons:
+            counter[reason] += 1
+        elif selected and key not in selected:
+            counter["未选中"] += 1
+    return counter
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _collect_report_dois(output_dir: Path) -> set[str]:
+    dois: set[str] = set()
+    for filename in ("pdf_download_report.csv", "doi_batch_failed.csv"):
+        for row in _read_csv_rows(output_dir / filename):
+            doi = clean_doi(row.get("doi", ""))
+            if doi:
+                dois.add(doi.lower())
+    return dois
+
+
+def _candidate_mtime(output_dir: Path, *paths: Path) -> float:
+    mtimes = [output_dir.stat().st_mtime]
+    for path in paths:
+        if path.exists():
+            mtimes.append(path.stat().st_mtime)
+    return max(mtimes)
 
 
 def _find_doi_column_from_records_source(path: Path, doi_column: str | None, sheet_name: str) -> str:

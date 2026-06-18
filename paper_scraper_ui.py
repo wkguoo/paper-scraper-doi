@@ -20,10 +20,14 @@ from tkinter import ttk
 
 from doi_batch_utils import (
     check_cookie_json,
+    collect_failure_table_rows,
     collect_retry_input_rows,
     extract_doi_from_text,
+    find_resume_candidates,
     preview_doi_input as preview_doi_data,
+    read_run_events,
     write_retry_input_csv,
+    write_retry_input_from_reports,
 )
 from windows_paths import chrome_bin
 
@@ -69,6 +73,7 @@ class PaperScraperUI:
         self.input_file_var = StringVar(value="")
         self.doi_column_var = StringVar(value="")
         self.sheet_var = StringVar(value="")
+        self.resume_from_var = StringVar(value="")
         self.cookies_file_var = StringVar(value=self.settings.get("cookies_file") or "")
 
         self.browser_cookies_var = BooleanVar(value=bool(self.settings.get("browser_cookies", False)))
@@ -81,12 +86,22 @@ class PaperScraperUI:
         self.command_var = StringVar(value="")
         self.summary_var = StringVar(value="")
         self.warning_var = StringVar(value="")
+        self.progress_var = StringVar(value="进度：未开始")
+        self.current_task_var = StringVar(value="当前任务：无")
+        self.progress_counts_var = StringVar(value="计数：无")
+        self.failure_filter_var = StringVar(value="全部")
         self.result_summary_var = StringVar(value="任务尚未运行。")
         self.startup_warnings = self._run_startup_checks()
         self.last_run_output_dir: Path | None = None
         self.last_failed_report_path: Path | None = None
         self.last_pdf_report_path: Path | None = None
         self.last_summary_path: Path | None = None
+        self.last_summary_json_path: Path | None = None
+        self.last_events_path: Path | None = None
+        self.last_retry_input_path: Path | None = None
+        self.last_event_count = 0
+        self.auto_retry_after_run = False
+        self.last_smart_wizard_summary = ""
         self.ui_ready = False
 
         self._build_ui()
@@ -195,14 +210,21 @@ class PaperScraperUI:
         footer.columnconfigure(0, weight=1)
 
         ttk.Label(footer, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+        self.smart_run_button = ttk.Button(
+            footer,
+            text="智能准备并运行",
+            command=self.run_smart_doi_wizard,
+            style="Primary.TButton",
+        )
+        self.smart_run_button.grid(row=0, column=1, padx=(8, 0))
         self.run_button = ttk.Button(footer, text="开始运行", command=self.run_scraper, style="Primary.TButton")
-        self.run_button.grid(row=0, column=1, padx=(8, 0))
+        self.run_button.grid(row=0, column=2, padx=(8, 0))
         self.stop_button = ttk.Button(footer, text="停止", command=self.stop_scraper, state="disabled")
-        self.stop_button.grid(row=0, column=2, padx=(8, 0))
+        self.stop_button.grid(row=0, column=3, padx=(8, 0))
         self.continue_button = ttk.Button(footer, text="登录完成，继续", command=self.send_enter, state="disabled")
-        self.continue_button.grid(row=0, column=3, padx=(8, 0))
-        ttk.Button(footer, text="打开输出目录", command=self.open_output_dir).grid(row=0, column=4, padx=(8, 0))
-        ttk.Button(footer, text="清空日志", command=self.clear_log).grid(row=0, column=5, padx=(8, 0))
+        self.continue_button.grid(row=0, column=4, padx=(8, 0))
+        ttk.Button(footer, text="打开输出目录", command=self.open_output_dir).grid(row=0, column=5, padx=(8, 0))
+        ttk.Button(footer, text="清空日志", command=self.clear_log).grid(row=0, column=6, padx=(8, 0))
 
     def _build_doi_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
@@ -272,7 +294,7 @@ class PaperScraperUI:
 
     def _build_run_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(5, weight=1)
+        frame.rowconfigure(7, weight=1)
 
         ttk.Label(frame, text="4 运行前检查", font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(frame, textvariable=self.summary_var, wraplength=1020).grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -282,8 +304,15 @@ class PaperScraperUI:
         command_entry = ttk.Entry(frame, textvariable=self.command_var, state="readonly")
         command_entry.grid(row=3, column=0, sticky="ew", pady=(0, 8))
 
+        progress = ttk.LabelFrame(frame, text="实时进度", padding=10)
+        progress.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        progress.columnconfigure(0, weight=1)
+        ttk.Label(progress, textvariable=self.progress_var).grid(row=0, column=0, sticky="w")
+        ttk.Label(progress, textvariable=self.current_task_var, wraplength=1020).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(progress, textvariable=self.progress_counts_var).grid(row=2, column=0, sticky="w", pady=(4, 0))
+
         result = ttk.LabelFrame(frame, text="结果摘要", padding=10)
-        result.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        result.grid(row=5, column=0, sticky="ew", pady=(0, 8))
         result.columnconfigure(0, weight=1)
         ttk.Label(result, textvariable=self.result_summary_var, wraplength=1020).grid(
             row=0, column=0, columnspan=6, sticky="ew"
@@ -299,10 +328,47 @@ class PaperScraperUI:
         self.retry_failed_button = ttk.Button(result, text="生成重试输入 CSV", command=self.create_retry_input_from_reports, state="disabled")
         self.retry_failed_button.grid(row=1, column=4, sticky="ew", pady=(8, 0))
 
+        failure = ttk.LabelFrame(frame, text="失败项", padding=10)
+        failure.grid(row=6, column=0, sticky="ew", pady=(0, 8))
+        failure.columnconfigure(1, weight=1)
+        ttk.Label(failure, text="筛选").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.failure_filter_combo = ttk.Combobox(
+            failure,
+            textvariable=self.failure_filter_var,
+            values=["全部", "解析失败", "PDF失败", "跳过"],
+            state="readonly",
+            width=12,
+        )
+        self.failure_filter_combo.grid(row=0, column=1, sticky="w")
+        self.failure_filter_combo.bind("<<ComboboxSelected>>", lambda _event: self._load_failure_table())
+        self.retry_selected_button = ttk.Button(
+            failure,
+            text="生成选中项重试 CSV",
+            command=lambda: self.create_retry_input_from_reports(selected_only=True),
+            state="disabled",
+        )
+        self.retry_selected_button.grid(row=0, column=2, sticky="e", padx=(8, 0))
+        self.failure_tree = ttk.Treeview(
+            failure,
+            columns=("kind", "doi", "title", "reason"),
+            show="headings",
+            height=5,
+            selectmode="extended",
+        )
+        for column, heading, width in (
+            ("kind", "类型", 90),
+            ("doi", "DOI", 230),
+            ("title", "标题", 260),
+            ("reason", "原因", 320),
+        ):
+            self.failure_tree.heading(column, text=heading)
+            self.failure_tree.column(column, width=width, stretch=column in {"title", "reason"})
+        self.failure_tree.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+
         self.log_text = Text(frame, height=18, width=120, wrap="word", font=("Consolas", 10))
-        self.log_text.grid(row=5, column=0, sticky="nsew")
+        self.log_text.grid(row=7, column=0, sticky="nsew")
         yscroll = ttk.Scrollbar(frame, orient="vertical", command=self.log_text.yview)
-        yscroll.grid(row=5, column=1, sticky="ns")
+        yscroll.grid(row=7, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=yscroll.set)
 
     def _build_search_fields(self, frame: ttk.Frame) -> None:
@@ -425,18 +491,27 @@ class PaperScraperUI:
         ttk.Label(frame, text="自定义文件名").grid(row=4, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.filename_var).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(2, 8))
 
+        next_row = 6
+        if compact:
+            ttk.Label(frame, text="历史结果目录（断点恢复）").grid(row=6, column=0, sticky="w")
+            ttk.Entry(frame, textvariable=self.resume_from_var).grid(
+                row=7, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(2, 8)
+            )
+            ttk.Button(frame, text="选择", command=self.choose_resume_dir).grid(row=7, column=2, sticky="ew", pady=(2, 8))
+            next_row = 8
+
         ttk.Checkbutton(frame, text="检索后下载 PDF", variable=self.download_pdf_var).grid(
-            row=6, column=0, columnspan=3, sticky="w", pady=(4, 2)
+            row=next_row, column=0, columnspan=3, sticky="w", pady=(4, 2)
         )
 
         ttk.Label(frame, text="高级登录方式", foreground="#444444").grid(
-            row=7, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=next_row + 1, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
         ttk.Checkbutton(frame, text="从本机 Chrome 读取 Cookie", variable=self.browser_cookies_var).grid(
-            row=8, column=0, columnspan=3, sticky="w", pady=2
+            row=next_row + 2, column=0, columnspan=3, sticky="w", pady=2
         )
         ttk.Checkbutton(frame, text="先弹出 Chrome 手动登录", variable=self.open_login_var).grid(
-            row=9, column=0, columnspan=3, sticky="w", pady=2
+            row=next_row + 3, column=0, columnspan=3, sticky="w", pady=2
         )
 
         if compact:
@@ -449,7 +524,7 @@ class PaperScraperUI:
             )
             wrap = 420
         ttk.Label(frame, text=text, foreground="#555555", wraplength=wrap).grid(
-            row=10, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+            row=next_row + 4, column=0, columnspan=3, sticky="ew", pady=(8, 0)
         )
 
     def _bind_updates(self) -> None:
@@ -469,6 +544,7 @@ class PaperScraperUI:
             self.input_file_var,
             self.doi_column_var,
             self.sheet_var,
+            self.resume_from_var,
             self.cookies_file_var,
             self.browser_cookies_var,
             self.open_login_var,
@@ -566,6 +642,13 @@ class PaperScraperUI:
             else:
                 items.append(("error", f"输出目录父目录不可写或不存在: {output_dir.parent}"))
 
+            resume_dir = self.resume_from_var.get().strip()
+            if resume_dir:
+                if Path(resume_dir).is_dir():
+                    items.append(("ok", f"断点恢复目录存在: {resume_dir}"))
+                else:
+                    items.append(("error", f"断点恢复目录不存在: {resume_dir}"))
+
         cookie_path = self.cookies_file_var.get().strip()
         if not self.download_pdf_var.get():
             items.append(("ok", "PDF 下载未开启，仅保存解析结果"))
@@ -603,6 +686,10 @@ class PaperScraperUI:
             input_path = self.input_file_var.get().strip()
             if input_path and not Path(input_path).exists():
                 messagebox.showerror("参数错误", f"输入文件不存在：\n{input_path}")
+                return False
+            resume_dir = self.resume_from_var.get().strip()
+            if resume_dir and not Path(resume_dir).is_dir():
+                messagebox.showerror("参数错误", f"断点恢复目录不存在：\n{resume_dir}")
                 return False
             if not input_path and self._get_pasted_text() and not any(
                 extract_doi_from_text(line) for line in self._get_pasted_text().splitlines()
@@ -677,7 +764,7 @@ class PaperScraperUI:
             return False
         return True
 
-    def _build_command(self, materialize_paste: bool = False) -> list[str]:
+    def _build_command(self, materialize_paste: bool = False, auto_retry_input: bool = False) -> list[str]:
         cmd = [sys.executable, "-u", str(SD_SCRIPT)]
 
         self._append_value(cmd, "-m", self.mode_var.get())
@@ -692,6 +779,7 @@ class PaperScraperUI:
                 self._append_value(cmd, "--sheet", self.sheet_var.get())
             self._append_value(cmd, "--output", self.output_var.get())
             self._append_value(cmd, "--filename", self.filename_var.get())
+            self._append_value(cmd, "--resume-from", self.resume_from_var.get())
             self._append_value(cmd, "--cookies", self.cookies_file_var.get())
             if not self.cookies_file_var.get().strip() and self.browser_cookies_var.get() and self.download_pdf_var.get():
                 cmd.append("--browser-cookies")
@@ -699,6 +787,8 @@ class PaperScraperUI:
                 cmd.append("--open-browser-login")
             if self.download_pdf_var.get():
                 cmd.append("--download-pdfs")
+            if auto_retry_input:
+                cmd.append("--auto-retry-input")
             return cmd
 
         self._append_value(cmd, "-q", self.query_var.get())
@@ -780,6 +870,11 @@ class PaperScraperUI:
         if selected:
             self.cookies_file_var.set(selected)
             self.browser_cookies_var.set(False)
+
+    def choose_resume_dir(self) -> None:
+        selected = filedialog.askdirectory(initialdir=self.output_var.get() or str(APP_DIR))
+        if selected:
+            self.resume_from_var.set(selected)
 
     def create_doi_template(self) -> None:
         selected = filedialog.asksaveasfilename(
@@ -882,40 +977,7 @@ class PaperScraperUI:
                 kind = item[0]
                 if kind == "ok":
                     preview = item[1]
-                    self._clear_preview_rows()
-                    for row in preview.rows:
-                        title = row.title.replace("\t", " ")[:120]
-                        self.preview_tree.insert(
-                            "",
-                            "end",
-                            values=(
-                                row.row_number,
-                                PREVIEW_STATUS_LABELS.get(row.status, row.status),
-                                row.doi,
-                                title,
-                                row.reason,
-                            ),
-                        )
-                    more = "" if preview.total_rows <= PREVIEW_LIMIT else f"，仅显示前 {PREVIEW_LIMIT} 行"
-                    detail = []
-                    if preview.doi_column:
-                        detail.append(f"列/方式: {preview.doi_column}")
-                    if preview.encoding:
-                        detail.append(f"编码: {preview.encoding}")
-                    if preview.sheet_name:
-                        detail.append(f"工作表: {preview.sheet_name}")
-                    counts = {
-                        key: preview.status_counts.get(key, 0)
-                        for key in ("valid", "duplicate", "empty", "invalid")
-                    }
-                    detail.append(
-                        "总行 {total}；有效 {valid}；重复 {duplicate}；空值 {empty}；异常 {invalid}".format(
-                            total=preview.total_rows,
-                            **counts,
-                        )
-                    )
-                    suffix = "；" + "，".join(detail) if detail else ""
-                    self.preview_status_var.set(f"识别到 {preview.total_doi} 条有效 DOI{more}{suffix}")
+                    self._apply_doi_preview(preview)
                     self.preview_button.configure(state="normal")
                 elif kind == "error":
                     self.preview_status_var.set("预览失败")
@@ -925,20 +987,190 @@ class PaperScraperUI:
             pass
         self.root.after(150, self._drain_preview_queue)
 
+    def _apply_doi_preview(self, preview: object) -> None:
+        self._clear_preview_rows()
+        for row in preview.rows:
+            title = row.title.replace("\t", " ")[:120]
+            self.preview_tree.insert(
+                "",
+                "end",
+                values=(
+                    row.row_number,
+                    PREVIEW_STATUS_LABELS.get(row.status, row.status),
+                    row.doi,
+                    title,
+                    row.reason,
+                ),
+            )
+        more = "" if preview.total_rows <= PREVIEW_LIMIT else f"，仅显示前 {PREVIEW_LIMIT} 行"
+        detail = []
+        if preview.doi_column:
+            detail.append(f"列/方式: {preview.doi_column}")
+        if preview.encoding:
+            detail.append(f"编码: {preview.encoding}")
+        if preview.sheet_name:
+            detail.append(f"工作表: {preview.sheet_name}")
+        counts = {
+            key: preview.status_counts.get(key, 0)
+            for key in ("valid", "duplicate", "empty", "invalid")
+        }
+        detail.append(
+            "总行 {total}；有效 {valid}；重复 {duplicate}；空值 {empty}；异常 {invalid}".format(
+                total=preview.total_rows,
+                **counts,
+            )
+        )
+        suffix = "；" + "，".join(detail) if detail else ""
+        self.preview_status_var.set(f"识别到 {preview.total_doi} 条有效 DOI{more}{suffix}")
+
     def _clear_preview_rows(self) -> None:
         if not hasattr(self, "preview_tree"):
             return
         for item_id in self.preview_tree.get_children():
             self.preview_tree.delete(item_id)
 
-    def run_scraper(self) -> None:
+    def run_smart_doi_wizard(self) -> None:
+        if self.process is not None:
+            messagebox.showinfo("正在运行", "当前任务还没有结束。")
+            return
+        try:
+            can_run, summary = self._prepare_smart_doi_wizard()
+        except Exception as exc:
+            messagebox.showerror("智能向导失败", str(exc))
+            return
+        self.last_smart_wizard_summary = summary
+        if not can_run:
+            messagebox.showerror("智能向导发现阻塞项", summary)
+            return
+        if messagebox.askyesno("智能准备并运行", summary + "\n\n确认后将开始运行。"):
+            self.run_scraper(auto_retry_input=True)
+
+    def _prepare_smart_doi_wizard(self) -> tuple[bool, str]:
+        if self.mode_var.get() != "doi_batch":
+            self.mode_var.set("doi_batch")
+
+        input_path = self.input_file_var.get().strip()
+        pasted_text = self._get_pasted_text()
+        if not input_path and not pasted_text:
+            return False, "需要先选择 DOI 文件，或粘贴 DOI 内容。"
+        if input_path and not Path(input_path).exists():
+            return False, f"输入文件不存在：{input_path}"
+
+        if input_path:
+            preview = preview_doi_data(
+                input_path=Path(input_path),
+                doi_column=self.doi_column_var.get().strip() or None,
+                sheet_name=self.sheet_var.get().strip() or None,
+                limit=PREVIEW_LIMIT,
+            )
+        else:
+            preview = preview_doi_data(
+                pasted_text=pasted_text,
+                doi_column=self.doi_column_var.get().strip() or None,
+                sheet_name=self.sheet_var.get().strip() or None,
+                limit=PREVIEW_LIMIT,
+            )
+        self._apply_doi_preview(preview)
+        if preview.doi_column and preview.doi_column != "逐行扫描" and not self.doi_column_var.get().strip():
+            self.doi_column_var.set(preview.doi_column)
+        if preview.total_doi <= 0:
+            return False, "未识别到有效 DOI，请先检查输入文件或粘贴内容。"
+
+        output_dir = Path(self.output_var.get().strip() or APP_DIR / "results")
+        output_ok, output_message = self._check_output_dir_for_wizard(output_dir)
+        if not output_ok:
+            return False, output_message
+
+        cookie_message = self._prepare_wizard_cookie_strategy()
+        current_dois = {
+            row.doi for row in preview.rows
+            if getattr(row, "status", "") == "valid" and getattr(row, "doi", "")
+        }
+        resume_message = self._prepare_wizard_resume(output_dir, input_path, current_dois)
+        self._refresh_command_preview()
+        self._refresh_task_summary()
+
+        counts = {
+            key: preview.status_counts.get(key, 0)
+            for key in ("valid", "duplicate", "empty", "invalid")
+        }
+        expected_output = self._expected_output_dir_text(output_dir)
+        lines = [
+            "智能向导已完成本地检查：",
+            f"输入来源: {input_path or '粘贴内容'}",
+            f"总行数: {preview.total_rows}",
+            "有效 DOI: {valid}；重复: {duplicate}；空值: {empty}；异常: {invalid}".format(**counts),
+            f"DOI 列/方式: {preview.doi_column or '自动识别'}",
+            f"Cookie/权限: {cookie_message}",
+            f"Chrome 登录窗口: {'是' if self.open_login_var.get() else '否'}",
+            f"断点恢复: {self.resume_from_var.get().strip() or '未启用'}",
+            f"恢复建议: {resume_message}",
+            f"预计输出目录: {expected_output}",
+            "任务结束后: 自动生成可重试 DOI CSV，并填回 DOI 输入框；不会自动开始重试。",
+        ]
+        return True, "\n".join(lines)
+
+    @staticmethod
+    def _check_output_dir_for_wizard(output_dir: Path) -> tuple[bool, str]:
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            probe = output_dir / ".write_test.tmp"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+        except Exception as exc:
+            return False, f"输出目录不可写：{exc}"
+        return True, f"输出目录可写: {output_dir}"
+
+    def _prepare_wizard_cookie_strategy(self) -> str:
+        if not self.download_pdf_var.get():
+            return "PDF 下载未开启"
+        cookie_path = self.cookies_file_var.get().strip()
+        if cookie_path:
+            cookie_check = check_cookie_json(cookie_path)
+            if cookie_check.is_usable:
+                self.browser_cookies_var.set(False)
+                self.open_login_var.set(False)
+                return cookie_check.message
+            self.cookies_file_var.set("")
+            self.browser_cookies_var.set(False)
+            self.open_login_var.set(True)
+            return f"{cookie_check.message}；已改用 Chrome 登录引导"
+        if not self.browser_cookies_var.get():
+            self.open_login_var.set(True)
+            return "未选择 Cookie JSON；已启用 Chrome 登录引导"
+        return "未选择 Cookie JSON；将尝试从本机 Chrome 读取 Cookie"
+
+    def _prepare_wizard_resume(self, output_dir: Path, input_path: str, current_dois: set[str]) -> str:
+        if self.resume_from_var.get().strip():
+            return "已使用当前填写的历史结果目录"
+        candidates = find_resume_candidates(
+            output_dir,
+            input_path=Path(input_path) if input_path else None,
+            current_dois=current_dois,
+        )
+        if not candidates:
+            return "未发现可用历史结果目录"
+        best = candidates[0]
+        if best.input_match or best.overlap_ratio >= 0.5:
+            self.resume_from_var.set(best.path)
+            return best.reason
+        return f"发现历史结果但相似度不足，未自动启用: {best.path}"
+
+    def _expected_output_dir_text(self, output_root: Path) -> str:
+        filename = self.filename_var.get().strip()
+        if filename:
+            return str(output_root / filename)
+        return str(output_root / "doi_batch_时间戳")
+
+    def run_scraper(self, auto_retry_input: bool = False) -> None:
         if self.process is not None:
             messagebox.showinfo("正在运行", "当前任务还没有结束。")
             return
         if not self._validate_inputs():
             return
 
-        cmd = self._build_command(materialize_paste=True)
+        self.auto_retry_after_run = bool(auto_retry_input and self.mode_var.get() == "doi_batch")
+        cmd = self._build_command(materialize_paste=True, auto_retry_input=self.auto_retry_after_run)
         self.command_var.set(self._format_command(cmd))
         self._refresh_task_summary()
         self._reset_result_summary()
@@ -975,6 +1207,7 @@ class PaperScraperUI:
             return
 
         self.started_at = time.time()
+        self.smart_run_button.configure(state="disabled")
         self.run_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.continue_button.configure(state="normal")
@@ -1005,17 +1238,20 @@ class PaperScraperUI:
                 drained += 1
                 if item == "__PROCESS_DONE__":
                     self.process = None
+                    self.smart_run_button.configure(state="normal")
                     self.run_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     self.continue_button.configure(state="disabled")
                     self.status_var.set("已结束")
                     self._refresh_result_summary()
+                    self._handle_auto_retry_after_completion()
                 else:
                     line = item.rstrip("\n")
                     self._capture_report_paths(line)
                     self._log(line)
         except queue.Empty:
             pass
+        self._poll_run_events_once()
         self.root.after(100, self._drain_log_queue)
 
     def _reset_result_summary(self) -> None:
@@ -1023,11 +1259,24 @@ class PaperScraperUI:
         self.last_failed_report_path = None
         self.last_pdf_report_path = None
         self.last_summary_path = None
+        self.last_summary_json_path = None
+        self.last_events_path = None
+        self.last_retry_input_path = None
+        self.last_event_count = 0
         self.result_summary_var.set("任务运行中，结束后会在这里显示报告摘要。")
+        self.progress_var.set("进度：运行中")
+        self.current_task_var.set("当前任务：等待结构化事件")
+        self.progress_counts_var.set("计数：无")
+        self._load_failure_table()
         self._update_result_buttons()
 
     def _capture_report_paths(self, line: str) -> None:
-        if "DOI 失败报告已保存 ->" in line:
+        if "结构化事件 ->" in line:
+            self.last_events_path = self._extract_report_path_from_log(line)
+            self.last_event_count = 0
+            if self.last_events_path:
+                self.last_run_output_dir = self.last_events_path.parent
+        elif "DOI 失败报告已保存 ->" in line:
             self.last_failed_report_path = self._extract_report_path_from_log(line)
         elif "PDF 下载明细已保存 ->" in line:
             self.last_pdf_report_path = self._extract_report_path_from_log(line)
@@ -1035,6 +1284,12 @@ class PaperScraperUI:
             self.last_summary_path = self._extract_report_path_from_log(line)
             if self.last_summary_path:
                 self.last_run_output_dir = self.last_summary_path.parent
+        elif "JSON 摘要已保存 ->" in line:
+            self.last_summary_json_path = self._extract_report_path_from_log(line)
+            if self.last_summary_json_path:
+                self.last_run_output_dir = self.last_summary_json_path.parent
+        elif "重试输入已保存 ->" in line:
+            self.last_retry_input_path = self._extract_report_path_from_log(line)
 
     @staticmethod
     def _extract_report_path_from_log(line: str) -> Path | None:
@@ -1050,6 +1305,12 @@ class PaperScraperUI:
     def _refresh_result_summary(self) -> None:
         if not self.last_run_output_dir and self.last_summary_path:
             self.last_run_output_dir = self.last_summary_path.parent
+
+        if self.last_summary_json_path and self.last_summary_json_path.exists():
+            self._refresh_result_summary_from_json(self.last_summary_json_path)
+            self._load_failure_table()
+            self._update_result_buttons()
+            return
 
         if not self.last_summary_path or not self.last_summary_path.exists():
             self.result_summary_var.set("任务已结束，但没有捕获到 run_summary.txt。请查看运行日志确认输出位置。")
@@ -1068,7 +1329,44 @@ class PaperScraperUI:
         if failure_reasons:
             parts.append("主要失败原因: " + "；".join(failure_reasons[:5]))
         self.result_summary_var.set("；".join(parts))
+        self._load_failure_table()
         self._update_result_buttons()
+
+    def _refresh_result_summary_from_json(self, path: Path) -> None:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.last_run_output_dir = Path(data.get("output_dir") or path.parent)
+        if data.get("failed_path") and not self.last_failed_report_path:
+            self.last_failed_report_path = Path(str(data["failed_path"]))
+        if data.get("pdf_report_path") and not self.last_pdf_report_path:
+            self.last_pdf_report_path = Path(str(data["pdf_report_path"]))
+        if data.get("event_path") and not self.last_events_path:
+            self.last_events_path = Path(str(data["event_path"]))
+        reasons = data.get("failure_reasons") or {}
+        reason_text = []
+        if isinstance(reasons, dict):
+            reason_text = [
+                f"{reason}: {count}"
+                for reason, count in sorted(reasons.items(), key=lambda item: (-int(item[1]), str(item[0])))[:5]
+            ]
+        parts = [
+            f"识别 DOI: {data.get('total_doi', '未知')}",
+            f"成功解析: {data.get('resolved_count', '未知')}",
+            f"解析失败: {data.get('resolve_failed_count', '未知')}",
+            f"PDF 成功: {data.get('pdf_success', '未知')}",
+            f"PDF 失败: {data.get('pdf_failed', '未知')}",
+            f"PDF 跳过: {data.get('pdf_skipped', '未知')}",
+        ]
+        if data.get("retry_input_path"):
+            self.last_retry_input_path = Path(str(data["retry_input_path"]))
+            parts.append(
+                "已生成重试输入: {count} 条，排除 {excluded} 条".format(
+                    count=data.get("retry_input_count", 0),
+                    excluded=data.get("retry_input_excluded_count", 0),
+                )
+            )
+        if reason_text:
+            parts.append("主要失败原因: " + "；".join(reason_text))
+        self.result_summary_var.set("；".join(parts))
 
     @staticmethod
     def _read_run_summary(path: Path) -> tuple[dict[str, str], list[str]]:
@@ -1116,6 +1414,122 @@ class PaperScraperUI:
             for path in (self.last_pdf_report_path, self.last_failed_report_path)
         )
         self.retry_failed_button.configure(state="normal" if has_retry_source else "disabled")
+        if hasattr(self, "retry_selected_button"):
+            has_selection = bool(getattr(self, "failure_tree", None) and self.failure_tree.get_children())
+            self.retry_selected_button.configure(state="normal" if has_retry_source and has_selection else "disabled")
+
+    def _poll_run_events_once(self) -> None:
+        if not self.last_events_path or not self.last_events_path.exists():
+            return
+        try:
+            events = read_run_events(self.last_events_path)
+        except Exception as exc:
+            self.current_task_var.set(f"当前任务：读取结构化事件失败：{exc}")
+            return
+        for event in events[self.last_event_count:]:
+            self._apply_run_event(event)
+        self.last_event_count = len(events)
+
+    def _apply_run_event(self, event: dict[str, object]) -> None:
+        stage = str(event.get("stage") or "")
+        status = str(event.get("status") or "")
+        doi = str(event.get("doi") or "")
+        title = str(event.get("title") or "")
+        reason = str(event.get("reason") or "")
+        counts = event.get("counts") if isinstance(event.get("counts"), dict) else {}
+        stage_label = {"resolve": "解析", "pdf": "PDF", "resume": "断点恢复"}.get(stage, stage or "任务")
+        status_label = {
+            "start": "开始",
+            "running": "进行中",
+            "success": "成功",
+            "failed": "失败",
+            "skipped": "跳过",
+            "blocked": "等待/受阻",
+            "complete": "完成",
+            "loaded": "已读取",
+        }.get(status, status or "更新")
+        subject = title or doi or reason or "(无标题)"
+        self.current_task_var.set(f"当前任务：{stage_label} {status_label} - {subject}")
+        if counts:
+            pieces = [f"{key}={value}" for key, value in counts.items()]
+            self.progress_counts_var.set("计数：" + "；".join(pieces))
+            current = counts.get("current")
+            total = counts.get("total") or counts.get("pdf_total")
+            if current and total:
+                self.progress_var.set(f"进度：{stage_label} {current}/{total}")
+            elif status == "complete":
+                self.progress_var.set(f"进度：{stage_label}完成")
+
+    def _load_failure_table(self) -> None:
+        if not hasattr(self, "failure_tree"):
+            return
+        for item_id in self.failure_tree.get_children():
+            self.failure_tree.delete(item_id)
+        filter_value = self.failure_filter_var.get()
+        rows = collect_failure_table_rows(self.last_pdf_report_path, self.last_failed_report_path)
+        for row in rows:
+            if filter_value != "全部" and row["kind"] != filter_value:
+                continue
+            self.failure_tree.insert(
+                "",
+                "end",
+                values=(row["kind"], row["doi"], row["title"], row["reason"]),
+            )
+
+    def _selected_failure_dois(self) -> set[str]:
+        if not hasattr(self, "failure_tree"):
+            return set()
+        selected: set[str] = set()
+        for item_id in self.failure_tree.selection():
+            values = self.failure_tree.item(item_id, "values")
+            if len(values) >= 2 and values[1]:
+                selected.add(str(values[1]))
+        return selected
+
+    def _handle_auto_retry_after_completion(self) -> None:
+        if not self.auto_retry_after_run:
+            return
+        self.auto_retry_after_run = False
+
+        retry_path = self.last_retry_input_path if self.last_retry_input_path and self.last_retry_input_path.exists() else None
+        retry_count = self._count_retry_csv_rows(retry_path) if retry_path else 0
+        excluded_count = 0
+        if not retry_path:
+            output_dir = self.last_run_output_dir or Path(self.output_var.get().strip() or APP_DIR / "results")
+            result = write_retry_input_from_reports(
+                self.last_pdf_report_path,
+                self.last_failed_report_path,
+                output_dir,
+            )
+            excluded_count = result.excluded_count
+            if result.path:
+                retry_path = Path(result.path)
+                retry_count = result.row_count
+                self.last_retry_input_path = retry_path
+
+        if not retry_path:
+            if excluded_count:
+                self._append_result_summary(f"未生成重试输入；不可重试/已排除 {excluded_count} 条")
+            return
+
+        self.input_file_var.set(str(retry_path))
+        self.preview_status_var.set(f"已自动生成重试输入 {retry_count} 条，建议点击预览解析")
+        self.notebook.select(self.doi_tab)
+        message = f"已生成重试输入: {retry_count} 条"
+        if excluded_count:
+            message += f"，排除 {excluded_count} 条"
+        self._append_result_summary(message)
+
+    @staticmethod
+    def _count_retry_csv_rows(path: Path | None) -> int:
+        if not path or not path.exists():
+            return 0
+        with path.open("r", newline="", encoding="utf-8-sig") as f:
+            return sum(1 for _row in csv.DictReader(f))
+
+    def _append_result_summary(self, text: str) -> None:
+        current = self.result_summary_var.get().strip()
+        self.result_summary_var.set((current + "；" if current else "") + text)
 
     def stop_scraper(self) -> None:
         if self.process is None:
@@ -1169,8 +1583,16 @@ class PaperScraperUI:
         except Exception as exc:
             messagebox.showerror("打开失败", str(exc))
 
-    def create_retry_input_from_reports(self) -> None:
-        rows = collect_retry_input_rows(self.last_pdf_report_path, self.last_failed_report_path)
+    def create_retry_input_from_reports(self, selected_only: bool = False) -> None:
+        selected_dois = self._selected_failure_dois() if selected_only else None
+        if selected_only and not selected_dois:
+            messagebox.showinfo("生成重试输入", "请先在失败项表格中选择至少一条 DOI。")
+            return
+        rows = collect_retry_input_rows(
+            self.last_pdf_report_path,
+            self.last_failed_report_path,
+            selected_dois=selected_dois,
+        )
         if not rows:
             messagebox.showinfo("生成重试输入", "当前报告中没有可重试的失败 DOI。")
             return
