@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a compact Windows-oriented ScienceDirect scraper. Core logic lives in `sd_scraper.py` for the Chinese CLI and `sd_scraper_en.py` for the English CLI. The Tkinter desktop entry point is `paper_scraper_ui.py`, with Windows path helpers in `windows_paths.py`. User documentation is in `README.md`, `README_zh.md`, `WINDOWS_UI_README.md`, plus the Chinese cookie-export guide. Windows launch and packaging scripts are `start_paper_scraper_ui.bat` and `make_windows_ui_package.bat`. Generated outputs such as `results/`, `dist/`, `pdfs/`, CSV/XLSX/JSON files, and cookies are intentionally ignored.
+This repository is a compact Windows-oriented paper download helper. Core ScienceDirect logic lives in `sd_scraper.py` for the Chinese CLI, `sd_scraper_en.py` for the English CLI, and `sd_institutional_skill.py` for the Codex ScienceDirect institutional-access skill. The legal open-access workflow lives in `paper_skill.py` and `paper_automation/`. The Tkinter desktop entry point is `paper_scraper_ui.py`, with Windows path helpers in `windows_paths.py`. Codex skills live under `skills/`. User documentation is in `README.md`, `README_zh.md`, `WINDOWS_UI_README.md`, `MANUAL_QA.md`, plus the Chinese cookie-export guide. Windows launch, skill install, and packaging scripts are `start_paper_scraper_ui.bat`, `install_codex_skills.ps1`, and `make_windows_ui_package.bat`. Generated outputs such as `results/`, `dist/`, `pdfs/`, CSV/XLSX/JSON files, and cookies are intentionally ignored.
 
 ## Build, Test, and Development Commands
 
@@ -34,7 +34,8 @@ Package the Windows UI source bundle:
 Before committing Python changes, at minimum run:
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py
+.\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 ## Coding Style & Naming Conventions
@@ -43,7 +44,7 @@ Use Python 3 with 4-space indentation, `snake_case` for functions and variables,
 
 ## Testing Guidelines
 
-There is no automated test suite yet. For new logic, add focused tests under `tests/` using `test_*.py` names, and document any required network or institutional-access assumptions. Avoid live ScienceDirect calls in default tests; prefer small local fixtures for DOI parsing, CSV/Excel handling, and path behavior.
+There is an offline unittest suite under `tests/`. For new logic, add focused tests using `test_*.py` names, and document any required network or institutional-access assumptions. Avoid live ScienceDirect calls in default tests; prefer small local fixtures for DOI parsing, CSV/Excel handling, path behavior, report generation, and skill packaging. Real institutional login and PDF-download checks belong in `MANUAL_QA.md`.
 
 ## Commit & Pull Request Guidelines
 

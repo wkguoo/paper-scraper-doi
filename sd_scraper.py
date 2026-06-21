@@ -31,6 +31,7 @@ ScienceDirect 论文抓取工具 v2.0
 
 import json
 import csv
+import hashlib
 import os
 import sys
 import re
@@ -38,7 +39,7 @@ import time
 import random
 import argparse
 from datetime import datetime
-from urllib.parse import urlencode, unquote
+from urllib.parse import parse_qs, urlencode, unquote, urlparse
 
 from curl_cffi import requests as curl_requests
 from doi_batch_utils import (
@@ -52,7 +53,14 @@ from doi_batch_utils import (
     write_pdf_download_report,
     write_run_summary,
 )
-from windows_paths import chrome_bin, chrome_debug_log, chrome_debug_profile, chrome_default_profile
+from windows_paths import (
+    BROWSER_EXE_ENV,
+    browser_candidate_paths,
+    chrome_bin,
+    chrome_debug_log,
+    chrome_debug_profile,
+    chrome_default_profile,
+)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -71,6 +79,15 @@ try:
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
+
+
+BROWSER_PROFILE_COPY_FILES = (
+    "Cookies",
+    "Cookies-journal",
+    "Preferences",
+    "Secure Preferences",
+)
+BROWSER_PROFILE_COPY_DIRS = ()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -93,6 +110,65 @@ def _dt_get_header(headers, name: str) -> str:
 def _dt_is_pdf_url(url: str) -> bool:
     low = (url or "").lower()
     return ".pdf" in low or "pdf.sciencedirectassets.com" in low
+
+
+def _is_sciencedirect_pdf_asset_url(url: str) -> bool:
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return False
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https":
+        return False
+    return host == "pdf.sciencedirectassets.com"
+
+
+def _unquote_repeated(value: str, limit: int = 3) -> str:
+    for _ in range(limit):
+        decoded = unquote(value)
+        if decoded == value:
+            break
+        value = decoded
+    return value
+
+
+def is_sciencedirect_pdf_access_url(url: str) -> bool:
+    """Return True only for real ScienceDirect PDF assets or browser PDF viewers wrapping them."""
+    url = (url or "").strip()
+    if not url:
+        return False
+    if _is_sciencedirect_pdf_asset_url(url):
+        return True
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+    if scheme == "chrome-extension":
+        if host != "mhjfbmdgcfjbbpaeojofohoefgiehjai" or not path.endswith("/index.html"):
+            return False
+    elif scheme in {"chrome", "edge"}:
+        if host != "pdf-viewer":
+            return False
+    else:
+        return False
+
+    query_values: list[str] = []
+    for values in parse_qs(parsed.query, keep_blank_values=True).values():
+        query_values.extend(values)
+    if parsed.fragment:
+        query_values.append(parsed.fragment)
+
+    for value in query_values:
+        decoded = _unquote_repeated(value)
+        embedded_urls = re.findall(r"https?://[^\s'\"<>)]*", decoded)
+        if any(_is_sciencedirect_pdf_asset_url(candidate) for candidate in embedded_urls):
+            return True
+    return False
 
 
 def _dt_is_pdf_response(response: dict) -> bool:
@@ -366,7 +442,10 @@ class ScienceDirectScraper:
                 print("[警告] Chrome 中未找到 sciencedirect.com 的 cookie，请先在 Chrome 中登录")
         except Exception as e:
             print(f"[警告] 读取 Chrome cookie 失败：{e}")
-            print("       提示：macOS 可能弹出钥匙串权限请求，请点允许")
+            if sys.platform.startswith("win"):
+                print("       提示：Windows 上可通过弹出的调试 Chrome 完成机构登录并刷新 Cookie")
+            elif sys.platform == "darwin":
+                print("       提示：macOS 可能弹出钥匙串权限请求，请点允许")
 
     def _load_cookies(self, cookies_file):
         """从 JSON 文件加载 cookies。"""
@@ -973,13 +1052,25 @@ class ScienceDirectScraper:
 
     @staticmethod
     def _make_pdf_filename(idx, article):
-        """生成 PDF 文件名：{序号}_{第一作者姓}_{年份}_{标题截断}.pdf"""
+        """生成 PDF 文件名：年份_第一作者_短题名_doihash.pdf。"""
         authors = article.get("authors", "")
-        first_author = (authors.split(";")[0].strip().split()[-1]
-                        if authors else "Unknown")
-        year = article.get("year", "")
-        safe_title = re.sub(r'[\\/*?:"<>|]', "", article.get("title", ""))[:60].strip()
-        return f"{idx:03d}_{first_author}_{year}_{safe_title}.pdf"
+        if isinstance(authors, list):
+            authors = "; ".join(str(author) for author in authors)
+        first_author = "Unknown"
+        if authors:
+            first = str(authors).split(";")[0].strip()
+            if first:
+                first_author = first.split(",")[0].strip().split()[0]
+        year_match = re.search(r"\b(19|20)\d{2}\b", str(article.get("year") or article.get("date") or ""))
+        year = year_match.group(0) if year_match else "unknown-year"
+        title = str(article.get("title") or article.get("pii") or "paper")
+        safe_title = re.sub(r'[\\/*?:"<>|]', " ", title)
+        safe_title = re.sub(r"\s+", " ", safe_title).strip()[:80] or "paper"
+        first_author = re.sub(r'[\\/*?:"<>|\s]+', "_", first_author).strip("_") or "Unknown"
+        doi = str(article.get("doi") or "").lower().strip()
+        hash_source = doi or str(article.get("pii") or idx)
+        doi_hash = hashlib.sha1(hash_source.encode("utf-8", errors="ignore")).hexdigest()[:8]
+        return f"{year}_{first_author}_{safe_title}_{doi_hash}.pdf"
 
     # ── PDF 下载（直连，无 CDP）────────────────────────────────────────────────
 
@@ -1309,7 +1400,14 @@ class ScienceDirectScraper:
 
     # ── DevTools PDF 下载（主要方法，无需 Playwright）────────────────────────
 
-    def download_pdfs_devtools(self, results, output_dir, debug_port=9222):
+    def download_pdfs_devtools(
+        self,
+        results,
+        output_dir,
+        debug_port=9222,
+        login_wait_seconds=600,
+        interactive_login=True,
+    ):
         """
         通过 Chrome DevTools Protocol 下载 PDF（纯 websocket-client，无需 Playwright）。
 
@@ -1377,18 +1475,45 @@ class ScienceDirectScraper:
             except Exception:
                 pass
 
-        def _prompt_login():
+        def _prompt_login(pii=None):
+            target = (
+                f"{self.BASE_URL}/science/article/pii/{pii}/pdfft"
+                if pii else self.BASE_URL
+            )
+            try:
+                open_tab(target)
+            except Exception:
+                pass
             print("\n" + "=" * 60)
             print("  请在弹出的 Chrome 窗口中完成机构账号登录：")
-            print("  1. 打开任意一篇 ScienceDirect 文章")
-            print("  2. 点击「View PDF」→ 用学校账号（CARSI/SZTU）登录")
+            print("  1. 如果显示学校/机构登录页，请输入你的机构账号")
+            print("  2. 如果停留在 ScienceDirect，请点击 Sign in → Access through your institution")
             print("  3. 确认 PDF 能正常显示（看到 PDF 内容，不是登录页）")
-            print("  4. 完成后回到此终端，按 Enter 继续")
+            if interactive_login:
+                print("  4. 完成后回到此终端，按 Enter 继续")
+            else:
+                print(f"  4. 本程序会自动轮询权限，最长等待 {login_wait_seconds} 秒")
             print("=" * 60)
-            try:
-                input("  >>> 登录完成后按 Enter：")
-            except EOFError:
-                print("  [提示] 非交互模式，直接继续（请确保已提前登录）")
+            if interactive_login:
+                try:
+                    input("  >>> 登录完成后按 Enter：")
+                except EOFError:
+                    print("  [提示] 非交互模式，改为自动等待并轮询权限")
+
+        def _wait_for_institutional_access(pii: str) -> bool:
+            if interactive_login:
+                return _check_institutional_access(pii)
+            deadline = time.time() + max(0, login_wait_seconds)
+            while time.time() <= deadline:
+                if _check_institutional_access(pii):
+                    return True
+                remaining = int(max(0, deadline - time.time()))
+                if remaining <= 0:
+                    break
+                wait = min(15, remaining)
+                print(f"  尚未检测到机构权限，{wait}s 后自动重试...（剩余约 {remaining}s）")
+                time.sleep(wait)
+            return False
 
         # ── 权限检查：导航到真实 pdfft URL，判断落地域名 ──────────────────────
         # 文章页面未登录也显示 sciencedirect.com，所以不能用文章页面判断。
@@ -1413,7 +1538,7 @@ class ScienceDirectScraper:
                         break
                 ws.close()
                 # 有权限 → 落到 PDF 资产服务器或 reader 页面
-                return "sciencedirectassets.com" in final_url or "pdf" in final_url.lower()
+                return is_sciencedirect_pdf_access_url(final_url)
             except Exception as e:
                 print(f"  [警告] 权限检查异常: {e}")
                 return False
@@ -1425,7 +1550,7 @@ class ScienceDirectScraper:
 
         if chrome_was_fresh:
             # Chrome 刚启动，用本机 Cookie 克隆，未必有机构登录状态
-            _prompt_login()
+            _prompt_login(test_pii)
 
         if test_pii:
             print("  检查机构访问权限（导航至 PDF URL）...")
@@ -1434,10 +1559,10 @@ class ScienceDirectScraper:
                 print("  机构访问权限确认 ✓")
             else:
                 print("  未检测到机构下载权限。")
-                _prompt_login()
+                _prompt_login(test_pii)
                 # 登录后再检查一次
                 print("  重新检查权限...")
-                if _check_institutional_access(test_pii):
+                if _wait_for_institutional_access(test_pii):
                     print("  机构访问权限确认 ✓")
                 else:
                     print("  [警告] 仍未检测到权限，将继续尝试下载（可能全部失败）")
@@ -1562,12 +1687,18 @@ class ScienceDirectScraper:
                         print("  ─────────────────────────────────────────────")
                         print("  请切换到 Chrome 窗口，完成人机验证：")
                         print("  · 勾选「I'm not a robot」或完成图片验证")
-                        print("  · 验证通过后，回到此终端按 Enter 继续")
+                        if interactive_login:
+                            print("  · 验证通过后，回到此终端按 Enter 继续")
+                        else:
+                            print("  · 验证通过后，本程序会等待片刻后自动重试")
                         print("  ─────────────────────────────────────────────")
-                        try:
-                            input("  >>> 验证完成后按 Enter：")
-                        except EOFError:
-                            time.sleep(30)
+                        if interactive_login:
+                            try:
+                                input("  >>> 验证完成后按 Enter：")
+                            except EOFError:
+                                time.sleep(30)
+                        else:
+                            time.sleep(min(max(login_wait_seconds, 30), 180))
                         pdf_bytes, note = _fetch_one(pii, pdf_url)
                     else:
                         # 速率限制：自动等待后重试（无需人工）
@@ -1642,28 +1773,11 @@ class ScienceDirectScraper:
         tmp_default = os.path.join(self.CHROME_DBG_PROFILE, "Default")
         os.makedirs(tmp_default, exist_ok=True)
 
-        # 不只复制 Cookies，还同步一部分浏览器状态。
-        # 否则调试 Chrome 只有 cookie，没有本地浏览器指纹/状态，容易被站点识别为异常环境。
-        files_to_copy = (
-            "Cookies",
-            "Cookies-journal",
-            "Preferences",
-            "Secure Preferences",
-            "History",
-            "Visited Links",
-            "Web Data",
-            "Login Data",
-        )
-        dirs_to_copy = (
-            "Network",
-            "Local Storage",
-            "Session Storage",
-            "IndexedDB",
-            "SharedStorage",
-            "WebStorage",
-        )
+        # 只复制最小浏览器状态。不要默认复制 History、Login Data、Web Data
+        # 或 Local Storage 等更敏感状态；登录不足时让用户在调试浏览器中完成认证。
+        files_to_copy = BROWSER_PROFILE_COPY_FILES
+        dirs_to_copy = BROWSER_PROFILE_COPY_DIRS
 
-        # macOS Chrome 使用系统钥匙串加密 cookie，同一台机器上可正常解密
         for fname in files_to_copy:
             src = os.path.join(default_profile, fname)
             dst = os.path.join(tmp_default, fname)
@@ -1707,7 +1821,13 @@ class ScienceDirectScraper:
                 proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT)
             print(f"  Chrome 已启动 (PID {proc.pid})，等待调试端口就绪...")
         except FileNotFoundError:
-            print(f"  [错误] 找不到 Chrome：{self.CHROME_BIN}")
+            print(f"  [错误] 找不到 Chrome/Edge/Chromium：{self.CHROME_BIN}")
+            print(f"  提示：安装 Chrome/Edge，或设置 {BROWSER_EXE_ENV} 指向可用的 chrome.exe/msedge.exe")
+            candidates = browser_candidate_paths()
+            if candidates:
+                print("  已检查候选路径：")
+                for candidate in candidates[:10]:
+                    print(f"    - {candidate}")
             return None
 
         # 最多等待 40 秒

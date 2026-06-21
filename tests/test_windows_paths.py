@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 class WindowsPathTests(unittest.TestCase):
+    def test_chrome_bin_uses_browser_env_override(self) -> None:
+        import windows_paths
+
+        override = r"D:\PortableChrome\chrome.exe"
+        with patch.dict(os.environ, {windows_paths.BROWSER_EXE_ENV: override}, clear=True), \
+                patch.object(windows_paths.sys, "platform", "win32"):
+            self.assertEqual(windows_paths.chrome_bin(), override)
+
     def test_chrome_bin_falls_back_to_edge_on_windows(self) -> None:
         import windows_paths
 
@@ -26,11 +35,31 @@ class WindowsPathTests(unittest.TestCase):
             "PROGRAMFILES(X86)": r"C:\PF86",
             "LOCALAPPDATA": r"C:\Users\Me\AppData\Local",
         }
-        with patch.dict(os.environ, env, clear=False), \
+        with patch.dict(os.environ, env, clear=True), \
                 patch.object(windows_paths.sys, "platform", "win32"), \
                 patch.object(Path, "exists", exists), \
                 patch.object(windows_paths.shutil, "which", return_value=None):
             self.assertEqual(windows_paths.chrome_bin(), str(edge))
+
+    def test_chrome_bin_falls_back_to_playwright_chromium_on_windows(self) -> None:
+        import windows_paths
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            chromium = (
+                Path(tmpdir)
+                / "ms-playwright"
+                / "chromium-1224"
+                / "chrome-win64"
+                / "chrome.exe"
+            )
+            chromium.parent.mkdir(parents=True)
+            chromium.touch()
+
+            env = {"LOCALAPPDATA": tmpdir}
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.object(windows_paths.sys, "platform", "win32"), \
+                    patch.object(windows_paths.shutil, "which", return_value=None):
+                self.assertEqual(windows_paths.chrome_bin(), str(chromium))
 
     def test_chrome_default_profile_falls_back_to_edge_profile(self) -> None:
         import windows_paths
@@ -41,7 +70,7 @@ class WindowsPathTests(unittest.TestCase):
             return path == edge_default
 
         env = {"LOCALAPPDATA": r"C:\Users\Me\AppData\Local"}
-        with patch.dict(os.environ, env, clear=False), \
+        with patch.dict(os.environ, env, clear=True), \
                 patch.object(windows_paths.sys, "platform", "win32"), \
                 patch.object(Path, "exists", exists):
             self.assertEqual(windows_paths.chrome_default_profile(), str(edge_default))

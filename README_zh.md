@@ -50,6 +50,15 @@ python -m venv .venv
 
 界面会记住最近的输出目录、Cookie 文件、窗口尺寸和常用登录选项，配置保存在 `results/_ui_settings.json`。请不要把该文件和 Cookie 一起上传到公开平台。
 
+机构登录测试后如需清理本机凭据状态，可以运行：
+
+```powershell
+Remove-Item -Recurse -Force (Join-Path $env:TEMP "chrome_dbg_profile")
+Remove-Item -Force ".\results\_auth\sciencedirect_cookies.json"
+```
+
+调试浏览器 profile 属于本机凭据状态。默认流程只复制最小浏览器状态子集，但仍不要分享该目录或 `results\_auth\`。
+
 ## DOI 表格格式
 
 最少只需要 DOI 信息。Excel/CSV 推荐表格格式如下：
@@ -118,6 +127,21 @@ D:\Literature\Papers\
 
 `manifest.csv` / `manifest.json` 会记录每篇论文的输入 DOI/标题、补全后的 DOI/标题、作者、期刊、年份、OA 状态、PDF 来源、下载状态和失败原因。无法合法自动下载的论文不会伪造成功记录，会标记为 `no_legal_open_pdf`、`needs_review`、`response_not_pdf` 等原因。
 
+## Codex Skills
+
+仓库内置两个 Codex skill，位于 `skills/`：
+
+- `sciencedirect-doi-download`：通过用户已有机构权限下载 ScienceDirect/Elsevier PDF。
+- `legal-oa-paper-download`：只用公开元数据服务解析文献并下载合法 OA PDF。
+
+安装或刷新到 Codex：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install_codex_skills.ps1
+```
+
+安装脚本会把 skill 复制到 `$CODEX_HOME\skills` 或 `%USERPROFILE%\.codex\skills`，并把当前仓库路径写入用户环境变量 `PAPER_SCRAPER_DOI_ROOT`。
+
 ## 命令行等价示例
 
 ```powershell
@@ -140,5 +164,6 @@ D:\Literature\Papers\
 
 - PDF 下载依赖你的机构权限和 `cookies.json` 是否有效。
 - 请不要把 `cookies.json` 上传到公开平台。
+- 请不要分享 `%TEMP%\chrome_dbg_profile` 或 `results\_auth\`。
 - 非 ScienceDirect/Elsevier DOI 会跳过并写入失败报告，不会中断整个任务。
 - `paper_skill.py` 只处理公开元数据和合法开放获取 PDF；需要机构登录或出版社禁止自动下载的论文会进入 manifest 的失败/待处理记录。

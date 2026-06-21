@@ -32,6 +32,15 @@ You can also paste DOI lines or an Excel-copied table into `直接粘贴 DOI 或
 
 The UI remembers the recent output directory, Cookie file, window size, and common login options in `results/_ui_settings.json`.
 
+Security cleanup after institutional login tests:
+
+```powershell
+Remove-Item -Recurse -Force (Join-Path $env:TEMP "chrome_dbg_profile")
+Remove-Item -Force ".\results\_auth\sciencedirect_cookies.json"
+```
+
+The debug browser profile is local credential state. The default workflow copies only a minimal subset of browser profile files, but neither the profile nor `results\_auth\` should be shared.
+
 Command-line equivalent:
 
 ```powershell
@@ -68,3 +77,18 @@ D:\Literature\Papers\
 ```
 
 If no legal OA PDF is found, the row stays in the manifest with a clear failure reason such as `no_legal_open_pdf`, `needs_review`, or `response_not_pdf`.
+
+## Codex Skills
+
+The repository includes two Codex skills under `skills/`:
+
+- `sciencedirect-doi-download`: ScienceDirect/Elsevier downloads through the user's institutional access.
+- `legal-oa-paper-download`: public metadata resolution and legal OA PDF downloads only.
+
+Install or refresh them for Codex:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install_codex_skills.ps1
+```
+
+The installer copies the skill folders to `$CODEX_HOME\skills` or `%USERPROFILE%\.codex\skills`, and stores this repository path in the user environment variable `PAPER_SCRAPER_DOI_ROOT`.
