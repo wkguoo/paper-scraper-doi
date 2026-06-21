@@ -202,6 +202,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
                 folder_paths=[],
                 output_dir=root / "out",
                 resolve_metadata=True,
+                resolve_title_only_files=True,
                 http_json=fake_json,
             )
 
@@ -282,6 +283,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
                 folder_paths=[],
                 output_dir=root / "out",
                 resolve_metadata=True,
+                resolve_title_only_files=True,
                 http_json=fake_json,
             )
 
@@ -291,6 +293,88 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertEqual(result.valid_count, 1)
         self.assertIn("10.1016/j.scriptamat.2025.116001", merged_text)
         self.assertIn("XLSX title only paper", preview_text)
+
+    def test_file_inputs_do_not_resolve_title_only_rows_by_default(self) -> None:
+        from sd_institutional_skill import build_intake
+
+        calls: list[str] = []
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            if "api.crossref.org/works?" in url:
+                calls.append(url)
+                return {
+                    "message": {
+                        "items": [
+                            {
+                                "DOI": "10.4028/www.scientific.net/msf.849.219",
+                                "title": ["Ti-Mo beta titanium transformation"],
+                                "publisher": "Scientific.Net",
+                            }
+                        ]
+                    }
+                }
+            return {}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            md_path = root / "papers.md"
+            md_path.write_text(
+                "| P8 | Remarkable contribution of stress-induced martensitic transformation in Ti-Mo beta-Ti alloys. "
+                "[10.1016/j.scriptamat.2024.116254](https://doi.org/10.1016/j.scriptamat.2024.116254) |\n"
+                "- P8: Ti-Mo beta-Ti stress-induced martensitic transformation 是否包含 SXRD。\n",
+                encoding="utf-8",
+            )
+
+            result = build_intake(
+                texts=[],
+                input_paths=[md_path],
+                folder_paths=[],
+                output_dir=root / "out",
+                resolve_metadata=True,
+                http_json=fake_json,
+            )
+
+            merged_text = result.merged_input_path.read_text(encoding="utf-8-sig")
+            preview_text = result.preview_path.read_text(encoding="utf-8-sig")
+
+        self.assertEqual(calls, [])
+        self.assertEqual(result.valid_count, 1)
+        self.assertIn("10.1016/j.scriptamat.2024.116254", merged_text)
+        self.assertNotIn("10.4028/www.scientific.net/msf.849.219", preview_text)
+        self.assertNotIn("10.4028/www.scientific.net/msf.849.219", merged_text)
+
+    def test_tabular_inputs_scan_explicit_doi_without_title_only_resolution_by_default(self) -> None:
+        from sd_institutional_skill import build_intake
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            csv_path = root / "mixed.csv"
+            with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["title", "notes"])
+                writer.writeheader()
+                writer.writerow({
+                    "title": "Old Acta paper",
+                    "notes": "DOI: 10.1016/S1359-6454(00)00218-4",
+                })
+                writer.writerow({
+                    "title": "Ti-Mo beta-Ti stress-induced martensitic transformation",
+                    "notes": "no explicit DOI",
+                })
+
+            result = build_intake(
+                texts=[],
+                input_paths=[csv_path],
+                folder_paths=[],
+                output_dir=root / "out",
+                resolve_metadata=True,
+                http_json=lambda *_args, **_kwargs: {},
+            )
+
+            merged_text = result.merged_input_path.read_text(encoding="utf-8-sig")
+
+        self.assertEqual(result.valid_count, 1)
+        self.assertIn("10.1016/s1359-6454(00)00218-4", merged_text)
+        self.assertNotIn("Ti-Mo beta-Ti stress-induced", merged_text)
 
     def test_choose_output_root_falls_back_when_dialog_fails(self) -> None:
         from sd_institutional_skill import choose_output_root

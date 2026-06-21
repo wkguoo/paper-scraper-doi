@@ -7,7 +7,7 @@ from doi_batch_utils import clean_doi
 from .models import PaperCandidate
 
 
-DOI_PATTERN = re.compile(r"10\.\d{4,9}/[^\s,;\"'<>\]\)\}]+", re.I)
+DOI_PATTERN = re.compile(r"10\.\d{4,9}/[^\s\"'<>\]\}]+", re.I)
 LEADING_MARKER_RE = re.compile(r"^\s*(?:\[\d+\]|\(?\d+[\).\]]|[•*#-])\s*")
 NOISE_RE = re.compile(
     r"^(download pdf|view article|abstract|full text|references?|related articles?|"

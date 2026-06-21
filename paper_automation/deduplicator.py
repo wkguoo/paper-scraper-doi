@@ -62,15 +62,16 @@ def deduplicate_candidates(
             duplicates.append(DuplicateMapping(candidate.source_index, doi_owner[doi_key], "duplicate_doi", 1.0))
             continue
 
-        title_match = _find_title_match(candidate, unique)
-        if title_match and title_match[1] >= title_threshold:
-            owner, score = title_match
-            duplicates.append(DuplicateMapping(candidate.source_index, owner.source_index, "duplicate_title", score))
-            continue
-        if title_match and title_match[1] >= uncertain_threshold:
-            owner, score = title_match
-            duplicates.append(DuplicateMapping(candidate.source_index, owner.source_index, "possible_duplicate_title", score))
-            continue
+        if not doi_key:
+            title_match = _find_title_match(candidate, unique)
+            if title_match and title_match[1] >= title_threshold:
+                owner, score = title_match
+                duplicates.append(DuplicateMapping(candidate.source_index, owner.source_index, "duplicate_title", score))
+                continue
+            if title_match and title_match[1] >= uncertain_threshold:
+                owner, score = title_match
+                duplicates.append(DuplicateMapping(candidate.source_index, owner.source_index, "possible_duplicate_title", score))
+                continue
 
         unique.append(candidate)
         if doi_key:

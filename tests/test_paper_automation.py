@@ -48,6 +48,26 @@ class ParserAndDeduplicatorTests(unittest.TestCase):
         ])
         self.assertEqual([item.status for item in candidates], ["recognized", "recognized"])
 
+    def test_parse_mixed_text_preserves_parenthesized_elsevier_dois(self) -> None:
+        from paper_automation.parser import extract_dois, parse_mixed_text
+
+        text = (
+            "[10.1016/S1359-6454(00)00218-4](https://doi.org/10.1016/S1359-6454(00)00218-4)\n"
+            "10.1016/S1359-6454(02)00134-9\n"
+            "(https://doi.org/10.1016/S1359-6454(02)00050-2)"
+        )
+
+        self.assertEqual(extract_dois(text), [
+            "10.1016/s1359-6454(00)00218-4",
+            "10.1016/s1359-6454(02)00134-9",
+            "10.1016/s1359-6454(02)00050-2",
+        ])
+        self.assertEqual([item.doi for item in parse_mixed_text(text)], [
+            "10.1016/s1359-6454(00)00218-4",
+            "10.1016/s1359-6454(02)00134-9",
+            "10.1016/s1359-6454(02)00050-2",
+        ])
+
     def test_deduplicate_uses_doi_then_normalized_title_fuzzy_match(self) -> None:
         from paper_automation.deduplicator import deduplicate_candidates
         from paper_automation.models import PaperCandidate
@@ -67,6 +87,20 @@ class ParserAndDeduplicatorTests(unittest.TestCase):
         self.assertEqual(result.duplicates[0].duplicate_of, 1)
         self.assertEqual(result.duplicates[1].reason, "duplicate_title")
         self.assertEqual(result.duplicates[1].duplicate_of, 1)
+
+    def test_deduplicate_keeps_distinct_dois_with_similar_titles(self) -> None:
+        from paper_automation.deduplicator import deduplicate_candidates
+        from paper_automation.models import PaperCandidate
+
+        candidates = [
+            PaperCandidate(source_index=1, raw_text="A", doi="10.1016/j.actamat.2024.1", title="In situ synchrotron XRD study of Ti alloy"),
+            PaperCandidate(source_index=2, raw_text="B", doi="10.1016/j.actamat.2024.2", title="In situ synchrotron XRD study of Ti alloys"),
+        ]
+
+        result = deduplicate_candidates(candidates, title_threshold=0.82)
+
+        self.assertEqual([item.source_index for item in result.unique], [1, 2])
+        self.assertEqual(result.duplicates, [])
 
 
 class MetadataAndPdfTests(unittest.TestCase):

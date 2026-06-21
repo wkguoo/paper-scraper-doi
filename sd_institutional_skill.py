@@ -128,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
             doi_column=args.doi_column,
             sheet_name=args.sheet,
             resolve_metadata=True,
+            resolve_title_only_files=args.resolve_title_only,
             email=args.email,
             min_confidence=args.min_confidence,
         )
@@ -257,6 +258,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sheet", help="Excel sheet name for all Excel inputs")
     parser.add_argument("--email", default=os.environ.get("PAPER_SKILL_EMAIL", ""), help="Email for polite Crossref/OpenAlex API use")
     parser.add_argument("--min-confidence", type=float, default=DEFAULT_METADATA_CONFIDENCE, help="Minimum title-match confidence for title-only automatic DOI use")
+    parser.add_argument("--resolve-title-only", action="store_true", help="For file/folder inputs, also try to resolve rows without explicit DOI by title")
     parser.add_argument("--choose-out", action="store_true", help="Open a Windows folder picker for the output root when available")
     parser.add_argument("--dry-run", action="store_true", help="Resolve DOI metadata but do not download PDFs")
     parser.add_argument("--no-download-pdfs", action="store_true", help="Skip PDF downloads after DOI resolution")
@@ -277,6 +279,7 @@ def build_intake(
     doi_column: str | None = None,
     sheet_name: str | None = None,
     resolve_metadata: bool = False,
+    resolve_title_only_files: bool = False,
     email: str = "",
     min_confidence: float = DEFAULT_METADATA_CONFIDENCE,
     http_json: JsonGetter | None = None,
@@ -296,6 +299,7 @@ def build_intake(
             next_id,
             doi_column=doi_column,
             sheet_name=sheet_name,
+            resolve_title_only=resolve_title_only_files,
         )
         entries.extend(new_entries)
 
@@ -306,6 +310,7 @@ def build_intake(
                 next_id,
                 doi_column=doi_column,
                 sheet_name=sheet_name,
+                resolve_title_only=resolve_title_only_files,
             )
             entries.extend(new_entries)
 
@@ -332,6 +337,25 @@ def build_intake(
 def entries_from_mixed_text(text: str, source: str, next_id: int) -> tuple[list[SourceEntry], int]:
     entries: list[SourceEntry] = []
     for candidate in parse_mixed_text(text):
+        entries.append(SourceEntry(
+            entry_id=next_id,
+            source=source,
+            row_number=candidate.source_index,
+            raw_text=candidate.raw_text,
+            doi=candidate.doi,
+            title=candidate.title,
+            initial_status=candidate.status,
+            initial_reason=candidate.reason,
+        ))
+        next_id += 1
+    return entries, next_id
+
+
+def entries_from_explicit_doi_text(text: str, source: str, next_id: int) -> tuple[list[SourceEntry], int]:
+    entries: list[SourceEntry] = []
+    for candidate in parse_mixed_text(text):
+        if not candidate.doi:
+            continue
         entries.append(SourceEntry(
             entry_id=next_id,
             source=source,
@@ -378,6 +402,7 @@ def load_entries_from_file(
     next_id: int,
     doi_column: str | None = None,
     sheet_name: str | None = None,
+    resolve_title_only: bool = False,
 ) -> tuple[list[SourceEntry], int]:
     file_path = path.expanduser().resolve()
     if not file_path.exists():
@@ -387,9 +412,15 @@ def load_entries_from_file(
         return [], next_id
 
     if file_path.suffix.lower() in {".txt", ".md", ".markdown"}:
-        return entries_from_mixed_text(read_text_file(file_path), str(file_path), next_id)
+        text = read_text_file(file_path)
+        if resolve_title_only:
+            return entries_from_mixed_text(text, str(file_path), next_id)
+        return entries_from_explicit_doi_text(text, str(file_path), next_id)
 
-    records = load_tabular_records(file_path, doi_column=doi_column, sheet_name=sheet_name)
+    if resolve_title_only:
+        records = load_tabular_records(file_path, doi_column=doi_column, sheet_name=sheet_name)
+    else:
+        records = load_explicit_doi_records(file_path, doi_column=doi_column, sheet_name=sheet_name)
     entries: list[SourceEntry] = []
     for record in records:
         normalized = extract_doi_from_text(record.doi) or extract_doi_from_text(record.raw_value)
@@ -435,6 +466,97 @@ def load_tabular_records(
     if find_column(headers, COLUMN_ALIASES["title"]):
         return load_title_only_records(path, sheet_name=sheet_name)
     return load_doi_records(path, doi_column=doi_column, sheet_name=sheet_name)
+
+
+def load_explicit_doi_records(
+    path: Path,
+    doi_column: str | None = None,
+    sheet_name: str | None = None,
+) -> list[DoiRecord]:
+    try:
+        return load_doi_records(path, doi_column=doi_column, sheet_name=sheet_name)
+    except ValueError:
+        if doi_column:
+            raise
+        return scan_tabular_rows_for_explicit_dois(path, sheet_name=sheet_name)
+
+
+def scan_tabular_rows_for_explicit_dois(path: Path, sheet_name: str | None = None) -> list[DoiRecord]:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        return scan_delimited_rows_for_explicit_dois(path, delimiter=",")
+    if suffix == ".tsv":
+        return scan_delimited_rows_for_explicit_dois(path, delimiter="\t")
+    if suffix in {".xlsx", ".xlsm"}:
+        return scan_xlsx_rows_for_explicit_dois(path, sheet_name=sheet_name)
+    raise ValueError(f"Unsupported tabular input: {path}")
+
+
+def scan_delimited_rows_for_explicit_dois(path: Path, delimiter: str) -> list[DoiRecord]:
+    last_error: Exception | None = None
+    for encoding in TEXT_ENCODINGS:
+        try:
+            records: list[DoiRecord] = []
+            with path.open("r", newline="", encoding=encoding) as f:
+                reader = csv.DictReader(f, delimiter=delimiter)
+                for row_number, row in enumerate(reader, start=2):
+                    normalized_row = {str(key or ""): value for key, value in row.items()}
+                    if extract_doi_from_text(row_text(normalized_row)):
+                        records.append(record_from_explicit_doi_row(row_number, normalized_row))
+            return records
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise ValueError(f"Unable to detect tabular encoding for {path}: {last_error}")
+
+
+def scan_xlsx_rows_for_explicit_dois(path: Path, sheet_name: str | None = None) -> list[DoiRecord]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("Reading xlsx inputs requires openpyxl") from exc
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        requested_sheet = (sheet_name or "").strip()
+        if requested_sheet and requested_sheet not in wb.sheetnames:
+            raise ValueError(f"Sheet not found: {requested_sheet}. Available sheets: {', '.join(wb.sheetnames)}")
+        found_sheet = requested_sheet or wb.sheetnames[0]
+        ws = wb[found_sheet]
+        rows_iter = ws.iter_rows(values_only=True)
+        headers_raw = next(rows_iter, None)
+        if not headers_raw:
+            return []
+        headers = [str(header).strip() if header is not None else "" for header in headers_raw]
+        records: list[DoiRecord] = []
+        for row_number, values in enumerate(rows_iter, start=2):
+            row = {headers[i]: values[i] if i < len(values) else "" for i in range(len(headers))}
+            if extract_doi_from_text(row_text(row)):
+                records.append(record_from_explicit_doi_row(row_number, row))
+        return records
+    finally:
+        wb.close()
+
+
+def record_from_explicit_doi_row(row_number: int, row: dict[str, object]) -> DoiRecord:
+    raw_value = row_text(row)
+    return DoiRecord(
+        row_number=row_number,
+        doi=extract_doi_from_text(raw_value),
+        title=row_value(row, "title"),
+        authors=row_value(row, "authors"),
+        journal=row_value(row, "journal"),
+        year=row_value(row, "year"),
+        date=row_value(row, "date"),
+        raw_value=raw_value,
+    )
+
+
+def row_text(row: dict[str, object]) -> str:
+    return " | ".join(
+        str(value).strip()
+        for value in row.values()
+        if value is not None and str(value).strip()
+    )
 
 
 def read_tabular_headers(path: Path, sheet_name: str | None = None) -> list[str]:
