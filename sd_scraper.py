@@ -44,14 +44,20 @@ from urllib.parse import parse_qs, urlencode, unquote, urlparse
 from curl_cffi import requests as curl_requests
 from doi_batch_utils import (
     PdfDownloadRecord,
+    RunEvent,
     RunSummary,
     check_cookie_json,
     clean_doi,
     extract_doi_from_text,
     failure_reason_counts,
+    filter_records_for_resume,
     load_doi_records,
+    load_resume_success_dois,
+    safe_write_run_event,
     write_pdf_download_report,
+    write_retry_input_from_reports,
     write_run_summary,
+    write_run_summary_json,
 )
 from windows_paths import (
     BROWSER_EXE_ENV,
@@ -960,7 +966,14 @@ class ScienceDirectScraper:
             "pii": pii,
         }, ""
 
-    def resolve_doi_batch(self, input_path, doi_column=None, sheet_name=None):
+    def resolve_doi_batch(
+        self,
+        input_path,
+        doi_column=None,
+        sheet_name=None,
+        resume_success_dois=None,
+        event_path=None,
+    ):
         try:
             rows, error = self._read_doi_rows(input_path, doi_column, sheet_name)
         except Exception as e:
@@ -968,25 +981,95 @@ class ScienceDirectScraper:
             rows = []
         if error:
             print(f"[错误] {error}")
+            safe_write_run_event(event_path, RunEvent(stage="resolve", status="failed", reason=error))
             return [], [{"row_number": "", "doi": "", "reason": error}]
 
         self.last_doi_batch_total_rows = len(rows)
         self.last_doi_batch_total_doi = sum(1 for item in rows if item.get("doi"))
+        resume_skipped = []
+        if resume_success_dois:
+            rows, resume_skipped = filter_records_for_resume(rows, resume_success_dois)
+            self.last_doi_batch_resume_skipped = len(resume_skipped)
         print(f"\n[DOI 批量解析] 从 {input_path} 读取 {len(rows)} 条记录")
         resolved = []
         failed = []
         seen = set()
+        safe_write_run_event(
+            event_path,
+            RunEvent(
+                stage="resolve",
+                status="start",
+                counts={
+                    "total_rows": self.last_doi_batch_total_rows,
+                    "total_doi": self.last_doi_batch_total_doi,
+                    "resume_skipped": len(resume_skipped),
+                },
+            ),
+        )
+        for item in resume_skipped:
+            print(f"  [断点恢复] 跳过已成功下载: {item.get('doi', '')}", flush=True)
+            safe_write_run_event(
+                event_path,
+                RunEvent(
+                    stage="resolve",
+                    status="skipped",
+                    row_number=item.get("row_number", ""),
+                    doi=item.get("doi", ""),
+                    title=item.get("title", ""),
+                    reason=item.get("reason", ""),
+                    counts={
+                        "resolved": len(resolved),
+                        "failed": len(failed),
+                        "resume_skipped": len(resume_skipped),
+                    },
+                ),
+            )
         for idx, item in enumerate(rows, start=1):
             doi = item["doi"]
             print(f"  [{idx}/{len(rows)}] 开始解析: {doi or '(空 DOI)'}", flush=True)
+            safe_write_run_event(
+                event_path,
+                RunEvent(
+                    stage="resolve",
+                    status="running",
+                    row_number=item.get("row_number", ""),
+                    doi=doi,
+                    title=item.get("title", ""),
+                    counts={"current": idx, "total": len(rows), "resolved": len(resolved), "failed": len(failed)},
+                ),
+            )
             if not doi:
                 failed.append({"row_number": item["row_number"], "doi": "", "reason": "DOI 为空"})
                 print(f"  [{idx}/{len(rows)}] 跳过：第 {item['row_number']} 行 DOI 为空", flush=True)
+                safe_write_run_event(
+                    event_path,
+                    RunEvent(
+                        stage="resolve",
+                        status="skipped",
+                        row_number=item.get("row_number", ""),
+                        doi="",
+                        title=item.get("title", ""),
+                        reason="DOI 为空",
+                        counts={"current": idx, "total": len(rows), "resolved": len(resolved), "failed": len(failed)},
+                    ),
+                )
                 continue
             doi_key = doi.lower()
             if doi_key in seen:
                 failed.append({"row_number": item["row_number"], "doi": doi, "reason": "重复 DOI，已跳过"})
                 print(f"  [{idx}/{len(rows)}] 跳过重复 DOI: {doi}", flush=True)
+                safe_write_run_event(
+                    event_path,
+                    RunEvent(
+                        stage="resolve",
+                        status="skipped",
+                        row_number=item.get("row_number", ""),
+                        doi=doi,
+                        title=item.get("title", ""),
+                        reason="重复 DOI，已跳过",
+                        counts={"current": idx, "total": len(rows), "resolved": len(resolved), "failed": len(failed)},
+                    ),
+                )
                 continue
             seen.add(doi_key)
 
@@ -994,10 +1077,42 @@ class ScienceDirectScraper:
             if article:
                 resolved.append(article)
                 print(f"  [{idx}/{len(rows)}] 已解析: {doi} -> {article['pii']}", flush=True)
+                safe_write_run_event(
+                    event_path,
+                    RunEvent(
+                        stage="resolve",
+                        status="success",
+                        row_number=item.get("row_number", ""),
+                        doi=doi,
+                        title=article.get("title", ""),
+                        pii=article.get("pii", ""),
+                        counts={"current": idx, "total": len(rows), "resolved": len(resolved), "failed": len(failed)},
+                    ),
+                )
             else:
                 failed.append({"row_number": item["row_number"], "doi": doi, "reason": reason})
                 print(f"  [{idx}/{len(rows)}] 解析失败: {doi} ({reason})", flush=True)
+                safe_write_run_event(
+                    event_path,
+                    RunEvent(
+                        stage="resolve",
+                        status="failed",
+                        row_number=item.get("row_number", ""),
+                        doi=doi,
+                        title=item.get("title", ""),
+                        reason=reason,
+                        counts={"current": idx, "total": len(rows), "resolved": len(resolved), "failed": len(failed)},
+                    ),
+                )
             self._delay()
+        safe_write_run_event(
+            event_path,
+            RunEvent(
+                stage="resolve",
+                status="complete",
+                counts={"resolved": len(resolved), "failed": len(failed), "resume_skipped": len(resume_skipped)},
+            ),
+        )
         return resolved, failed
 
     def save_failed_doi_report(self, failures, filename, output_dir):
@@ -1407,6 +1522,7 @@ class ScienceDirectScraper:
         debug_port=9222,
         login_wait_seconds=600,
         interactive_login=True,
+        event_path=None,
     ):
         """
         通过 Chrome DevTools Protocol 下载 PDF（纯 websocket-client，无需 Playwright）。
@@ -1421,6 +1537,7 @@ class ScienceDirectScraper:
         """
         total = len(results)
         pdf_records = []
+        success = skip = fail = 0
 
         def _record(article, status, file="", reason=""):
             pdf_records.append(PdfDownloadRecord(
@@ -1431,12 +1548,31 @@ class ScienceDirectScraper:
                 file=file,
                 reason=reason,
             ))
+            safe_write_run_event(
+                event_path,
+                RunEvent(
+                    stage="pdf",
+                    status=status,
+                    doi=article.get("doi", ""),
+                    title=article.get("title", ""),
+                    pii=article.get("pii", ""),
+                    file=file,
+                    reason=reason,
+                    counts={
+                        "pdf_success": success,
+                        "pdf_failed": fail,
+                        "pdf_skipped": skip,
+                        "pdf_total": total,
+                    },
+                ),
+            )
 
         try:
             import websocket
         except ImportError:
             print("[错误] 需要 websocket-client：pip install websocket-client")
             for article in results:
+                fail += 1
                 _record(article, "failed", reason="缺少 websocket-client 依赖")
             return 0, total, 0, pdf_records
 
@@ -1445,9 +1581,9 @@ class ScienceDirectScraper:
 
         pdf_dir = os.path.join(output_dir, "pdfs")
         os.makedirs(pdf_dir, exist_ok=True)
-        success = skip = fail = 0
 
         print(f"\n[DevTools PDF 下载]  共 {total} 篇，保存至 {pdf_dir}")
+        safe_write_run_event(event_path, RunEvent(stage="pdf", status="start", counts={"pdf_total": total}))
 
         # 启动 / 连接 Chrome
         chrome_was_fresh = not self._is_chrome_debug_ready()
@@ -1457,6 +1593,7 @@ class ScienceDirectScraper:
             if not self._is_chrome_debug_ready():
                 print("[错误] Chrome 调试端口仍不可用，PDF 下载中止")
                 for article in results:
+                    fail += 1
                     _record(article, "failed", reason="Chrome 调试端口不可用")
                 return success, total, skip, pdf_records
         else:
@@ -1684,6 +1821,18 @@ class ScienceDirectScraper:
                         # CAPTCHA：等待无效，必须人工在 Chrome 里点一次验证
                         # 点完后整个会话恢复，后续篇目无需再次干预
                         print(f"\n  🔒 [{idx}/{total}] Elsevier 要求人机验证（CAPTCHA）")
+                        safe_write_run_event(
+                            event_path,
+                            RunEvent(
+                                stage="pdf",
+                                status="blocked",
+                                doi=article.get("doi", ""),
+                                title=article.get("title", ""),
+                                pii=pii,
+                                reason="CAPTCHA",
+                                counts={"current": idx, "pdf_total": total},
+                            ),
+                        )
                         print("  ─────────────────────────────────────────────")
                         print("  请切换到 Chrome 窗口，完成人机验证：")
                         print("  · 勾选「I'm not a robot」或完成图片验证")
@@ -1703,6 +1852,18 @@ class ScienceDirectScraper:
                     else:
                         # 速率限制：自动等待后重试（无需人工）
                         print(f"  [{idx}/{total}] ⏳ 速率限制，等 {BLOCK_WAIT_1}s（约 {BLOCK_WAIT_1//60} 分钟）后自动重试...")
+                        safe_write_run_event(
+                            event_path,
+                            RunEvent(
+                                stage="pdf",
+                                status="blocked",
+                                doi=article.get("doi", ""),
+                                title=article.get("title", ""),
+                                pii=pii,
+                                reason="rate_limit",
+                                counts={"current": idx, "pdf_total": total},
+                            ),
+                        )
                         _tab_navigate("about:blank", wait=2)
                         time.sleep(BLOCK_WAIT_1)
                         pdf_bytes, note = _fetch_one(pii, pdf_url)
@@ -1741,6 +1902,14 @@ class ScienceDirectScraper:
             close_tab(p_tab["id"])
 
         print(f"\n[完成] 成功: {success}  失败: {fail}  跳过: {skip}")
+        safe_write_run_event(
+            event_path,
+            RunEvent(
+                stage="pdf",
+                status="complete",
+                counts={"pdf_success": success, "pdf_failed": fail, "pdf_skipped": skip, "pdf_total": total},
+            ),
+        )
         return success, fail, skip, pdf_records
 
     # ── Chrome CDP（保留为备用，调试用）──────────────────────────────────────
@@ -2356,6 +2525,10 @@ def build_parser():
                         help="DOI 列名；不填时自动识别 doi/DOI/DOI号")
     parser.add_argument("--sheet",
                         help="Excel 工作表名；不填时读取第一个工作表")
+    parser.add_argument("--resume-from",
+                        help="DOI 批量断点恢复目录；仅对 doi_batch 模式生效")
+    parser.add_argument("--auto-retry-input", action="store_true",
+                        help="DOI 批量任务结束后自动生成可重试 DOI CSV；仅对 doi_batch 模式生效")
     return parser
 
 
@@ -2375,6 +2548,10 @@ def main():
     if not args.mode and not args.login_only:
         parser.print_help()
         return
+    if args.resume_from and args.mode != "doi_batch":
+        print("提示: --resume-from 仅支持 doi_batch 模式，当前模式将忽略该参数。")
+    if args.auto_retry_input and args.mode != "doi_batch":
+        print("提示: --auto-retry-input 仅支持 doi_batch 模式，当前模式将忽略该参数。")
 
     scraper = ScienceDirectScraper(
         cookies_file=args.cookies,
@@ -2414,9 +2591,30 @@ def main():
             os.path.dirname(os.path.abspath(__file__)), "results")
         output_dir = os.path.join(output_root, base)
         os.makedirs(output_dir, exist_ok=True)
+        event_path = os.path.join(output_dir, "run_events.jsonl")
+        print(f"[报告] 结构化事件 -> {event_path}")
+
+        resume_success_dois = set()
+        if args.resume_from:
+            resume_success_dois = load_resume_success_dois(args.resume_from)
+            print(f"[断点恢复] 从 {args.resume_from} 读取到 {len(resume_success_dois)} 条已成功 PDF DOI，将跳过这些 DOI。")
+            safe_write_run_event(
+                event_path,
+                RunEvent(
+                    stage="resume",
+                    status="loaded",
+                    reason=str(args.resume_from),
+                    counts={"success_dois": len(resume_success_dois)},
+                ),
+            )
 
         results, failures = scraper.resolve_doi_batch(
-            args.input_file, doi_column=args.doi_column, sheet_name=args.sheet)
+            args.input_file,
+            doi_column=args.doi_column,
+            sheet_name=args.sheet,
+            resume_success_dois=resume_success_dois,
+            event_path=event_path,
+        )
 
         resolved_path = ""
         if results:
@@ -2429,7 +2627,7 @@ def main():
         pdf_success = pdf_failed = pdf_skipped = 0
         pdf_records = []
         if args.download_pdfs and results:
-            download_result = scraper.download_pdfs_devtools(results, output_dir)
+            download_result = scraper.download_pdfs_devtools(results, output_dir, event_path=event_path)
             if download_result:
                 pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
             else:
@@ -2459,12 +2657,31 @@ def main():
             ]
 
         pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
+        retry_input_path = ""
+        retry_input_count = 0
+        retry_input_excluded_count = 0
+        if args.auto_retry_input:
+            retry_result = write_retry_input_from_reports(
+                pdf_report_path,
+                failed_path,
+                output_dir,
+            )
+            retry_input_path = retry_result.path
+            retry_input_count = retry_result.row_count
+            retry_input_excluded_count = retry_result.excluded_count
+            if retry_result.path:
+                print(
+                    f"[报告] 重试输入已保存 -> {retry_result.path}  "
+                    f"（可重试 {retry_result.row_count} 条；排除 {retry_result.excluded_count} 条）"
+                )
+            else:
+                print(f"[报告] 未发现可重试失败 DOI，未生成重试输入。排除 {retry_result.excluded_count} 条。")
         total_doi = getattr(
             scraper,
             "last_doi_batch_total_doi",
             len(results) + sum(1 for item in failures if item.get("doi")),
         )
-        summary_path = write_run_summary(RunSummary(
+        summary = RunSummary(
             input_path=args.input_file,
             output_dir=output_dir,
             total_doi=total_doi,
@@ -2477,9 +2694,15 @@ def main():
             failed_path=failed_path,
             pdf_report_path=str(pdf_report_path),
             cookie_message=cookie_message,
-        ))
+            retry_input_path=retry_input_path,
+            retry_input_count=retry_input_count,
+            retry_input_excluded_count=retry_input_excluded_count,
+        )
+        summary_path = write_run_summary(summary)
+        summary_json_path = write_run_summary_json(summary, event_path=event_path)
         print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")
         print(f"[报告] 任务摘要已保存 -> {summary_path}")
+        print(f"[报告] JSON 摘要已保存 -> {summary_json_path}")
         return
 
     results = []
