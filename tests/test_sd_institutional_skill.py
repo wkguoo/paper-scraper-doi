@@ -525,6 +525,44 @@ class InstitutionalSkillCookieTests(unittest.TestCase):
 
 
 class InstitutionalSkillFilenameTests(unittest.TestCase):
+    def test_resolve_doi_to_article_fills_sciencedirect_citation_metadata(self) -> None:
+        from sd_scraper import ScienceDirectScraper
+
+        class FakeResponse:
+            url = "https://www.sciencedirect.com/science/article/pii/S1359645424000012"
+            text = """
+            <html><head>
+              <meta name="citation_title" content="High entropy alloy deformation mechanisms">
+              <meta name="citation_author" content="Zhang Wei">
+              <meta name="citation_author" content="Li Qiang">
+              <meta name="citation_publication_date" content="2024/05/10">
+              <meta name="citation_journal_title" content="Acta Materialia">
+            </head></html>
+            """
+
+        class FakeSession:
+            def get(self, *_args, **_kwargs):
+                return FakeResponse()
+
+        scraper = ScienceDirectScraper()
+        scraper.session = FakeSession()
+        article, error = scraper._resolve_doi_to_article({
+            "doi": "10.1016/j.actamat.2024.119999",
+            "title": "",
+            "authors": "",
+            "journal": "",
+            "year": "",
+            "date": "",
+        })
+
+        self.assertEqual(error, "")
+        self.assertIsNotNone(article)
+        assert article is not None
+        self.assertEqual(article["title"], "High entropy alloy deformation mechanisms")
+        self.assertEqual(article["authors"], "Zhang Wei; Li Qiang")
+        self.assertEqual(article["journal"], "Acta Materialia")
+        self.assertEqual(article["year"], "2024")
+
     def test_sciencedirect_filename_uses_metadata_and_doi_hash(self) -> None:
         from sd_scraper import ScienceDirectScraper
 
@@ -541,6 +579,22 @@ class InstitutionalSkillFilenameTests(unittest.TestCase):
         self.assertTrue(filename.startswith("2024_Zhang_A B C D gamma-TiAl alloy test_"))
         self.assertTrue(filename.endswith(".pdf"))
         self.assertNotRegex(filename, r'[<>:"/\\|?*]')
+
+    def test_sciencedirect_filename_uses_doi_fallback_without_unknown_labels(self) -> None:
+        from sd_scraper import ScienceDirectScraper
+
+        filename = ScienceDirectScraper._make_pdf_filename(
+            1,
+            {
+                "pii": "S1359645424000012",
+                "doi": "10.1016/j.actamat.2024.119999",
+            },
+        )
+
+        self.assertTrue(filename.startswith("undated_no-author_DOI 10.1016 j.actamat.2024.119999_"))
+        self.assertNotIn("unknown-year", filename)
+        self.assertNotIn("Unknown", filename)
+        self.assertTrue(filename.endswith(".pdf"))
 
 
 class ScienceDirectPdfAccessUrlTests(unittest.TestCase):

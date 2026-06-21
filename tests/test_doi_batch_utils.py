@@ -656,6 +656,51 @@ class UiBehaviorTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_ui_legal_oa_mode_builds_paper_skill_command(self) -> None:
+        try:
+            from tkinter import Tk
+        except Exception as exc:
+            self.skipTest(f"tkinter unavailable: {exc}")
+
+        from paper_scraper_ui import PaperScraperUI
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = Path(tmp)
+            input_path = root_dir / "papers.md"
+            input_path.write_text("DOI: 10.1038/example\n", encoding="utf-8")
+
+            try:
+                root = Tk()
+            except Exception as exc:
+                self.skipTest(f"cannot start Tk root: {exc}")
+            root.withdraw()
+            try:
+                app = PaperScraperUI(root)
+                app.workflow_var.set("legal_oa")
+                app.oa_input_file_var.set(str(input_path))
+                app.output_var.set(str(root_dir / "out"))
+                app.oa_email_var.set("researcher@example.com")
+                app.oa_limit_var.set("5")
+                app.oa_dry_run_var.set(True)
+                cmd = app._build_command(materialize_paste=False)
+                summary = app.summary_var.get()
+            finally:
+                root.destroy()
+
+        self.assertTrue(any(part.endswith("paper_skill.py") for part in cmd))
+        self.assertIn("--input", cmd)
+        self.assertIn(str(input_path), cmd)
+        self.assertIn("--out", cmd)
+        self.assertIn(str(root_dir / "out"), cmd)
+        self.assertIn("--email", cmd)
+        self.assertIn("researcher@example.com", cmd)
+        self.assertIn("--limit", cmd)
+        self.assertIn("5", cmd)
+        self.assertIn("--dry-run", cmd)
+        self.assertNotIn("--cookies", cmd)
+        self.assertNotIn("--browser-cookies", cmd)
+        self.assertIn("合法 OA 下载", summary)
+
     def test_ui_reads_structured_events_summary_and_resume_command(self) -> None:
         try:
             from tkinter import Tk, messagebox

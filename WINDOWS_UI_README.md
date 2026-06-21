@@ -1,6 +1,6 @@
 # ScienceDirect Paper Scraper Windows UI
 
-这个界面使用 Python 标准库 `tkinter` 编写，不需要额外安装 GUI 框架。当前版本只保留 ScienceDirect。
+这个界面使用 Python 标准库 `tkinter` 编写，不需要额外安装 GUI 框架。当前版本提供 ScienceDirect 机构权限下载和合法 OA 下载两个入口。
 
 ## 来源声明
 
@@ -23,7 +23,12 @@ cd "C:\Users\wkguopro\Documents\New project 2\paper-scraper-main"
 .\start_paper_scraper_ui.bat
 ```
 
-## 当前推荐操作流程：DOI 批量下载 PDF
+## UI 中的两个入口
+
+- `DOI 批量下载` / `文献检索`：用于 ScienceDirect/Elsevier，依赖你的机构权限、Cookie JSON 或浏览器登录状态，PDF 下载仍使用原有 CDP/DevTools 流程。
+- `合法 OA 下载`：用于非 ScienceDirect 或混合来源论文列表，只查找公开、合法开放获取的 PDF，不读取 Cookie、不打开机构登录浏览器。
+
+## 当前推荐操作流程：ScienceDirect DOI 批量下载 PDF
 
 界面默认打开“DOI 批量下载”页，并按步骤分成“1 数据来源”“2 权限与输出”“3 预览检查”和底部运行按钮。
 
@@ -37,6 +42,16 @@ cd "C:\Users\wkguopro\Documents\New project 2\paper-scraper-main"
 不要勾选“从本机 Chrome 读取 Cookie”，也不要勾选“先弹出 Chrome 手动登录”。使用 Cookie Editor 导出的 `cookies.json` 时，程序会通过 `--cookies` 参数读取该文件。
 
 也可以不选择文件，直接把 DOI 列表或从 Excel 复制出的表格粘贴到“直接粘贴 DOI 或表格内容”。点击“预览解析”后，界面只显示前 200 条，但会统计全部 DOI 数量；点击“开始运行”时会自动生成临时 CSV。
+
+## 合法 OA 下载流程
+
+1. 打开“合法 OA 下载”页。
+2. 选择 `.txt/.md/.markdown/.csv` 文件，或直接粘贴 DOI、标题、推荐文献列表。
+3. 选择输出目录；邮箱可选，用于 Unpaywall/Crossref 礼貌访问。
+4. 如需先检查识别结果，勾选 `Dry-run：只解析，不下载 PDF`。
+5. 点击“开始运行”，日志页会显示 `manifest.csv`、`manifest.json` 和重复项报告位置。
+
+该模式不会使用 Cookie JSON，也不会使用 Sci-Hub、LibGen 或其它绕过权限的来源。
 
 ## 输入表要求
 

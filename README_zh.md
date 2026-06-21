@@ -31,7 +31,16 @@ python -m venv .venv
 
 首次双击启动会自动创建 `.venv` 并安装依赖；如果安装失败，窗口会保留错误信息。
 
-## 当前推荐用法：DOI 批量下载 PDF
+## 图形界面中的两个下载模式
+
+图形界面现在提供两个入口：
+
+- `DOI 批量下载` 和 `文献检索`：面向 ScienceDirect/Elsevier，使用你的机构权限、Cookie JSON 或浏览器登录状态，底层仍走原有 CDP/DevTools PDF 下载机制。
+- `合法 OA 下载`：面向非 ScienceDirect 或混合来源论文列表，调用 `paper_skill.py`，只下载明确合法开放获取的 PDF，不读取 Cookie、不打开机构登录浏览器、不绕过付费墙。
+
+如果你的文献大多是 `10.1016/...` 或明确来自 ScienceDirect，优先用 `DOI 批量下载`。如果来源混杂，且只想找公开可合法下载的 PDF，用 `合法 OA 下载`。
+
+## 当前推荐用法：ScienceDirect DOI 批量下载 PDF
 
 适用于你已经有一批文献表格，表格中包含 DOI 列，并且已经用浏览器 Cookie Editor 导出了 `cookies.json` 的情况。
 
@@ -90,9 +99,11 @@ results\doi_batch_20260616_120000\
 - `run_summary.txt`：本次任务摘要、失败原因分组和下一步建议。
 - `pdfs`：下载成功的 PDF 文件。
 
-## 新增：混合文本识别与合法 OA PDF 下载
+## 混合文本识别与合法 OA PDF 下载
 
-如果你复制的是一大段格式混乱的论文信息，而不只是标准 DOI 表格，可以使用独立命令 `paper_skill.py`。它会自动识别 DOI 和标题候选、去重、通过公开元数据服务补全文献信息，并且只下载明确可合法开放获取的 PDF 候选。这个流程不使用 ScienceDirect Cookie，不读取本机浏览器 Cookie，不绕过付费墙，也不会使用 Sci-Hub、LibGen 等侵权来源。
+如果你复制的是一大段格式混乱的论文信息，而不只是标准 DOI 表格，可以在图形界面中打开“合法 OA 下载”页，选择 `.txt/.md/.markdown/.csv` 文件或直接粘贴文本。该模式会调用 `paper_skill.py`，自动识别 DOI 和标题候选、去重、通过公开元数据服务补全文献信息，并且只下载明确可合法开放获取的 PDF 候选。这个流程不使用 ScienceDirect Cookie，不读取本机浏览器 Cookie，不绕过付费墙，也不会使用 Sci-Hub、LibGen 等侵权来源。
+
+对应命令行也可以直接使用 `paper_skill.py`。
 
 推荐先 dry-run 检查识别和可下载情况：
 

@@ -33,6 +33,7 @@ from windows_paths import chrome_bin
 
 APP_DIR = Path(__file__).resolve().parent
 SD_SCRIPT = APP_DIR / "sd_scraper.py"
+OA_SCRIPT = APP_DIR / "paper_skill.py"
 SETTINGS_FILE = APP_DIR / "results" / "_ui_settings.json"
 PREVIEW_LIMIT = 200
 LOG_DRAIN_LIMIT = 200
@@ -48,7 +49,7 @@ PREVIEW_STATUS_LABELS = {
 class PaperScraperUI:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("ScienceDirect Paper Scraper")
+        self.root.title("Paper Download UI")
         self.settings = self._load_settings_data()
         self.root.geometry(self.settings.get("geometry") or "1180x800")
         self.root.minsize(980, 680)
@@ -59,6 +60,7 @@ class PaperScraperUI:
         self.started_at: float | None = None
 
         self.mode_var = StringVar(value="doi_batch")
+        self.workflow_var = StringVar(value="sciencedirect")
         self.query_var = StringVar(value="")
         self.journal_var = StringVar(value="")
         self.author_var = StringVar(value="")
@@ -75,11 +77,16 @@ class PaperScraperUI:
         self.sheet_var = StringVar(value="")
         self.resume_from_var = StringVar(value="")
         self.cookies_file_var = StringVar(value=self.settings.get("cookies_file") or "")
+        self.oa_input_file_var = StringVar(value="")
+        self.oa_email_var = StringVar(value=self.settings.get("oa_email") or "")
+        self.oa_limit_var = StringVar(value="")
 
         self.browser_cookies_var = BooleanVar(value=bool(self.settings.get("browser_cookies", False)))
         self.open_login_var = BooleanVar(value=bool(self.settings.get("open_login", False)))
         self.download_pdf_var = BooleanVar(value=bool(self.settings.get("download_pdf", True)))
         self.open_access_var = BooleanVar(value=False)
+        self.oa_dry_run_var = BooleanVar(value=False)
+        self.oa_overwrite_var = BooleanVar(value=False)
 
         self.status_var = StringVar(value="就绪")
         self.preview_status_var = StringVar(value="未预览")
@@ -136,6 +143,7 @@ class PaperScraperUI:
                 "browser_cookies": bool(self.browser_cookies_var.get()),
                 "open_login": bool(self.open_login_var.get()),
                 "download_pdf": bool(self.download_pdf_var.get()),
+                "oa_email": self.oa_email_var.get().strip(),
                 "active_tab": self.notebook.index(self.notebook.select()) if hasattr(self, "notebook") else 0,
             }
             SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -179,10 +187,10 @@ class PaperScraperUI:
         header = ttk.Frame(root_frame)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="ScienceDirect 论文抓取集成界面", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="论文下载集成界面", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
-            text="推荐流程：1 数据来源  →  2 权限与输出  →  3 预览检查  →  4 开始运行",
+            text="推荐流程：选择下载模式  →  填写数据来源  →  检查权限与输出  →  开始运行",
             style="Step.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
@@ -191,14 +199,17 @@ class PaperScraperUI:
 
         self.doi_tab = ttk.Frame(self.notebook, padding=10)
         self.search_tab = ttk.Frame(self.notebook, padding=10)
+        self.oa_tab = ttk.Frame(self.notebook, padding=10)
         self.run_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.doi_tab, text="DOI 批量下载")
         self.notebook.add(self.search_tab, text="文献检索")
+        self.notebook.add(self.oa_tab, text="合法 OA 下载")
         self.notebook.add(self.run_tab, text="运行日志")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self._build_doi_tab(self.doi_tab)
         self._build_search_tab(self.search_tab)
+        self._build_oa_tab(self.oa_tab)
         self._build_run_tab(self.run_tab)
         try:
             self.notebook.select(int(self.settings.get("active_tab", 0)))
@@ -291,6 +302,72 @@ class PaperScraperUI:
         options = ttk.LabelFrame(frame, text="2 权限与输出", padding=10)
         options.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         self._build_common_options(options, compact=False)
+
+    def _build_oa_tab(self, frame: ttk.Frame) -> None:
+        frame.columnconfigure(0, weight=3)
+        frame.columnconfigure(1, weight=2)
+        frame.rowconfigure(0, weight=1)
+
+        source = ttk.LabelFrame(frame, text="1 合法 OA 数据来源", padding=10)
+        source.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        source.columnconfigure(0, weight=1)
+        source.columnconfigure(1, weight=1)
+        source.columnconfigure(2, weight=0)
+        source.rowconfigure(3, weight=1)
+
+        ttk.Label(source, text="输入文件").grid(row=0, column=0, sticky="w")
+        ttk.Entry(source, textvariable=self.oa_input_file_var).grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(2, 8)
+        )
+        ttk.Button(source, text="选择", command=self.choose_oa_input_file).grid(row=1, column=2, sticky="ew", pady=(2, 8))
+
+        ttk.Label(source, text="或直接粘贴 DOI、标题、推荐文献列表").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        )
+        self.oa_text = Text(source, height=16, width=72, wrap="word", font=("Consolas", 9))
+        self.oa_text.grid(row=3, column=0, columnspan=3, sticky="nsew", pady=(2, 6))
+        self.oa_text.bind("<KeyRelease>", self._on_oa_text_changed)
+        self.oa_text.bind("<<Paste>>", self._on_oa_text_changed)
+
+        ttk.Button(source, text="清空粘贴", command=self.clear_oa_text).grid(row=4, column=0, sticky="ew", padx=(0, 8))
+        ttk.Label(
+            source,
+            text="支持 .txt/.md/.markdown/.csv。该模式只查找明确合法开放获取 PDF，不使用机构 Cookie。",
+            foreground="#555555",
+            wraplength=620,
+        ).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+
+        options = ttk.LabelFrame(frame, text="2 输出与 OA 参数", padding=10)
+        options.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        for i in range(3):
+            options.columnconfigure(i, weight=1)
+
+        ttk.Label(options, text="输出目录").grid(row=0, column=0, sticky="w")
+        ttk.Entry(options, textvariable=self.output_var).grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(2, 8)
+        )
+        ttk.Button(options, text="选择", command=self.choose_output_dir).grid(row=1, column=2, sticky="ew", pady=(2, 8))
+
+        ttk.Label(options, text="邮箱（用于 Unpaywall/Crossref 礼貌访问，可选）").grid(
+            row=2, column=0, columnspan=3, sticky="w"
+        )
+        ttk.Entry(options, textvariable=self.oa_email_var).grid(row=3, column=0, columnspan=3, sticky="ew", pady=(2, 8))
+
+        ttk.Label(options, text="测试限制数量（可选）").grid(row=4, column=0, sticky="w")
+        ttk.Entry(options, textvariable=self.oa_limit_var).grid(row=5, column=0, sticky="ew", padx=(0, 8), pady=(2, 8))
+
+        ttk.Checkbutton(options, text="Dry-run：只解析，不下载 PDF", variable=self.oa_dry_run_var).grid(
+            row=6, column=0, columnspan=3, sticky="w", pady=(4, 2)
+        )
+        ttk.Checkbutton(options, text="覆盖已存在 PDF", variable=self.oa_overwrite_var).grid(
+            row=7, column=0, columnspan=3, sticky="w", pady=2
+        )
+        ttk.Label(
+            options,
+            text="合法 OA 模式不会读取 Cookie JSON、不会打开机构登录浏览器，也不会使用 Sci-Hub/LibGen。",
+            foreground="#555555",
+            wraplength=420,
+        ).grid(row=8, column=0, columnspan=3, sticky="ew", pady=(12, 0))
 
     def _build_run_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
@@ -529,6 +606,7 @@ class PaperScraperUI:
 
     def _bind_updates(self) -> None:
         for var in (
+            self.workflow_var,
             self.mode_var,
             self.query_var,
             self.journal_var,
@@ -546,10 +624,15 @@ class PaperScraperUI:
             self.sheet_var,
             self.resume_from_var,
             self.cookies_file_var,
+            self.oa_input_file_var,
+            self.oa_email_var,
+            self.oa_limit_var,
             self.browser_cookies_var,
             self.open_login_var,
             self.download_pdf_var,
             self.open_access_var,
+            self.oa_dry_run_var,
+            self.oa_overwrite_var,
         ):
             var.trace_add("write", self._on_parameter_changed)
 
@@ -561,19 +644,39 @@ class PaperScraperUI:
     def _on_paste_text_changed(self, *_args: object) -> None:
         self.root.after_idle(self._on_parameter_changed)
 
+    def _on_oa_text_changed(self, *_args: object) -> None:
+        self.root.after_idle(self._on_parameter_changed)
+
     def _on_tab_changed(self, _event: object) -> None:
         selected = self.notebook.select()
         if selected == str(self.doi_tab):
+            self.workflow_var.set("sciencedirect")
             if self.mode_var.get() != "doi_batch":
                 self.mode_var.set("doi_batch")
         elif selected == str(self.search_tab):
+            self.workflow_var.set("sciencedirect")
             if self.mode_var.get() == "doi_batch":
                 self.mode_var.set("keyword")
+        elif selected == str(self.oa_tab):
+            self.workflow_var.set("legal_oa")
         self._refresh_task_summary()
         if self.ui_ready:
             self._save_settings()
 
     def _refresh_task_summary(self) -> None:
+        if self.workflow_var.get() == "legal_oa":
+            output_dir = self.output_var.get().strip() or "(默认 results)"
+            input_text = self.oa_input_file_var.get().strip() or ("粘贴内容" if self._get_oa_text() else "未选择")
+            action = "仅解析" if self.oa_dry_run_var.get() else "下载合法 OA PDF"
+            limit = self.oa_limit_var.get().strip() or "不限制"
+            summary = f"合法 OA 下载：输入={input_text}；输出={output_dir}；任务={action}；限制数量={limit}；不使用 Cookie/机构登录。"
+            self.summary_var.set(summary)
+            preflight_items = self._get_preflight_items()
+            warnings = [message for level, message in preflight_items if level != "ok"]
+            self.warning_var.set("；".join(warnings))
+            self._refresh_preflight_panel(preflight_items)
+            return
+
         mode = self.mode_var.get()
         output_dir = self.output_var.get().strip() or "(默认 results)"
         cookie_path = self.cookies_file_var.get().strip()
@@ -613,7 +716,34 @@ class PaperScraperUI:
         self._refresh_preflight_panel(preflight_items)
 
     def _get_preflight_items(self) -> list[tuple[str, str]]:
-        items: list[tuple[str, str]] = [("warn", warning) for warning in self.startup_warnings]
+        if self.workflow_var.get() == "legal_oa":
+            items: list[tuple[str, str]] = []
+            input_path = self.oa_input_file_var.get().strip()
+            pasted_text = self._get_oa_text()
+            if input_path:
+                if Path(input_path).exists():
+                    items.append(("ok", f"OA 输入文件存在: {input_path}"))
+                else:
+                    items.append(("error", f"OA 输入文件不存在: {input_path}"))
+            elif pasted_text:
+                items.append(("ok", "已填写 OA 粘贴内容"))
+            else:
+                items.append(("error", "合法 OA 模式需要选择输入文件或粘贴论文列表"))
+
+            output_dir = Path(self.output_var.get().strip() or APP_DIR / "results")
+            if output_dir.exists():
+                if output_dir.is_dir() and os.access(output_dir, os.W_OK):
+                    items.append(("ok", f"输出目录可写: {output_dir}"))
+                else:
+                    items.append(("error", f"输出目录不可写: {output_dir}"))
+            elif output_dir.parent.exists() and os.access(output_dir.parent, os.W_OK):
+                items.append(("warn", f"输出目录不存在，运行时会尝试创建: {output_dir}"))
+            else:
+                items.append(("error", f"输出目录父目录不可写或不存在: {output_dir.parent}"))
+            items.append(("ok", "合法 OA 模式不使用 Cookie、机构登录或付费墙绕过"))
+            return items
+
+        items = [("warn", warning) for warning in self.startup_warnings]
         if self.mode_var.get() == "doi_batch":
             input_path = self.input_file_var.get().strip()
             pasted_text = self._get_pasted_text()
@@ -675,6 +805,33 @@ class PaperScraperUI:
         self.preflight_text.configure(state="disabled")
 
     def _validate_inputs(self) -> bool:
+        if self.workflow_var.get() == "legal_oa":
+            input_path = self.oa_input_file_var.get().strip()
+            if not input_path and not self._get_oa_text():
+                messagebox.showerror("参数错误", "合法 OA 下载模式需要选择输入文件，或粘贴论文列表。")
+                return False
+            if input_path and not Path(input_path).exists():
+                messagebox.showerror("参数错误", f"输入文件不存在：\n{input_path}")
+                return False
+            limit = self.oa_limit_var.get().strip()
+            if limit:
+                try:
+                    if int(limit) <= 0:
+                        raise ValueError
+                except ValueError:
+                    messagebox.showerror("参数错误", "测试限制数量必须是正整数，例如 20。")
+                    return False
+            try:
+                output_dir = Path(self.output_var.get().strip() or APP_DIR / "results")
+                output_dir.mkdir(parents=True, exist_ok=True)
+                probe = output_dir / ".write_test.tmp"
+                probe.write_text("ok", encoding="utf-8")
+                probe.unlink(missing_ok=True)
+            except Exception as exc:
+                messagebox.showerror("输出目录不可写", str(exc))
+                return False
+            return True
+
         if (
             self.mode_var.get() == "doi_batch"
             and not self.input_file_var.get().strip()
@@ -765,6 +922,25 @@ class PaperScraperUI:
         return True
 
     def _build_command(self, materialize_paste: bool = False, auto_retry_input: bool = False) -> list[str]:
+        if self.workflow_var.get() == "legal_oa":
+            cmd = [sys.executable, "-u", str(OA_SCRIPT)]
+            input_path = self.oa_input_file_var.get().strip()
+            if input_path:
+                self._append_value(cmd, "--input", input_path)
+            elif self._get_oa_text():
+                if materialize_paste:
+                    self._append_value(cmd, "--input", str(self._write_pasted_oa_text()))
+                else:
+                    self._append_value(cmd, "--text", "<粘贴内容将在运行时传入>")
+            self._append_value(cmd, "--out", self.output_var.get())
+            self._append_value(cmd, "--email", self.oa_email_var.get())
+            self._append_value(cmd, "--limit", self.oa_limit_var.get())
+            if self.oa_dry_run_var.get():
+                cmd.append("--dry-run")
+            if self.oa_overwrite_var.get():
+                cmd.append("--overwrite")
+            return cmd
+
         cmd = [sys.executable, "-u", str(SD_SCRIPT)]
 
         self._append_value(cmd, "-m", self.mode_var.get())
@@ -859,6 +1035,19 @@ class PaperScraperUI:
             self.input_file_var.set(selected)
             self.preview_status_var.set("已选择文件，建议点击预览解析")
 
+    def choose_oa_input_file(self) -> None:
+        selected = filedialog.askopenfilename(
+            initialdir=str(APP_DIR),
+            filetypes=[
+                ("合法 OA 输入文件", "*.txt *.md *.markdown *.csv"),
+                ("纯文本/Markdown", "*.txt *.md *.markdown"),
+                ("CSV 文件", "*.csv"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if selected:
+            self.oa_input_file_var.set(selected)
+
     def choose_cookies_file(self) -> None:
         selected = filedialog.askopenfilename(
             initialdir=str(APP_DIR),
@@ -905,6 +1094,11 @@ class PaperScraperUI:
             return ""
         return self.paste_text.get("1.0", "end").strip()
 
+    def _get_oa_text(self) -> str:
+        if not hasattr(self, "oa_text"):
+            return ""
+        return self.oa_text.get("1.0", "end").strip()
+
     @staticmethod
     def _extract_doi_from_text(text: str) -> str:
         return extract_doi_from_text(text)
@@ -930,10 +1124,26 @@ class PaperScraperUI:
             writer.writerows(rows)
         return out_path
 
+    def _write_pasted_oa_text(self) -> Path:
+        text = self._get_oa_text()
+        if not text:
+            raise ValueError("合法 OA 粘贴内容为空")
+        out_dir = APP_DIR / "results" / "_ui_inputs"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"pasted_oa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        out_path.write_text(text, encoding="utf-8")
+        return out_path
+
     def clear_paste_text(self) -> None:
         self.paste_text.delete("1.0", "end")
         self._clear_preview_rows()
         self.preview_status_var.set("未预览")
+        self._refresh_command_preview()
+        self._refresh_task_summary()
+
+    def clear_oa_text(self) -> None:
+        if hasattr(self, "oa_text"):
+            self.oa_text.delete("1.0", "end")
         self._refresh_command_preview()
         self._refresh_task_summary()
 
@@ -1032,6 +1242,9 @@ class PaperScraperUI:
     def run_smart_doi_wizard(self) -> None:
         if self.process is not None:
             messagebox.showinfo("正在运行", "当前任务还没有结束。")
+            return
+        if self.workflow_var.get() == "legal_oa":
+            messagebox.showinfo("智能准备并运行", "智能准备并运行仅用于 ScienceDirect DOI 批量下载。合法 OA 模式请直接点击“开始运行”。")
             return
         try:
             can_run, summary = self._prepare_smart_doi_wizard()
@@ -1169,7 +1382,9 @@ class PaperScraperUI:
         if not self._validate_inputs():
             return
 
-        self.auto_retry_after_run = bool(auto_retry_input and self.mode_var.get() == "doi_batch")
+        self.auto_retry_after_run = bool(
+            auto_retry_input and self.workflow_var.get() == "sciencedirect" and self.mode_var.get() == "doi_batch"
+        )
         cmd = self._build_command(materialize_paste=True, auto_retry_input=self.auto_retry_after_run)
         self.command_var.set(self._format_command(cmd))
         self._refresh_task_summary()
@@ -1290,6 +1505,10 @@ class PaperScraperUI:
                 self.last_run_output_dir = self.last_summary_json_path.parent
         elif "重试输入已保存 ->" in line:
             self.last_retry_input_path = self._extract_report_path_from_log(line)
+        elif "Manifest CSV:" in line:
+            manifest_path = self._extract_colon_path_from_log(line)
+            if manifest_path:
+                self.last_run_output_dir = manifest_path.parents[1] if len(manifest_path.parents) > 1 else manifest_path.parent
 
     @staticmethod
     def _extract_report_path_from_log(line: str) -> Path | None:
@@ -1298,6 +1517,15 @@ class PaperScraperUI:
         path_text = line.split("->", 1)[1].strip()
         for marker in ("  （", " （", "\t"):
             path_text = path_text.split(marker, 1)[0].strip()
+        if not path_text:
+            return None
+        return Path(path_text.strip('"'))
+
+    @staticmethod
+    def _extract_colon_path_from_log(line: str) -> Path | None:
+        if ":" not in line:
+            return None
+        path_text = line.split(":", 1)[1].strip()
         if not path_text:
             return None
         return Path(path_text.strip('"'))
@@ -1313,6 +1541,12 @@ class PaperScraperUI:
             return
 
         if not self.last_summary_path or not self.last_summary_path.exists():
+            if self.workflow_var.get() == "legal_oa" and self.last_run_output_dir:
+                self.result_summary_var.set(
+                    f"合法 OA 任务已结束；请查看输出目录中的 metadata\\manifest.csv 和 failed\\duplicates.csv：{self.last_run_output_dir}"
+                )
+                self._update_result_buttons()
+                return
             self.result_summary_var.set("任务已结束，但没有捕获到 run_summary.txt。请查看运行日志确认输出位置。")
             self._update_result_buttons()
             return

@@ -71,3 +71,43 @@
   - 本次不改变 PDF 下载核心逻辑，只新增统一 skill 入口和文档说明。
   - 安装到 `C:\Users\wkguopro\.codex\skills` 后，当前 Codex 会话可能需要重启或新开会话才能在技能列表中显示 `$paper-download`。
   - 本次没有重新打包 Windows UI。
+
+## 2026-06-22 00:10:32
+
+- 本次任务目标：为 UI 新增合法 OA 下载模式，并修复 ScienceDirect PDF 文件名元数据缺失导致的 `unknown-year_Unknown_S...pdf` 问题。
+- 新增、修改或删除的文件：
+  - 修改 `paper_scraper_ui.py`
+  - 修改 `sd_scraper.py`
+  - 修改 `tests/test_doi_batch_utils.py`
+  - 修改 `tests/test_sd_institutional_skill.py`
+  - 修改 `README_zh.md`
+  - 修改 `WINDOWS_UI_README.md`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - UI 新增“合法 OA 下载”页，支持选择 `.txt/.md/.markdown/.csv` 文件或直接粘贴论文列表，调用 `paper_skill.py`。
+  - 合法 OA 模式支持输出目录、邮箱、dry-run、覆盖已存在 PDF、limit 参数；不使用 Cookie JSON、Chrome/Edge 机构登录或付费墙绕过。
+  - ScienceDirect DOI 解析时从页面 HTML 的 `citation_title`、`citation_author`、`citation_publication_date`、`citation_journal_title` 补全标题、作者、年份和期刊。
+  - PDF 文件名生成改为优先使用 `年份_第一作者_标题_短hash.pdf`；没有元数据时用 DOI/PII 兜底，不再优先生成 `unknown-year_Unknown_S...pdf`。
+  - 增加 UI 命令构造测试、ScienceDirect 元数据补全测试和无元数据文件名兜底测试。
+- 修改原因：
+  - Skill 已有 ScienceDirect 与合法 OA 两条下载路径，但 UI 之前只有 ScienceDirect 入口。
+  - 部分 DOI 批量下载结果缺少标题、作者、年份，导致 PDF 文件名可读性差，不便于文献整理。
+- 如何运行：
+  - 启动 UI：`.\start_paper_scraper_ui.bat`
+  - ScienceDirect：打开“DOI 批量下载”页，选择 DOI 表和 Cookie JSON，勾选“检索后下载 PDF”，点击“开始运行”。
+  - 合法 OA：打开“合法 OA 下载”页，选择文件或粘贴论文列表，选择输出目录，按需勾选 dry-run，点击“开始运行”。
+  - 语法检查：`.\.venv\Scripts\python.exe -m py_compile sd_scraper.py paper_scraper_ui.py sd_institutional_skill.py paper_skill.py`
+  - 单元测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+- 生成的输出文件：
+  - 本次没有正式下载论文，没有生成新的 PDF 结果目录。
+  - ScienceDirect 运行时仍生成 `doi_batch_resolved.xlsx`、`doi_batch_failed.csv`、`pdf_download_report.csv`、`run_summary.txt` 和 `pdfs\`。
+  - 合法 OA 运行时生成 `pdfs\`、`metadata\manifest.csv`、`metadata\manifest.json`、`failed\duplicates.csv` 等。
+- 如何检查是否成功：
+  - UI 命令预览中，ScienceDirect 页仍显示 `sd_scraper.py` 命令。
+  - UI 命令预览中，合法 OA 页显示 `paper_skill.py --input ... --out ...` 或粘贴内容对应的临时输入文件。
+  - ScienceDirect 下载出的 PDF 文件名应包含年份、第一作者和标题；缺少元数据时至少使用 DOI/PII 兜底，不再出现 `unknown-year_Unknown_S...` 作为优先形式。
+  - 新增和完整单元测试应全部通过。
+- 注意事项或潜在风险：
+  - 本次不改变 ScienceDirect CDP/DevTools 下载机制，不改变机构权限和 Cookie 使用方式。
+  - 合法 OA 模式只下载明确开放获取的 PDF；无法合法下载的论文会写入 manifest 的失败或待复核状态。
+  - 本次没有重新打包 Windows UI。

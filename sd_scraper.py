@@ -32,6 +32,7 @@ ScienceDirect 论文抓取工具 v2.0
 import json
 import csv
 import hashlib
+import html
 import os
 import sys
 import re
@@ -841,6 +842,40 @@ class ScienceDirectScraper:
                 return m.group(1)
         return ""
 
+    @staticmethod
+    def _extract_citation_metadata(html_text):
+        if not html_text:
+            return {}
+        meta: dict[str, list[str]] = {}
+        attr_re = re.compile(r'([a-zA-Z_:.-]+)\s*=\s*(".*?"|\'.*?\'|[^\s>]+)', flags=re.S)
+        for tag_match in re.finditer(r"<meta\b[^>]*>", html_text, flags=re.I | re.S):
+            attrs = {}
+            for key, raw_value in attr_re.findall(tag_match.group(0)):
+                value = raw_value.strip().strip('"\'')
+                attrs[key.lower()] = html.unescape(value).strip()
+            name = (attrs.get("name") or attrs.get("property") or "").lower()
+            content = attrs.get("content") or ""
+            if name.startswith("citation_") and content:
+                meta.setdefault(name, []).append(content)
+
+        title = (meta.get("citation_title") or [""])[0]
+        authors = "; ".join(meta.get("citation_author") or [])
+        journal = (meta.get("citation_journal_title") or meta.get("citation_publication") or [""])[0]
+        date = (
+            meta.get("citation_publication_date")
+            or meta.get("citation_online_date")
+            or meta.get("citation_date")
+            or [""]
+        )[0]
+        year_match = re.search(r"\b(19|20)\d{2}\b", date)
+        return {
+            "title": title,
+            "authors": authors,
+            "journal": journal,
+            "date": date,
+            "year": year_match.group(0) if year_match else "",
+        }
+
     def _read_doi_rows_from_csv(self, input_path):
         last_error = None
         for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk", "cp936"):
@@ -949,14 +984,15 @@ class ScienceDirectScraper:
             return None, f"无法从 ScienceDirect 页面提取 PII: {final_url or doi_url}"
 
         article_url = f"{self.BASE_URL}/science/article/pii/{pii}"
+        page_meta = self._extract_citation_metadata(body)
         return {
-            "title": item.get("title", ""),
-            "authors": item.get("authors", ""),
-            "journal": item.get("journal", ""),
+            "title": item.get("title", "") or page_meta.get("title", ""),
+            "authors": item.get("authors", "") or page_meta.get("authors", ""),
+            "journal": item.get("journal", "") or page_meta.get("journal", ""),
             "volume": "",
             "issue": "",
-            "year": item.get("year", ""),
-            "date": item.get("date", ""),
+            "year": item.get("year", "") or page_meta.get("year", ""),
+            "date": item.get("date", "") or page_meta.get("date", ""),
             "doi": doi,
             "abstract": "",
             "article_type": "",
@@ -1171,19 +1207,20 @@ class ScienceDirectScraper:
         authors = article.get("authors", "")
         if isinstance(authors, list):
             authors = "; ".join(str(author) for author in authors)
-        first_author = "Unknown"
+        first_author = "no-author"
         if authors:
             first = str(authors).split(";")[0].strip()
             if first:
                 first_author = first.split(",")[0].strip().split()[0]
         year_match = re.search(r"\b(19|20)\d{2}\b", str(article.get("year") or article.get("date") or ""))
-        year = year_match.group(0) if year_match else "unknown-year"
-        title = str(article.get("title") or article.get("pii") or "paper")
+        year = year_match.group(0) if year_match else "undated"
+        doi = str(article.get("doi") or "").lower().strip()
+        pii = str(article.get("pii") or "").strip()
+        title = str(article.get("title") or (f"DOI {doi}" if doi else "") or (f"PII {pii}" if pii else "") or "paper")
         safe_title = re.sub(r'[\\/*?:"<>|]', " ", title)
         safe_title = re.sub(r"\s+", " ", safe_title).strip()[:80] or "paper"
-        first_author = re.sub(r'[\\/*?:"<>|\s]+', "_", first_author).strip("_") or "Unknown"
-        doi = str(article.get("doi") or "").lower().strip()
-        hash_source = doi or str(article.get("pii") or idx)
+        first_author = re.sub(r'[\\/*?:"<>|\s]+', "_", first_author).strip("_") or "no-author"
+        hash_source = doi or pii or str(idx)
         doi_hash = hashlib.sha1(hash_source.encode("utf-8", errors="ignore")).hexdigest()[:8]
         return f"{year}_{first_author}_{safe_title}_{doi_hash}.pdf"
 
