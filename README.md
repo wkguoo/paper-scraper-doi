@@ -80,12 +80,13 @@ If no legal OA PDF is found, the row stays in the manifest with a clear failure 
 
 ## Codex Skills
 
-The repository includes two Codex skills under `skills/`:
+The recommended Codex entry point is `paper-download`, a unified router for both supported workflows:
 
-- `sciencedirect-doi-download`: ScienceDirect/Elsevier downloads through the user's institutional access.
-- `legal-oa-paper-download`: public metadata resolution and legal OA PDF downloads only.
+- `paper-download`: chooses ScienceDirect institutional access or legal OA download based on the request.
+- `sciencedirect-doi-download`: legacy compatible entry for ScienceDirect/Elsevier institutional downloads.
+- `legal-oa-paper-download`: legacy compatible entry for public metadata resolution and legal OA PDF downloads only.
 
-Install or refresh them for Codex:
+Install or refresh the skills for Codex:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install_codex_skills.ps1

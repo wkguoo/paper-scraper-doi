@@ -17,6 +17,11 @@ class SkillPackagingTests(unittest.TestCase):
 
     def test_skill_frontmatter_names_and_descriptions_are_explicit(self) -> None:
         expected = {
+            "paper-download": [
+                "ScienceDirect",
+                "open-access",
+                "institutional",
+            ],
             "sciencedirect-doi-download": [
                 "ScienceDirect",
                 "institutional",

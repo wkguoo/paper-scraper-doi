@@ -129,10 +129,11 @@ D:\Literature\Papers\
 
 ## Codex Skills
 
-仓库内置两个 Codex skill，位于 `skills/`：
+推荐使用统一入口 `paper-download`，它会根据你的请求自动选择下载流程：
 
-- `sciencedirect-doi-download`：通过用户已有机构权限下载 ScienceDirect/Elsevier PDF。
-- `legal-oa-paper-download`：只用公开元数据服务解析文献并下载合法 OA PDF。
+- `paper-download`：统一入口，自动选择 ScienceDirect 机构权限下载或合法 OA 下载。
+- `sciencedirect-doi-download`：兼容旧入口，通过用户已有机构权限下载 ScienceDirect/Elsevier PDF。
+- `legal-oa-paper-download`：兼容旧入口，只用公开元数据服务解析文献并下载合法 OA PDF。
 
 安装或刷新到 Codex：
 

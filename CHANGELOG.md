@@ -38,3 +38,36 @@
 - 注意事项或潜在风险：
   - 文件输入默认不再自动补全 title-only 文献；如果确实需要文件中的无 DOI 题名补 DOI，需要显式加 `--resolve-title-only`。
   - 本次没有执行正式 PDF 下载，没有重新打包项目。
+
+## 2026-06-21 20:54:12
+
+- 本次任务目标：合并两个论文下载 skill 的调用入口，新增统一入口 `paper-download`。
+- 新增、修改或删除的文件：
+  - 新增 `skills/paper-download/SKILL.md`
+  - 修改 `README.md`
+  - 修改 `README_zh.md`
+  - 修改 `tests/test_skills_packaging.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - 新增 `paper-download` skill，按用户意图自动路由到 ScienceDirect 机构权限下载流程或合法 OA 下载流程。
+  - 保留 `sciencedirect-doi-download` 和 `legal-oa-paper-download` 两个旧 skill，不删除、不破坏已有调用。
+  - 在 README 和中文 README 中说明推荐使用 `$paper-download`，旧入口作为兼容入口继续可用。
+  - 在 skill 打包测试中增加 `paper-download` frontmatter 检查，确保新增入口随 `skills/` 目录一起安装。
+- 修改原因：
+  - 原来 ScienceDirect 机构下载和合法 OA 下载是两个独立 skill，用户需要自行选择；新增统一入口可以减少选择成本，同时保持两条下载流程的权限边界清晰。
+- 如何运行：
+  - 安装 skill：`powershell -ExecutionPolicy Bypass -File install_codex_skills.ps1`
+  - 使用统一入口：`Use $paper-download to download these papers: ...`
+  - ScienceDirect 机构权限流程仍会调用 `sd_institutional_skill.py`。
+  - 合法 OA 流程仍会调用 `paper_skill.py`。
+- 生成的输出文件：
+  - 本次只新增和修改项目文件，没有执行论文下载，也没有生成 PDF 或批量下载结果目录。
+- 如何检查是否成功：
+  - 静态测试：`.\.venv\Scripts\python.exe -m unittest tests.test_skills_packaging -v`
+  - 全量测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - skill 校验：`python C:\Users\wkguopro\.codex\skills\.system\skill-creator\scripts\quick_validate.py skills\paper-download`
+  - 安装预览：`powershell -ExecutionPolicy Bypass -File install_codex_skills.ps1 -DryRun`
+- 注意事项或潜在风险：
+  - 本次不改变 PDF 下载核心逻辑，只新增统一 skill 入口和文档说明。
+  - 安装到 `C:\Users\wkguopro\.codex\skills` 后，当前 Codex 会话可能需要重启或新开会话才能在技能列表中显示 `$paper-download`。
+  - 本次没有重新打包 Windows UI。
