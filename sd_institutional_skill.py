@@ -33,7 +33,7 @@ from doi_batch_utils import (
 from paper_automation.deduplicator import deduplicate_candidates
 from paper_automation.metadata_resolver import JsonGetter, MetadataResolver
 from paper_automation.models import MetadataResult, PaperCandidate
-from paper_automation.parser import parse_mixed_text
+from paper_automation.parser import has_extra_bibliographic_signal, is_probable_paper_title, parse_mixed_text
 from sd_scraper import ScienceDirectScraper
 
 
@@ -425,12 +425,25 @@ def load_entries_from_file(
     for record in records:
         normalized = extract_doi_from_text(record.doi) or extract_doi_from_text(record.raw_value)
         raw_value = record.raw_value if record.raw_value != "" else record.doi
+        context_text = " ".join(
+            value for value in [record.title, record.authors, record.journal, record.year, record.date]
+            if str(value or "").strip()
+        )
         if not str(raw_value or record.doi or record.title).strip():
             initial_status = "empty"
             initial_reason = "DOI 为空"
         elif record.doi and not normalized:
             initial_status = "invalid"
             initial_reason = "未识别到 DOI"
+        elif not normalized and record.title and not is_probable_paper_title(record.title):
+            initial_status = "needs_review"
+            initial_reason = "not_probable_title"
+        elif not normalized and record.title and not has_extra_bibliographic_signal(context_text, record.title):
+            initial_status = "needs_review"
+            initial_reason = "insufficient_bibliographic_context"
+        elif not normalized and not record.title:
+            initial_status = "needs_review"
+            initial_reason = "not_probable_title"
         else:
             initial_status = "recognized"
             initial_reason = ""

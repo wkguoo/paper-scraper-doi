@@ -19,7 +19,7 @@ class ParserAndDeduplicatorTests(unittest.TestCase):
         text = """
         1. Zhang W, Li Q. Additive manufacturing of gamma-TiAl alloys. Acta Materialia (2024). DOI: 10.1016/j.actamat.2024.119999
         Download PDF | View article
-        Microstructure evolution in laser powder bed fused nickel superalloys
+        Microstructure evolution in laser powder bed fused nickel superalloys. Acta Materialia, 2024
         [3] unclear
         https://doi.org/10.1038/s41586-024-07000-1
         """
@@ -33,6 +33,41 @@ class ParserAndDeduplicatorTests(unittest.TestCase):
         self.assertEqual(candidates[1].status, "recognized")
         self.assertEqual(candidates[2].status, "needs_review")
         self.assertEqual(candidates[3].doi, "10.1038/s41586-024-07000-1")
+
+    def test_parse_mixed_text_requires_context_for_title_only_matching(self) -> None:
+        from paper_automation.parser import parse_mixed_text
+
+        candidates = parse_mixed_text(
+            "Microstructure evolution in laser powder bed fused nickel superalloys\n"
+            "P8: Ti-Mo beta-Ti stress-induced martensitic transformation 是否包含 SXRD\n"
+            "unclear recommendation without enough bibliographic information\n"
+            "可能相关/边界/排除参考\n"
+            "Microstructure evolution in laser powder bed fused nickel superalloys. Acta Materialia, 2024\n"
+            "Zhang W, Li Q. Additive manufacturing of gamma-TiAl alloys. Scripta Materialia 2025\n"
+        )
+
+        self.assertEqual(candidates[0].status, "needs_review")
+        self.assertEqual(candidates[0].reason, "insufficient_bibliographic_context")
+        self.assertEqual(candidates[1].status, "needs_review")
+        self.assertEqual(candidates[1].reason, "not_probable_title")
+        self.assertEqual(candidates[2].status, "needs_review")
+        self.assertEqual(candidates[2].reason, "not_probable_title")
+        self.assertEqual(candidates[3].status, "needs_review")
+        self.assertEqual(candidates[3].reason, "not_probable_title")
+        self.assertEqual(candidates[4].status, "recognized")
+        self.assertEqual(candidates[5].status, "recognized")
+
+    def test_parse_mixed_text_merges_adjacent_title_and_metadata_line(self) -> None:
+        from paper_automation.parser import parse_mixed_text
+
+        candidates = parse_mixed_text(
+            "Microstructure evolution in laser powder bed fused nickel superalloys\n"
+            "Acta Materialia, 2024\n"
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].status, "recognized")
+        self.assertEqual(candidates[0].title, "Microstructure evolution in laser powder bed fused nickel superalloys")
 
     def test_parse_mixed_text_preserves_pure_doi_lines(self) -> None:
         from paper_automation.parser import parse_mixed_text

@@ -106,7 +106,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             merged_text = result.merged_input_path.read_text(encoding="utf-8-sig")
             self.assertIn("重复 DOI", preview_text)
             self.assertIn("未识别到 DOI", preview_text)
-            self.assertIn("metadata_confidence_below_threshold", preview_text)
+            self.assertIn("not_probable_title", preview_text)
             self.assertIn("10.1016/j.scriptamat.2024.115000", merged_text)
             self.assertNotIn("10.1016/j.ignored.2024.1", merged_text)
 
@@ -135,7 +135,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = build_intake(
                 texts=[
-                    "Additive manufacturing of gamma-TiAl alloys\n"
+                    "Additive manufacturing of gamma-TiAl alloys. Acta Materialia, 2024\n"
                     "DOI: 10.1016/j.actamat.2024.119999"
                 ],
                 input_paths=[],
@@ -153,6 +153,63 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertIn("Zhang Wei", preview_text)
         self.assertIn("Acta Materialia", preview_text)
         self.assertIn("重复 DOI", preview_text)
+
+    def test_title_only_resolution_requires_extra_bibliographic_signal(self) -> None:
+        from sd_institutional_skill import build_intake
+
+        calls: list[str] = []
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            calls.append(url)
+            return {
+                "message": {
+                    "items": [
+                        {
+                            "DOI": "10.1016/j.wrong.2025.1",
+                            "title": ["Wrongly matched paper"],
+                        }
+                    ]
+                }
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            csv_path = root / "title_only.csv"
+            with csv_path.open("w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.DictWriter(f, fieldnames=["title", "notes"])
+                writer.writeheader()
+                writer.writerow({
+                    "title": "Microstructure evolution in laser powder bed fused nickel superalloys",
+                    "notes": "only a standalone title, no year author or journal",
+                })
+                writer.writerow({
+                    "title": "",
+                    "notes": "P8: Ti-Mo beta-Ti stress-induced martensitic transformation 是否包含 SXRD",
+                })
+                writer.writerow({
+                    "title": "P8: Ti-Mo beta-Ti stress-induced martensitic transformation 是否包含 SXRD",
+                    "notes": "remark copied into title column",
+                })
+
+            result = build_intake(
+                texts=[],
+                input_paths=[csv_path],
+                folder_paths=[],
+                output_dir=root / "out",
+                resolve_metadata=True,
+                resolve_title_only_files=True,
+                http_json=fake_json,
+            )
+            preview_text = result.preview_path.read_text(encoding="utf-8-sig")
+            merged_text = result.merged_input_path.read_text(encoding="utf-8-sig")
+
+        self.assertEqual(calls, [])
+        self.assertEqual(result.valid_count, 0)
+        self.assertEqual(result.status_counts["needs_review"], 2)
+        self.assertEqual(result.status_counts["empty"], 1)
+        self.assertIn("insufficient_bibliographic_context", preview_text)
+        self.assertIn("not_probable_title", preview_text)
+        self.assertNotIn("10.1016/j.wrong.2025.1", merged_text)
 
     def test_build_intake_title_only_csv_resolves_or_needs_review(self) -> None:
         from sd_institutional_skill import build_intake

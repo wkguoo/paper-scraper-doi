@@ -111,3 +111,37 @@
   - 本次不改变 ScienceDirect CDP/DevTools 下载机制，不改变机构权限和 Cookie 使用方式。
   - 合法 OA 模式只下载明确开放获取的 PDF；无法合法下载的论文会写入 manifest 的失败或待复核状态。
   - 本次没有重新打包 Windows UI。
+
+## 2026-06-22 11:52:30
+
+- 本次任务目标：增强无 DOI 文献的 DOI 自动匹配规则，避免把备注、说明、分区标题等误当作文献题名并错误补 DOI。
+- 新增、修改或删除的文件：
+  - 修改 `paper_automation/parser.py`
+  - 修改 `sd_institutional_skill.py`
+  - 修改 `tests/test_paper_automation.py`
+  - 修改 `tests/test_sd_institutional_skill.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - 新增无 DOI 文本的文献信号判断：只有“题名 + 至少一个额外文献信号”才进入 Crossref/OpenAlex 自动匹配。
+  - 额外文献信号包括年份、作者格式、常见期刊名、卷期页码等。
+  - 备注、说明、`P8:` 类标签说明、`可能相关/边界/排除参考`、`unclear recommendation` 等文本进入 `needs_review`，不自动补 DOI。
+  - 支持相邻两行合并判断：标题单独一行、期刊/年份在下一行时，可以作为一条有效 title-only 候选。
+  - 表格启用 `--resolve-title-only` 时，同一行只有标题而缺少作者/期刊/年份等上下文时不自动匹配 DOI；标题列中明显是备注时标记为 `not_probable_title`。
+- 修改原因：
+  - 无 DOI 文本只凭标题或备注进行公开元数据匹配时，容易把说明文字误配成外部 DOI，导致下载列表污染。
+- 如何运行：
+  - 语法检查：`.\.venv\Scripts\python.exe -m py_compile paper_automation\parser.py sd_institutional_skill.py paper_skill.py`
+  - 定向测试：`.\.venv\Scripts\python.exe -m unittest tests.test_paper_automation -v`
+  - 定向测试：`.\.venv\Scripts\python.exe -m unittest tests.test_sd_institutional_skill -v`
+  - 完整测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+- 生成的输出文件：
+  - 本次没有正式下载论文，没有生成新的 PDF 或批量下载结果目录。
+  - 测试仅在系统临时目录生成临时 CSV、manifest 和报告文件。
+- 如何检查是否成功：
+  - 只有标题的无 DOI 文本应显示为 `needs_review`，原因包含 `insufficient_bibliographic_context`。
+  - 备注/说明/分区标题应显示为 `needs_review`，原因包含 `not_probable_title`。
+  - `标题 + 期刊/年份/作者` 的无 DOI 文献仍可进入自动匹配。
+  - 显式 DOI 行继续正常识别，不受新规则影响。
+- 注意事项或潜在风险：
+  - 新规则更保守，部分只有标题的真实文献不会自动补 DOI，需要补充作者、期刊或年份后再匹配。
+  - 本次不改变 ScienceDirect PDF 下载、Cookie、CDP/DevTools 或 UI 打包流程。
