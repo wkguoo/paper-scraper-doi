@@ -26,7 +26,6 @@ SUPPLEMENT_MARKERS = (
     "supplemental",
     "appendix",
     "video",
-    "download",
 )
 HTML_CONTENT_TYPES = ("text/html", "application/xhtml")
 STREAM_CHUNK_SIZE = 8192

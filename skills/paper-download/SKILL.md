@@ -55,7 +55,7 @@ Use `--beginner --preflight` when the user asks for a safe preview or gives mess
 
 When PDF downloading is active, ScienceDirect supplementary materials are downloaded by default into `supplements\` and summarized in `supplement_download_report.csv`. These supplement outputs are generated only when PDF download and supplement download are both active. Add `--no-download-supplements` only when the user explicitly wants PDFs without supplementary files. Explain supplement status `not_found` as no detectable supplement links, not as a PDF failure.
 
-Report preflight outputs separately from formal download outputs. Preflight centers on `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_resolved.xlsx`, `doi_batch_failed.csv`, and `run_summary.txt`. Formal downloads also report `pdf_download_report.csv`, `pdfs\`, and, when generated, `supplement_download_report.csv` plus `supplements\`.
+Report preflight outputs separately from formal download outputs. Preflight centers on `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, and `run_summary.txt`; do not report `doi_batch_resolved.xlsx` as a preflight output. Formal downloads also report `doi_batch_resolved.xlsx`, `pdf_download_report.csv`, `pdfs\`, and, when generated, `supplement_download_report.csv` plus `supplements\`.
 
 ## Legal OA Workflow
 

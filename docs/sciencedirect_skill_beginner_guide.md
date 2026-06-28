@@ -179,15 +179,15 @@ preflight 输出重点看这些文件：
 | 文件或目录 | 用途 |
 | --- | --- |
 | `doi_intake_preview.csv` | 输入预览表。看每一行来自哪里、识别到什么 DOI、是否重复、是否需要人工复核。 |
-| `merged_doi_input.csv` | 真正送去批量解析的 DOI 表。重复 DOI 只保留一次。 |
-| `doi_batch_resolved.xlsx` | 成功解析到 ScienceDirect PII 的论文。正式下载前主要看这个。 |
-| `doi_batch_failed.csv` | DOI 解析失败、非 ScienceDirect、空 DOI 等记录。 |
+| `merged_doi_input.csv` | 后续正式解析可使用的 DOI 表。重复 DOI 只保留一次。 |
+| `doi_batch_failed.csv` | preflight 发现的空 DOI、重复项、无效项或需要复核的记录。 |
 | `run_summary.txt` | 本次任务摘要。包括成功数、失败数、下一步建议。 |
 
-正式 PDF 下载才会额外关注这些输出：
+正式解析和 PDF 下载才会额外关注这些输出：
 
 | 文件或目录 | 生成条件和用途 |
 | --- | --- |
+| `doi_batch_resolved.xlsx` | 正式解析时生成，保存成功解析到 ScienceDirect PII 的论文。 |
 | `pdf_download_report.csv` | 启用 PDF 下载时生成，逐篇记录成功、失败、跳过原因和文件名。 |
 | `pdfs\` | 下载成功的 PDF 文件。 |
 | `supplement_download_report.csv` | 只有启用 PDF 下载且启用补充材料下载时生成，逐个记录附件成功、失败、跳过或未发现原因。 |

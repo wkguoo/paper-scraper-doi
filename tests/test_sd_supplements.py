@@ -160,6 +160,35 @@ class ScienceDirectSupplementHelperTests(unittest.TestCase):
             "https://www.sciencedirect.com/science/article/pii/S1359645424000012/mmc2",
         )
 
+    def test_extract_ignores_non_supplement_download_links(self) -> None:
+        from sd_supplements import extract_supplement_candidates
+
+        html = """
+        <html><body>
+          <a href="/science/article/pii/S1359645424000012/export?format=ris">
+            Download citation
+          </a>
+          <a href="https://ars.els-cdn.com/content/image/1-s2.0-S1359645424000012-gr1_lrg.jpg">
+            Download full-size image
+          </a>
+          <a href="/science/article/pii/S1359645424000012/pdfft?download=true">
+            Download PDF
+          </a>
+          <a href="https://ars.els-cdn.com/content/image/1-s2.0-S1359645424000012-mmc1.xlsx">
+            Supplementary data
+          </a>
+        </body></html>
+        """
+
+        candidates = extract_supplement_candidates(
+            html,
+            "https://www.sciencedirect.com/science/article/pii/S1359645424000012",
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].title, "Supplementary data")
+        self.assertIn("-mmc1.xlsx", candidates[0].url)
+
     def test_article_stem_and_supplement_filename_are_windows_safe(self) -> None:
         from sd_supplements import SupplementCandidate, make_article_stem, make_supplement_filename
 
