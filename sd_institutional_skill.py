@@ -16,6 +16,7 @@ from urllib.request import Request, urlopen
 
 from doi_batch_utils import (
     COLUMN_ALIASES,
+    DownloadRunResult,
     DoiRecord,
     PdfDownloadRecord,
     RunSummary,
@@ -29,9 +30,11 @@ from doi_batch_utils import (
     row_value,
     write_pdf_download_report,
     write_run_summary,
+    write_run_summary_json,
+    write_supplement_download_report,
 )
 from paper_automation.deduplicator import deduplicate_candidates
-from paper_automation.metadata_resolver import JsonGetter, MetadataResolver
+from paper_automation.metadata_resolver import JsonGetter, MetadataResolver, SearchProvider, semantic_scholar_search_provider
 from paper_automation.models import MetadataResult, PaperCandidate
 from paper_automation.parser import has_extra_bibliographic_signal, is_probable_paper_title, parse_mixed_text
 from sd_scraper import ScienceDirectScraper
@@ -87,9 +90,11 @@ class IntakeRow:
     date: str = ""
     raw_value: str = ""
     metadata_source: str = ""
+    match_basis: str = ""
     confidence: str = ""
     status: str = "valid"
     reason: str = ""
+    review_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
             resolve_title_only_files=args.resolve_title_only,
             email=args.email,
             min_confidence=args.min_confidence,
+            search_provider=semantic_scholar_search_provider(email=args.email) if args.auto_web_search else None,
+            max_search_candidates=args.max_search_candidates,
         )
     except Exception as exc:
         print(f"[错误] DOI 输入整理失败: {exc}")
@@ -142,10 +149,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"- 有效唯一 DOI: {intake.valid_count}")
     print(f"- 状态统计: {dict(intake.status_counts)}")
 
+    preflight_only = args.preflight or args.beginner
+
     if intake.valid_count == 0:
         failed_path = write_intake_failed_report(intake.all_rows, run_dir / "doi_batch_failed.csv")
         pdf_report_path = write_pdf_download_report([], run_dir)
-        summary_path = write_run_summary(RunSummary(
+        summary = RunSummary(
             input_path=str(intake.merged_input_path),
             output_dir=str(run_dir),
             total_doi=0,
@@ -158,12 +167,58 @@ def main(argv: list[str] | None = None) -> int:
             failed_path=str(failed_path),
             pdf_report_path=str(pdf_report_path),
             cookie_message="",
-        ))
+            beginner_recommendations=build_beginner_recommendations(intake, preflight_only=preflight_only),
+            supplement_requested=False,
+        )
+        summary_path = write_run_summary(summary)
+        write_run_summary_json(summary)
         print("[结束] 没有可处理的有效 DOI。")
         print(f"- DOI failure report: {failed_path}")
         print(f"- PDF report: {pdf_report_path}")
         print(f"- Run summary: {summary_path}")
         return 1
+
+    if preflight_only:
+        failed_path = write_intake_failed_report(intake.all_rows, run_dir / "doi_batch_failed.csv")
+        pdf_report_path = write_pdf_download_report([
+            PdfDownloadRecord(
+                doi=row.doi,
+                pii="",
+                title=row.title,
+                status="not_requested",
+                reason="preflight",
+            )
+            for row in intake.unique_rows
+        ], run_dir)
+        summary = RunSummary(
+            input_path=str(intake.merged_input_path),
+            output_dir=str(run_dir),
+            total_doi=intake.valid_count,
+            resolved_count=0,
+            failure_reasons=intake_failure_reasons(intake.all_rows),
+            pdf_success=0,
+            pdf_failed=0,
+            pdf_skipped=len(intake.unique_rows),
+            resolved_path="",
+            failed_path=str(failed_path),
+            pdf_report_path=str(pdf_report_path),
+            cookie_message=cookie_status_message(auth_dir / COOKIE_CACHE_NAME),
+            beginner_recommendations=build_beginner_recommendations(
+                intake,
+                preflight_only=True,
+                auto_web_search=args.auto_web_search,
+            ),
+            supplement_requested=False,
+        )
+        summary_path = write_run_summary(summary)
+        write_run_summary_json(summary)
+        print("[预检] 完成；未解析 ScienceDirect PII，未下载 PDF。")
+        print(f"- 输出目录: {run_dir}")
+        print(f"- 可进入后续解析的 DOI: {intake.valid_count}")
+        print(f"- 需复核/排除: {sum(intake_failure_reasons(intake.all_rows).values())}")
+        print(f"- PDF 明细: {pdf_report_path}")
+        print(f"- 任务摘要: {summary_path}")
+        return 0
 
     download_pdfs = not args.dry_run and not args.no_download_pdfs
     cookie_cache_path = auth_dir / COOKIE_CACHE_NAME
@@ -181,6 +236,10 @@ def main(argv: list[str] | None = None) -> int:
 
     pdf_success = pdf_failed = pdf_skipped = 0
     pdf_records: list[PdfDownloadRecord] = []
+    supplement_success = supplement_failed = supplement_skipped = supplement_not_found = 0
+    supplement_records = []
+    supplement_report_path = ""
+    download_supplements = download_pdfs and not args.no_download_supplements
     if download_pdfs and results:
         cache_devtools_cookies(scraper, cookie_cache_path)
         download_result = scraper.download_pdfs_devtools(
@@ -188,9 +247,16 @@ def main(argv: list[str] | None = None) -> int:
             str(run_dir),
             login_wait_seconds=args.login_wait_seconds,
             interactive_login=False,
+            download_supplements=download_supplements,
         )
         if download_result:
             pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
+            if isinstance(download_result, DownloadRunResult):
+                supplement_success = download_result.supplement_success
+                supplement_failed = download_result.supplement_failed
+                supplement_skipped = download_result.supplement_skipped
+                supplement_not_found = download_result.supplement_not_found
+                supplement_records = download_result.supplement_records
         else:
             pdf_failed = len(results)
             pdf_records = [
@@ -221,7 +287,9 @@ def main(argv: list[str] | None = None) -> int:
         ]
 
     pdf_report_path = write_pdf_download_report(pdf_records, run_dir)
-    summary_path = write_run_summary(RunSummary(
+    if download_supplements and results:
+        supplement_report_path = str(write_supplement_download_report(supplement_records, run_dir))
+    summary = RunSummary(
         input_path=str(intake.merged_input_path),
         output_dir=str(run_dir),
         total_doi=intake.valid_count,
@@ -234,13 +302,35 @@ def main(argv: list[str] | None = None) -> int:
         failed_path=failed_path,
         pdf_report_path=str(pdf_report_path),
         cookie_message=cookie_message,
-    ))
+        supplement_success=supplement_success,
+        supplement_failed=supplement_failed,
+        supplement_skipped=supplement_skipped,
+        supplement_not_found=supplement_not_found,
+        supplement_report_path=supplement_report_path,
+        supplement_requested=download_supplements and bool(results),
+        beginner_recommendations=build_beginner_recommendations(
+            intake,
+            failure_reasons=failure_reason_counts(failures),
+            pdf_failed=pdf_failed,
+            preflight_only=False,
+            auto_web_search=args.auto_web_search,
+        ),
+    )
+    summary_path = write_run_summary(summary)
+    write_run_summary_json(summary)
 
     print("[报告] 完成")
     print(f"- 输出目录: {run_dir}")
     print(f"- 解析成功: {len(results)}")
     print(f"- PDF 成功/失败/跳过: {pdf_success}/{pdf_failed}/{pdf_skipped}")
+    if download_supplements:
+        print(
+            f"- 补充材料 成功/失败/跳过/未发现: "
+            f"{supplement_success}/{supplement_failed}/{supplement_skipped}/{supplement_not_found}"
+        )
     print(f"- PDF 明细: {pdf_report_path}")
+    if supplement_report_path:
+        print(f"- 补充材料明细: {supplement_report_path}")
     print(f"- 任务摘要: {summary_path}")
     return 0
 
@@ -258,10 +348,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sheet", help="Excel sheet name for all Excel inputs")
     parser.add_argument("--email", default=os.environ.get("PAPER_SKILL_EMAIL", ""), help="Email for polite Crossref/OpenAlex API use")
     parser.add_argument("--min-confidence", type=float, default=DEFAULT_METADATA_CONFIDENCE, help="Minimum title-match confidence for title-only automatic DOI use")
+    parser.add_argument("--beginner", action="store_true", help="Run a beginner-friendly preflight workflow and write next-step guidance")
+    parser.add_argument("--preflight", action="store_true", help="Only prepare and review input; do not resolve ScienceDirect PII or download PDFs")
+    parser.add_argument("--auto-web-search", action="store_true", help="Use optional Semantic Scholar search fallback for title-only metadata resolution")
+    parser.add_argument("--max-search-candidates", type=int, default=5, help="Maximum optional search candidates to inspect when --auto-web-search is enabled")
     parser.add_argument("--resolve-title-only", action="store_true", help="For file/folder inputs, also try to resolve rows without explicit DOI by title")
     parser.add_argument("--choose-out", action="store_true", help="Open a Windows folder picker for the output root when available")
     parser.add_argument("--dry-run", action="store_true", help="Resolve DOI metadata but do not download PDFs")
     parser.add_argument("--no-download-pdfs", action="store_true", help="Skip PDF downloads after DOI resolution")
+    parser.add_argument("--no-download-supplements", action="store_true", help="When downloading PDFs, do not download ScienceDirect supplementary files")
     parser.add_argument(
         "--login-wait-seconds",
         type=int,
@@ -283,6 +378,8 @@ def build_intake(
     email: str = "",
     min_confidence: float = DEFAULT_METADATA_CONFIDENCE,
     http_json: JsonGetter | None = None,
+    search_provider: SearchProvider | None = None,
+    max_search_candidates: int = 5,
 ) -> IntakeResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     entries: list[SourceEntry] = []
@@ -320,6 +417,8 @@ def build_intake(
         email=email,
         min_confidence=min_confidence,
         http_json=http_json,
+        search_provider=search_provider,
+        max_search_candidates=max_search_candidates,
     )
     preview_path = output_dir / "doi_intake_preview.csv"
     merged_path = output_dir / "merged_doi_input.csv"
@@ -724,6 +823,8 @@ def classify_entries(
     email: str,
     min_confidence: float,
     http_json: JsonGetter | None,
+    search_provider: SearchProvider | None = None,
+    max_search_candidates: int = 5,
 ) -> tuple[list[IntakeRow], list[IntakeRow], Counter]:
     counts: Counter = Counter()
     recognized = [
@@ -737,7 +838,16 @@ def classify_entries(
     deduped = deduplicate_candidates(candidates)
     duplicate_by_id = {item.source_index: item for item in deduped.duplicates}
     unique_ids = {item.source_index for item in deduped.unique}
-    resolver = MetadataResolver(email=email, http_json=http_json) if resolve_metadata else None
+    resolver = (
+        MetadataResolver(
+            email=email,
+            http_json=http_json,
+            search_provider=search_provider,
+            max_search_candidates=max_search_candidates,
+        )
+        if resolve_metadata
+        else None
+    )
 
     all_rows: list[IntakeRow] = []
     unique_rows: list[IntakeRow] = []
@@ -774,10 +884,12 @@ def classify_entries(
         if row.status == "valid" and row.doi:
             doi_key = row.doi.lower()
             if doi_key in resolved_doi_owner:
+                duplicate_reason = f"重复 DOI: duplicate_of={resolved_doi_owner[doi_key]}"
                 row = IntakeRow(**{
                     **row.__dict__,
                     "status": "duplicate",
-                    "reason": f"重复 DOI: duplicate_of={resolved_doi_owner[doi_key]}",
+                    "reason": duplicate_reason,
+                    "review_hint": intake_review_hint("duplicate", duplicate_reason, row.doi),
                 })
             else:
                 resolved_doi_owner[doi_key] = entry.entry_id
@@ -808,6 +920,7 @@ def resolve_entry_metadata(
             year=entry.year,
             confidence=1.0 if entry.doi else 0.0,
             source="input",
+            match_basis="input_doi" if entry.doi else "",
         )
     metadata = resolver.resolve_one(candidate)
     if entry.doi and not metadata.doi:
@@ -870,13 +983,16 @@ def row_from_entry(
     journal = entry.journal
     year = entry.year
     metadata_source = ""
+    match_basis = ""
     confidence = ""
     if metadata is not None:
         authors = "; ".join(metadata.authors) if metadata.authors else authors
         journal = metadata.journal or journal
         year = metadata.year or year
         metadata_source = metadata.source
+        match_basis = metadata.match_basis
         confidence = f"{metadata.confidence:.3f}"
+    review_hint = intake_review_hint(status, reason, doi)
     return IntakeRow(
         source=entry.source,
         row_number=entry.row_number,
@@ -890,10 +1006,38 @@ def row_from_entry(
         date=entry.date,
         raw_value=entry.raw_text,
         metadata_source=metadata_source,
+        match_basis=match_basis,
         confidence=confidence,
         status=status,
         reason=reason,
+        review_hint=review_hint,
     )
+
+
+def intake_review_hint(status: str, reason: str, doi: str = "") -> str:
+    reason_value = str(reason or "")
+    doi_value = clean_doi(doi).lower()
+    if status == "valid":
+        if doi_value.startswith("10.1016/"):
+            return "可进入 ScienceDirect 解析；正式下载前仍需机构权限。"
+        return "疑似非 ScienceDirect/Elsevier DOI；可能无法通过 ScienceDirect 下载。"
+    if status == "duplicate":
+        return "重复项，程序只保留首次识别记录。"
+    if status == "empty":
+        return "空行或无可用信息，可忽略。"
+    if status == "invalid":
+        return "请检查 DOI 格式，或重新复制完整 DOI 后重跑。"
+    if status == "needs_review":
+        if reason_value.startswith("metadata_confidence_below_threshold"):
+            return "题名匹配置信度低，请补 DOI 或完整期刊、年份、卷页后重跑。"
+        if reason_value == "insufficient_bibliographic_context":
+            return "信息不足，请补 DOI、完整题名、期刊、年份或卷页后重跑。"
+        if reason_value == "not_probable_title":
+            return "不像完整论文题名，请补 DOI 或删除说明性文字后重跑。"
+        if reason_value == "metadata_not_found":
+            return "公开元数据未找到，请补 DOI 或更完整引用后重跑。"
+        return "请人工确认 DOI 后重跑。"
+    return ""
 
 
 def split_authors(authors: str) -> list[str]:
@@ -914,9 +1058,11 @@ def write_intake_preview(rows: list[IntakeRow], path: Path) -> Path:
         "date",
         "raw_value",
         "metadata_source",
+        "match_basis",
         "confidence",
         "status",
         "reason",
+        "review_hint",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -974,6 +1120,44 @@ def intake_failure_reasons(rows: list[IntakeRow]) -> dict[str, int]:
             continue
         counts[row.reason or row.status] += 1
     return dict(counts)
+
+
+def build_beginner_recommendations(
+    intake: IntakeResult,
+    failure_reasons: dict[str, int] | None = None,
+    pdf_failed: int = 0,
+    *,
+    preflight_only: bool = False,
+    auto_web_search: bool = False,
+) -> list[str]:
+    recommendations: list[str] = []
+    valid_count = intake.status_counts.get("valid", 0)
+    review_count = intake.status_counts.get("needs_review", 0)
+    duplicate_count = intake.status_counts.get("duplicate", 0)
+    non_sciencedirect_count = sum(
+        1 for row in intake.unique_rows
+        if row.doi and not row.doi.lower().startswith("10.1016/")
+    )
+
+    if preflight_only:
+        recommendations.append("这是预检结果；确认 doi_intake_preview.csv 后，去掉 --preflight/--beginner 再正式下载。")
+    if valid_count:
+        recommendations.append(f"已有 {valid_count} 条唯一 DOI 可进入后续解析；正式下载仍依赖机构权限。")
+    if review_count:
+        recommendations.append(f"有 {review_count} 条需要人工复核；优先按 review_hint 补 DOI、完整题名、期刊、年份或卷页。")
+    if duplicate_count:
+        recommendations.append(f"发现 {duplicate_count} 条重复输入；程序只保留首次识别记录。")
+    if non_sciencedirect_count:
+        recommendations.append(f"有 {non_sciencedirect_count} 条 DOI 疑似不是 ScienceDirect/Elsevier，必要时改用合法 OA 流程。")
+    if not auto_web_search and review_count:
+        recommendations.append("若题名或短引用较多，可重跑时加 --auto-web-search 尝试公开学术搜索补 DOI。")
+    if pdf_failed:
+        recommendations.append("PDF 失败时先看 pdf_download_report.csv；常见原因是 cookie 过期、无机构权限、验证码或限速。")
+    if failure_reasons:
+        recommendations.append("解析失败时先按失败原因分组处理，不要反复重跑同一批输入。")
+    if not recommendations:
+        recommendations.append("当前没有需要处理的异常项。")
+    return recommendations
 
 
 def choose_output_root(default_out: str, dialog_func: Callable[[], str] | None = None) -> Path:

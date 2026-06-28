@@ -46,13 +46,13 @@ E:\desktop\paper-scraper-doi\.venv
 如果你不确定环境是否正常，可以先让 Codex 帮你试跑：
 
 ```text
-Use $sciencedirect-doi-download to dry-run this paper list:
+Use $sciencedirect-doi-download to preflight this paper list with --beginner --preflight:
 A critical review of high entropy alloys and related concepts
 DOI: 10.1016/j.actamat.2016.08.081
 unclear recommendation without enough bibliographic information
 ```
 
-`dry-run` 只解析和生成报告，不下载 PDF，适合第一次检查。
+preflight 是新手和混乱 AI 推荐列表的第一步：它只做输入识别、去重、题名/DOI 候选检查和复核提示，不下载 PDF。`--dry-run` 只用于 ScienceDirect DOI 元数据/PII 解析且不下载 PDF，不作为混乱输入的第一步。
 
 ## 3. 最推荐用法：直接让 Codex 调用 skill
 
@@ -93,7 +93,7 @@ Codex 应该做这些事：
 Set-Location $env:PAPER_SCRAPER_DOI_ROOT
 ```
 
-### 4.1 先预检查，不下载 PDF
+### 4.1 先 preflight，不下载 PDF
 
 适合第一次使用，或你不确定 AI 推荐列表里哪些是有效论文。
 
@@ -104,10 +104,12 @@ DOI: 10.1016/j.actamat.2016.08.081
 unclear recommendation without enough bibliographic information
 '@
 
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text $papers --out results --run-name beginner_dry_run --dry-run
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text $papers --out results --run-name beginner_preflight --beginner --preflight --auto-web-search
 ```
 
-这个命令会生成报告，但不会下载 PDF。
+这个命令会生成识别和复核报告，但不会下载 PDF。`--auto-web-search` 是可选项，适合题名-only 或短引用较多的列表；如果列表里已经都是 DOI，可以去掉。
+
+如果你明确只想对已有 DOI 做 ScienceDirect 元数据/PII 解析、且不下载 PDF，可以使用 `--dry-run`。不要把它当作新手混乱输入的第一步。
 
 ### 4.2 正式下载 PDF
 
@@ -166,13 +168,13 @@ DOI: 10.1016/j.actamat.2016.08.081
 results\sd_skill_20260621_182439\
 ```
 
-如果你用了 `--run-name beginner_dry_run`，则类似：
+如果你用了 `--run-name beginner_preflight`，则类似：
 
 ```text
-results\beginner_dry_run\
+results\beginner_preflight\
 ```
 
-重点看这些文件：
+preflight 输出重点看这些文件：
 
 | 文件或目录 | 用途 |
 | --- | --- |
@@ -180,14 +182,24 @@ results\beginner_dry_run\
 | `merged_doi_input.csv` | 真正送去批量解析的 DOI 表。重复 DOI 只保留一次。 |
 | `doi_batch_resolved.xlsx` | 成功解析到 ScienceDirect PII 的论文。正式下载前主要看这个。 |
 | `doi_batch_failed.csv` | DOI 解析失败、非 ScienceDirect、空 DOI 等记录。 |
-| `pdf_download_report.csv` | PDF 下载报告。逐篇记录成功、失败、跳过原因和文件名。 |
 | `run_summary.txt` | 本次任务摘要。包括成功数、失败数、下一步建议。 |
+
+正式 PDF 下载才会额外关注这些输出：
+
+| 文件或目录 | 生成条件和用途 |
+| --- | --- |
+| `pdf_download_report.csv` | 启用 PDF 下载时生成，逐篇记录成功、失败、跳过原因和文件名。 |
 | `pdfs\` | 下载成功的 PDF 文件。 |
+| `supplement_download_report.csv` | 只有启用 PDF 下载且启用补充材料下载时生成，逐个记录附件成功、失败、跳过或未发现原因。 |
+| `supplements\` | 只有启用 PDF 下载且启用补充材料下载时生成，按文章文件名前缀建立子目录保存对应补充材料。 |
+
+补充材料状态 `not_found` 表示页面上没有检测到可下载的 supplement 链接，不代表正文 PDF 下载失败。
 
 最重要的是两张表：
 
 1. `doi_intake_preview.csv`：检查输入识别是否正确。
 2. `pdf_download_report.csv`：检查 PDF 是否真的下载成功。
+3. `supplement_download_report.csv`：如果正式下载时启用了附件，检查补充材料是否找到并下载成功。
 
 ## 6. `doi_intake_preview.csv` 里的状态是什么意思
 
@@ -273,7 +285,7 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\chrome.exe"
 
 ## 8. 建议的课题组使用习惯
 
-1. 第一次拿到 AI 推荐列表，先跑 `--dry-run`。
+1. 第一次拿到 AI 推荐列表，先跑 `--beginner --preflight`，题名-only 或短引用很多时可加 `--auto-web-search`。
 2. 先检查 `doi_intake_preview.csv`，确认识别结果。
 3. 对 `needs_review` 的论文，人工补 DOI。
 4. 正式下载时指定清楚输出目录，例如：
@@ -320,5 +332,5 @@ If anything is uncertain, put it in needs_review and report it at the end.
 如果只是预检查，不下载 PDF，把第一句改成：
 
 ```text
-Use $sciencedirect-doi-download to dry-run these paper recommendations.
+Use $sciencedirect-doi-download to preflight these paper recommendations with --beginner --preflight.
 ```

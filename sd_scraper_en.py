@@ -41,6 +41,13 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 from curl_cffi import requests as curl_requests
+from doi_batch_utils import (
+    DownloadRunResult,
+    PdfDownloadRecord,
+    SupplementDownloadRecord,
+    write_supplement_download_report,
+)
+from sd_supplements import download_supplements_for_article, make_article_stem, supplement_status_counts
 from windows_paths import chrome_bin, chrome_debug_log, chrome_debug_profile, chrome_default_profile
 
 try:
@@ -684,13 +691,25 @@ class ScienceDirectScraper:
 
     @staticmethod
     def _make_pdf_filename(idx, article):
-        """Generate filename: {index}_{first_author_surname}_{year}_{title}.pdf"""
+        """Generate a stable PDF filename shared with supplement folders."""
+        return f"{make_article_stem(idx, article)}.pdf"
+
+    @staticmethod
+    def _make_legacy_english_pdf_filename(idx, article):
         authors = article.get("authors", "")
-        first_author = (authors.split(";")[0].strip().split()[-1]
-                        if authors else "Unknown")
-        year = article.get("year", "")
-        safe_title = re.sub(r'[\\/*?:"<>|]', "", article.get("title", ""))[:60].strip()
-        return f"{idx:03d}_{first_author}_{year}_{safe_title}.pdf"
+        if isinstance(authors, list):
+            authors = "; ".join(str(author) for author in authors)
+        first_author = "Unknown"
+        if authors:
+            first = str(authors).split(";")[0].strip()
+            if first:
+                first_author = first.split(",")[0].strip().split()[0]
+        first_author = re.sub(r'[\\/*?:"<>|\s]+', "_", first_author).strip("_") or "Unknown"
+        year_match = re.search(r"\b(19|20)\d{2}\b", str(article.get("year") or article.get("date") or ""))
+        year = year_match.group(0) if year_match else "UnknownYear"
+        title = re.sub(r'[\\/*?:"<>|]+', " ", str(article.get("title") or "Untitled"))
+        title = re.sub(r"\s+", " ", title).strip()[:80].rstrip(" .") or "Untitled"
+        return f"{idx:03d}_{first_author}_{year}_{title}.pdf"
 
     # ── PDF download helpers ──────────────────────────────────────────────────
 
@@ -727,7 +746,7 @@ class ScienceDirectScraper:
 
     # ── DevTools PDF download (primary method, no Playwright required) ────────
 
-    def download_pdfs_devtools(self, results, output_dir, debug_port=9222):
+    def download_pdfs_devtools(self, results, output_dir, debug_port=9222, download_supplements=True):
         """
         Download PDFs via Chrome DevTools Protocol (pure websocket-client).
 
@@ -740,19 +759,79 @@ class ScienceDirectScraper:
         Prerequisite: Chrome must be logged in via your institutional account
         (CARSI / university SSO) on ScienceDirect.
         """
-        try:
-            import websocket
-        except ImportError:
-            print("[Error] websocket-client required: pip install websocket-client")
-            return
-
-        from urllib.request import Request as _Req, urlopen as _urlopen
-        from urllib.parse import quote as _quote
-
         pdf_dir = os.path.join(output_dir, "pdfs")
         os.makedirs(pdf_dir, exist_ok=True)
         total = len(results)
         success = skip = fail = 0
+        pdf_records = []
+        supplement_records = []
+        supplement_success = supplement_failed = supplement_skipped = supplement_not_found = 0
+
+        def _record(article, status, file="", reason=""):
+            pdf_records.append(PdfDownloadRecord(
+                doi=article.get("doi", ""),
+                pii=article.get("pii", ""),
+                title=article.get("title", ""),
+                status=status,
+                file=file,
+                reason=reason,
+            ))
+
+        def _add_supplement_records(records):
+            nonlocal supplement_success, supplement_failed, supplement_skipped, supplement_not_found
+            for record in records:
+                supplement_records.append(record)
+                if record.status == "success":
+                    supplement_success += 1
+                elif record.status == "failed":
+                    supplement_failed += 1
+                elif record.status == "skipped":
+                    supplement_skipped += 1
+                elif record.status == "not_found":
+                    supplement_not_found += 1
+
+        def _skip_supplements_for_pdf_failure(article, idx, article_file=""):
+            if not download_supplements:
+                return
+            filename = article_file or self._make_pdf_filename(idx, article)
+            _add_supplement_records([
+                SupplementDownloadRecord(
+                    doi=article.get("doi", ""),
+                    pii=article.get("pii", ""),
+                    article_title=article.get("title", ""),
+                    article_file=filename,
+                    supplement_index=0,
+                    status="skipped",
+                    reason="PDF download failed; supplement download not attempted",
+                )
+            ])
+
+        def _result():
+            return DownloadRunResult(
+                pdf_success=success,
+                pdf_failed=fail,
+                pdf_skipped=skip,
+                pdf_records=pdf_records,
+                supplement_success=supplement_success,
+                supplement_failed=supplement_failed,
+                supplement_skipped=supplement_skipped,
+                supplement_not_found=supplement_not_found,
+                supplement_records=supplement_records,
+            )
+
+        try:
+            import websocket
+        except ImportError:
+            print("[Error] websocket-client required: pip install websocket-client")
+            for idx, article in enumerate(results, 1):
+                fail += 1
+                filename = self._make_pdf_filename(idx, article)
+                _record(article, "failed", file=filename, reason="websocket-client dependency missing")
+                _skip_supplements_for_pdf_failure(article, idx, filename)
+            return _result()
+
+        from urllib.request import Request as _Req, urlopen as _urlopen
+        from urllib.parse import quote as _quote
 
         print(f"\n[DevTools PDF Download]  {total} papers → {pdf_dir}")
 
@@ -762,7 +841,12 @@ class ScienceDirectScraper:
             self._launch_chrome_with_debug()
             if not self._is_chrome_debug_ready():
                 print("[Error] Chrome debug port unavailable. PDF download aborted.")
-                return
+                for idx, article in enumerate(results, 1):
+                    fail += 1
+                    filename = self._make_pdf_filename(idx, article)
+                    _record(article, "failed", file=filename, reason="Chrome debug port unavailable")
+                    _skip_supplements_for_pdf_failure(article, idx, filename)
+                return _result()
         else:
             print("  Chrome debug port detected ✓")
 
@@ -846,7 +930,16 @@ class ScienceDirectScraper:
         BLOCK_WAIT_1      = 270
         BLOCK_WAIT_2      = 420
 
-        p_tab = open_tab("about:blank")
+        try:
+            p_tab = open_tab("about:blank")
+        except Exception as e:
+            fail += total
+            print(f"  [Error] Could not create Chrome debug tab. PDF download aborted: {e}")
+            for idx, article in enumerate(results, 1):
+                filename = self._make_pdf_filename(idx, article)
+                _record(article, "failed", file=filename, reason=f"Could not create Chrome debug tab: {e}")
+                _skip_supplements_for_pdf_failure(article, idx, filename)
+            return _result()
 
         def _tab_navigate(url, wait=5.0):
             try:
@@ -876,6 +969,69 @@ class ScienceDirectScraper:
                 pass
             time.sleep(wait)
 
+        def _tab_eval(expression, timeout=10):
+            try:
+                ws2 = websocket.create_connection(
+                    p_tab["webSocketDebuggerUrl"], timeout=timeout, suppress_origin=True)
+                ws2.settimeout(2)
+                ws2.send(json.dumps({
+                    "id": 1,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": expression, "returnByValue": True},
+                }))
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    try:
+                        msg = json.loads(ws2.recv())
+                    except Exception:
+                        continue
+                    if msg.get("id") == 1:
+                        ws2.close()
+                        return msg.get("result", {}).get("result", {}).get("value", "")
+                ws2.close()
+            except Exception:
+                pass
+            return ""
+
+        def _tab_outer_html():
+            return _tab_eval("document.documentElement ? document.documentElement.outerHTML : ''", timeout=12)
+
+        def _debug_cookie_header():
+            try:
+                ws2 = websocket.create_connection(
+                    p_tab["webSocketDebuggerUrl"], timeout=10, suppress_origin=True)
+                ws2.settimeout(2)
+                ws2.send(json.dumps({
+                    "id": 1,
+                    "method": "Network.getCookies",
+                    "params": {
+                        "urls": [
+                            self.BASE_URL,
+                            "https://ars.els-cdn.com",
+                            "https://www.sciencedirect.com",
+                            "https://www.elsevier.com",
+                        ]
+                    },
+                }))
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    try:
+                        msg = json.loads(ws2.recv())
+                    except Exception:
+                        continue
+                    if msg.get("id") == 1:
+                        cookies = msg.get("result", {}).get("cookies", []) or []
+                        ws2.close()
+                        return "; ".join(
+                            f"{cookie.get('name')}={cookie.get('value')}"
+                            for cookie in cookies
+                            if cookie.get("name") and cookie.get("value")
+                        )
+                ws2.close()
+            except Exception:
+                pass
+            return ""
+
         def _ensure_tab():
             nonlocal p_tab
             try:
@@ -895,9 +1051,53 @@ class ScienceDirectScraper:
             article_url = f"{self.BASE_URL}/science/article/pii/{pii}"
             _tab_navigate(article_url, wait=random.uniform(4, 6))
             try:
-                return _dt_capture_pdf(p_tab["webSocketDebuggerUrl"], pdf_url, timeout=45)
+                article_html = _tab_outer_html()
+                pdf_bytes, note = _dt_capture_pdf(p_tab["webSocketDebuggerUrl"], pdf_url, timeout=45)
+                return pdf_bytes, note, article_html
             except Exception as exc:
-                return None, str(exc)
+                return None, str(exc), ""
+
+        def _download_supplements(article, idx, article_file, article_html=""):
+            if not download_supplements:
+                return
+            pii = article.get("pii", "")
+            if not pii:
+                return
+            article_url = f"{self.BASE_URL}/science/article/pii/{pii}"
+            if not article_html:
+                try:
+                    _ensure_tab()
+                    _tab_navigate(article_url, wait=random.uniform(3, 5))
+                    article_html = _tab_outer_html()
+                except Exception:
+                    article_html = ""
+            cookie_header = _debug_cookie_header()
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/146.0.0.0 Safari/537.36"
+                ),
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+                "Referer": article_url,
+            }
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+            supp_session = curl_requests.Session(impersonate="chrome124")
+            records = download_supplements_for_article(
+                article=article,
+                article_index=idx,
+                article_file=article_file,
+                article_html=article_html,
+                article_url=article_url,
+                output_dir=output_dir,
+                session=supp_session,
+                headers=headers,
+            )
+            _add_supplement_records(records)
+            s_ok, s_failed, s_skipped, s_not_found = supplement_status_counts(records)
+            print(f"    [Supplements] ok/failed/skipped/not found: {s_ok}/{s_failed}/{s_skipped}/{s_not_found}")
 
         downloads_since_break = 0
 
@@ -909,21 +1109,35 @@ class ScienceDirectScraper:
                 if not pii:
                     print(f"  [{idx}/{total}] Skipped (no PII): {title_short}")
                     skip += 1
+                    _record(article, "skipped", reason="No PII")
                     continue
 
                 filename = self._make_pdf_filename(idx, article)
                 filepath = os.path.join(pdf_dir, filename)
+                legacy_filename = self._make_legacy_english_pdf_filename(idx, article)
+                existing_filename = ""
+                existing_filepath = ""
+                for candidate in [filename, legacy_filename]:
+                    if candidate == existing_filename:
+                        continue
+                    candidate_path = os.path.join(pdf_dir, candidate)
+                    if os.path.exists(candidate_path) and os.path.getsize(candidate_path) > 0:
+                        existing_filename = candidate
+                        existing_filepath = candidate_path
+                        break
 
-                if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-                    print(f"  [{idx}/{total}] Already exists, skipping: {filename}")
+                if existing_filepath:
+                    print(f"  [{idx}/{total}] Already exists, skipping: {existing_filename}")
                     skip += 1
+                    _record(article, "skipped", file=existing_filename, reason="File already exists")
+                    _download_supplements(article, idx, existing_filename)
                     continue
 
                 pdf_url = article.get("pdf_url") or ""
                 if not pdf_url or "pdfft" not in pdf_url:
                     pdf_url = f"{self.BASE_URL}/science/article/pii/{pii}/pdfft"
 
-                pdf_bytes, note = _fetch_one(pii, pdf_url)
+                pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
                 if pdf_bytes is None and str(note).startswith("blocked:"):
                     note_low = str(note).lower()
@@ -940,18 +1154,18 @@ class ScienceDirectScraper:
                             input("  >>> Press Enter after completing verification: ")
                         except EOFError:
                             time.sleep(30)
-                        pdf_bytes, note = _fetch_one(pii, pdf_url)
+                        pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
                     else:
                         print(f"  [{idx}/{total}] Rate limited. Waiting {BLOCK_WAIT_1}s (~{BLOCK_WAIT_1//60} min) before retry...")
                         _tab_navigate("about:blank", wait=2)
                         time.sleep(BLOCK_WAIT_1)
-                        pdf_bytes, note = _fetch_one(pii, pdf_url)
+                        pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
                         if pdf_bytes is None and str(note).startswith("blocked:"):
                             print(f"  [{idx}/{total}] Still rate limited. Waiting {BLOCK_WAIT_2}s (~{BLOCK_WAIT_2//60} min)...")
                             _tab_navigate("about:blank", wait=2)
                             time.sleep(BLOCK_WAIT_2)
-                            pdf_bytes, note = _fetch_one(pii, pdf_url)
+                            pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
                 if pdf_bytes and pdf_bytes[:4] == b"%PDF":
                     with open(filepath, "wb") as f:
@@ -960,11 +1174,15 @@ class ScienceDirectScraper:
                     print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)")
                     success += 1
                     downloads_since_break += 1
+                    _record(article, "success", file=filename)
+                    _download_supplements(article, idx, filename, article_html)
                 else:
                     is_blocked = str(note).startswith("blocked:")
                     tag = "Blocked" if is_blocked else "PDF not captured"
                     print(f"  [{idx}/{total}] ✗ {tag}: {title_short[:40]}  ({str(note)[:80]})")
                     fail += 1
+                    _record(article, "failed", file=filename, reason=f"{tag}: {str(note)[:160]}")
+                    _skip_supplements_for_pdf_failure(article, idx, filename)
 
                 if idx < total:
                     if downloads_since_break >= SESSION_BREAK_N:
@@ -978,6 +1196,12 @@ class ScienceDirectScraper:
             close_tab(p_tab["id"])
 
         print(f"\n[Done] Success: {success}  Failed: {fail}  Skipped: {skip}")
+        if download_supplements:
+            print(
+                f"[Supplements Done] Success: {supplement_success}  Failed: {supplement_failed}  "
+                f"Skipped: {supplement_skipped}  Not found: {supplement_not_found}"
+            )
+        return _result()
 
     # ── Chrome CDP utilities ──────────────────────────────────────────────────
 
@@ -1503,7 +1727,10 @@ def interactive_mode():
     if fmt in ("json", "all"):
         scraper.save_to_json(results, base + ".json", output_dir)
     if download_pdfs:
-        scraper.download_pdfs_devtools(results, output_dir)
+        download_result = scraper.download_pdfs_devtools(results, output_dir)
+        if isinstance(download_result, DownloadRunResult):
+            report_path = write_supplement_download_report(download_result.supplement_records, output_dir)
+            print(f"[Report] Supplement download details saved → {report_path}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1551,6 +1778,8 @@ Examples:
     parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
                         help="Download PDFs after saving the paper list")
+    parser.add_argument("--no-download-supplements", action="store_true",
+                        help="Do not download ScienceDirect supplementary files when downloading PDFs")
     parser.add_argument("--output",        help="Output directory (default: ./results/)")
     parser.add_argument("--filename",      help="Custom output filename (without extension)")
     return parser
@@ -1643,7 +1872,14 @@ def main():
     if args.format in ("json", "all"):
         scraper.save_to_json(results, base + ".json", output_dir)
     if args.download_pdfs:
-        scraper.download_pdfs_devtools(results, output_dir)
+        download_result = scraper.download_pdfs_devtools(
+            results,
+            output_dir,
+            download_supplements=not args.no_download_supplements,
+        )
+        if not args.no_download_supplements and isinstance(download_result, DownloadRunResult):
+            report_path = write_supplement_download_report(download_result.supplement_records, output_dir)
+            print(f"[Report] Supplement download details saved → {report_path}")
 
 
 if __name__ == "__main__":

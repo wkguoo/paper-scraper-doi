@@ -18,6 +18,7 @@ call :copy_required "paper_scraper_ui.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "start_paper_scraper_ui.bat" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_scraper.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_scraper_en.py" "%PACKAGE_DIR%\" || exit /b 1
+call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_institutional_skill.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "paper_skill.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "doi_batch_utils.py" "%PACKAGE_DIR%\" || exit /b 1
@@ -35,6 +36,10 @@ call :robocopy_required "paper_automation" "%PACKAGE_DIR%\paper_automation" || e
 if not exist "%PACKAGE_DIR%\docs" mkdir "%PACKAGE_DIR%\docs" || exit /b 1
 call :copy_required "docs\sciencedirect_skill_beginner_guide.md" "%PACKAGE_DIR%\docs\" || exit /b 1
 call :robocopy_required "skills" "%PACKAGE_DIR%\skills" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\sd_supplements.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\skills\sciencedirect-doi-download\references" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\skills\sciencedirect-doi-download\references\beginner-workflow.md" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\skills\sciencedirect-doi-download\references\failure-reasons.md" || exit /b 1
 
 echo Package created:
 echo   %CD%\%PACKAGE_DIR%
@@ -79,5 +84,12 @@ set "ROBOCOPY_EXIT=%ERRORLEVEL%"
 if %ROBOCOPY_EXIT% GEQ 8 (
     echo [ERROR] Robocopy failed for required directory: %~1
     exit /b %ROBOCOPY_EXIT%
+)
+exit /b 0
+
+:verify_required
+if not exist "%~1" (
+    echo [ERROR] Missing packaged required path: %~1
+    exit /b 1
 )
 exit /b 0

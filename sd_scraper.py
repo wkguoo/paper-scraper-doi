@@ -31,7 +31,6 @@ ScienceDirect 论文抓取工具 v2.0
 
 import json
 import csv
-import hashlib
 import html
 import os
 import sys
@@ -44,9 +43,11 @@ from urllib.parse import parse_qs, urlencode, unquote, urlparse
 
 from curl_cffi import requests as curl_requests
 from doi_batch_utils import (
+    DownloadRunResult,
     PdfDownloadRecord,
     RunEvent,
     RunSummary,
+    SupplementDownloadRecord,
     check_cookie_json,
     clean_doi,
     extract_doi_from_text,
@@ -59,6 +60,12 @@ from doi_batch_utils import (
     write_retry_input_from_reports,
     write_run_summary,
     write_run_summary_json,
+    write_supplement_download_report,
+)
+from sd_supplements import (
+    download_supplements_for_article,
+    make_article_stem,
+    supplement_status_counts,
 )
 from windows_paths import (
     BROWSER_EXE_ENV,
@@ -1204,25 +1211,7 @@ class ScienceDirectScraper:
     @staticmethod
     def _make_pdf_filename(idx, article):
         """生成 PDF 文件名：年份_第一作者_短题名_doihash.pdf。"""
-        authors = article.get("authors", "")
-        if isinstance(authors, list):
-            authors = "; ".join(str(author) for author in authors)
-        first_author = "no-author"
-        if authors:
-            first = str(authors).split(";")[0].strip()
-            if first:
-                first_author = first.split(",")[0].strip().split()[0]
-        year_match = re.search(r"\b(19|20)\d{2}\b", str(article.get("year") or article.get("date") or ""))
-        year = year_match.group(0) if year_match else "undated"
-        doi = str(article.get("doi") or "").lower().strip()
-        pii = str(article.get("pii") or "").strip()
-        title = str(article.get("title") or (f"DOI {doi}" if doi else "") or (f"PII {pii}" if pii else "") or "paper")
-        safe_title = re.sub(r'[\\/*?:"<>|]', " ", title)
-        safe_title = re.sub(r"\s+", " ", safe_title).strip()[:80] or "paper"
-        first_author = re.sub(r'[\\/*?:"<>|\s]+', "_", first_author).strip("_") or "no-author"
-        hash_source = doi or pii or str(idx)
-        doi_hash = hashlib.sha1(hash_source.encode("utf-8", errors="ignore")).hexdigest()[:8]
-        return f"{year}_{first_author}_{safe_title}_{doi_hash}.pdf"
+        return f"{make_article_stem(idx, article)}.pdf"
 
     # ── PDF 下载（直连，无 CDP）────────────────────────────────────────────────
 
@@ -1560,6 +1549,7 @@ class ScienceDirectScraper:
         login_wait_seconds=600,
         interactive_login=True,
         event_path=None,
+        download_supplements=True,
     ):
         """
         通过 Chrome DevTools Protocol 下载 PDF（纯 websocket-client，无需 Playwright）。
@@ -1574,7 +1564,9 @@ class ScienceDirectScraper:
         """
         total = len(results)
         pdf_records = []
+        supplement_records = []
         success = skip = fail = 0
+        supplement_success = supplement_failed = supplement_skipped = supplement_not_found = 0
 
         def _record(article, status, file="", reason=""):
             pdf_records.append(PdfDownloadRecord(
@@ -1604,14 +1596,73 @@ class ScienceDirectScraper:
                 ),
             )
 
+        def _add_supplement_records(records):
+            nonlocal supplement_success, supplement_failed, supplement_skipped, supplement_not_found
+            for record in records:
+                supplement_records.append(record)
+                if record.status == "success":
+                    supplement_success += 1
+                elif record.status == "failed":
+                    supplement_failed += 1
+                elif record.status == "skipped":
+                    supplement_skipped += 1
+                elif record.status == "not_found":
+                    supplement_not_found += 1
+                safe_write_run_event(
+                    event_path,
+                    RunEvent(
+                        stage="supplement",
+                        status=record.status,
+                        doi=record.doi,
+                        title=record.article_title,
+                        pii=record.pii,
+                        file=record.file,
+                        reason=record.reason,
+                        counts={
+                            "supplement_success": supplement_success,
+                            "supplement_failed": supplement_failed,
+                            "supplement_skipped": supplement_skipped,
+                            "supplement_not_found": supplement_not_found,
+                        },
+                    ),
+                )
+
+        def _skip_supplements_for_pdf_failure(article, idx, article_file=""):
+            if not download_supplements:
+                return
+            filename = article_file or self._make_pdf_filename(idx, article)
+            _add_supplement_records([
+                SupplementDownloadRecord(
+                    doi=article.get("doi", ""),
+                    pii=article.get("pii", ""),
+                    article_title=article.get("title", ""),
+                    article_file=filename,
+                    supplement_index=0,
+                    status="skipped",
+                    reason="PDF download failed; supplement download not attempted",
+                )
+            ])
+
         try:
             import websocket
         except ImportError:
             print("[错误] 需要 websocket-client：pip install websocket-client")
-            for article in results:
+            for idx, article in enumerate(results, 1):
                 fail += 1
-                _record(article, "failed", reason="缺少 websocket-client 依赖")
-            return 0, total, 0, pdf_records
+                filename = self._make_pdf_filename(idx, article)
+                _record(article, "failed", file=filename, reason="缺少 websocket-client 依赖")
+                _skip_supplements_for_pdf_failure(article, idx, filename)
+            return DownloadRunResult(
+                pdf_success=0,
+                pdf_failed=total,
+                pdf_skipped=0,
+                pdf_records=pdf_records,
+                supplement_success=supplement_success,
+                supplement_failed=supplement_failed,
+                supplement_skipped=supplement_skipped,
+                supplement_not_found=supplement_not_found,
+                supplement_records=supplement_records,
+            )
 
         from urllib.request import Request as _Req, urlopen as _urlopen
         from urllib.parse import quote as _quote
@@ -1629,10 +1680,22 @@ class ScienceDirectScraper:
             self._launch_chrome_with_debug()
             if not self._is_chrome_debug_ready():
                 print("[错误] Chrome 调试端口仍不可用，PDF 下载中止")
-                for article in results:
+                for idx, article in enumerate(results, 1):
                     fail += 1
-                    _record(article, "failed", reason="Chrome 调试端口不可用")
-                return success, total, skip, pdf_records
+                    filename = self._make_pdf_filename(idx, article)
+                    _record(article, "failed", file=filename, reason="Chrome 调试端口不可用")
+                    _skip_supplements_for_pdf_failure(article, idx, filename)
+                return DownloadRunResult(
+                    pdf_success=success,
+                    pdf_failed=total,
+                    pdf_skipped=skip,
+                    pdf_records=pdf_records,
+                    supplement_success=supplement_success,
+                    supplement_failed=supplement_failed,
+                    supplement_skipped=supplement_skipped,
+                    supplement_not_found=supplement_not_found,
+                    supplement_records=supplement_records,
+                )
         else:
             print("  已检测到 Chrome 调试端口 ✓")
 
@@ -1757,9 +1820,21 @@ class ScienceDirectScraper:
             fail += total
             print(f"  [错误] 无法创建 Chrome 调试标签页，PDF 下载中止：{e}")
             print(f"\n[完成] 成功: {success}  失败: {fail}  跳过: {skip}")
-            for article in results:
-                _record(article, "failed", reason=f"无法创建 Chrome 调试标签页: {e}")
-            return success, fail, skip, pdf_records
+            for idx, article in enumerate(results, 1):
+                filename = self._make_pdf_filename(idx, article)
+                _record(article, "failed", file=filename, reason=f"无法创建 Chrome 调试标签页: {e}")
+                _skip_supplements_for_pdf_failure(article, idx, filename)
+            return DownloadRunResult(
+                pdf_success=success,
+                pdf_failed=fail,
+                pdf_skipped=skip,
+                pdf_records=pdf_records,
+                supplement_success=supplement_success,
+                supplement_failed=supplement_failed,
+                supplement_skipped=supplement_skipped,
+                supplement_not_found=supplement_not_found,
+                supplement_records=supplement_records,
+            )
 
         def _tab_navigate(url, wait=5.0):
             """在持久标签页内导航到 url，等待页面加载，不抛异常。"""
@@ -1790,6 +1865,69 @@ class ScienceDirectScraper:
                 pass
             time.sleep(wait)
 
+        def _tab_eval(expression, timeout=10):
+            try:
+                ws2 = websocket.create_connection(
+                    p_tab["webSocketDebuggerUrl"], timeout=timeout, suppress_origin=True)
+                ws2.settimeout(2)
+                ws2.send(json.dumps({
+                    "id": 1,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": expression, "returnByValue": True},
+                }))
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    try:
+                        msg = json.loads(ws2.recv())
+                    except Exception:
+                        continue
+                    if msg.get("id") == 1:
+                        ws2.close()
+                        return msg.get("result", {}).get("result", {}).get("value", "")
+                ws2.close()
+            except Exception:
+                pass
+            return ""
+
+        def _tab_outer_html():
+            return _tab_eval("document.documentElement ? document.documentElement.outerHTML : ''", timeout=12)
+
+        def _debug_cookie_header():
+            try:
+                ws2 = websocket.create_connection(
+                    p_tab["webSocketDebuggerUrl"], timeout=10, suppress_origin=True)
+                ws2.settimeout(2)
+                ws2.send(json.dumps({
+                    "id": 1,
+                    "method": "Network.getCookies",
+                    "params": {
+                        "urls": [
+                            self.BASE_URL,
+                            "https://ars.els-cdn.com",
+                            "https://www.sciencedirect.com",
+                            "https://www.elsevier.com",
+                        ]
+                    },
+                }))
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    try:
+                        msg = json.loads(ws2.recv())
+                    except Exception:
+                        continue
+                    if msg.get("id") == 1:
+                        cookies = msg.get("result", {}).get("cookies", []) or []
+                        ws2.close()
+                        return "; ".join(
+                            f"{cookie.get('name')}={cookie.get('value')}"
+                            for cookie in cookies
+                            if cookie.get("name") and cookie.get("value")
+                        )
+                ws2.close()
+            except Exception:
+                pass
+            return ""
+
         def _ensure_tab():
             """若持久 tab 的 DevTools 连接已失效，重建它。"""
             nonlocal p_tab
@@ -1811,15 +1949,62 @@ class ScienceDirectScraper:
         def _fetch_one(pii, pdf_url):
             """
             在持久 tab 里先导航文章页（建立 Cookie 上下文），
-            再拦截 pdfft PDF 字节。返回 (bytes|None, note)。
+            再拦截 pdfft PDF 字节。返回 (bytes|None, note, article_html)。
             """
             try:
                 _ensure_tab()
                 article_url = f"{self.BASE_URL}/science/article/pii/{pii}"
                 _tab_navigate(article_url, wait=random.uniform(4, 6))
-                return _dt_capture_pdf(p_tab["webSocketDebuggerUrl"], pdf_url, timeout=45)
+                article_html = _tab_outer_html()
+                pdf_bytes, note = _dt_capture_pdf(p_tab["webSocketDebuggerUrl"], pdf_url, timeout=45)
+                return pdf_bytes, note, article_html
             except Exception as exc:
-                return None, str(exc)
+                return None, str(exc), ""
+
+        def _download_supplements(article, idx, article_file, article_html=""):
+            if not download_supplements:
+                return
+            pii = article.get("pii", "")
+            if not pii:
+                return
+            article_url = f"{self.BASE_URL}/science/article/pii/{pii}"
+            if not article_html:
+                try:
+                    _ensure_tab()
+                    _tab_navigate(article_url, wait=random.uniform(3, 5))
+                    article_html = _tab_outer_html()
+                except Exception:
+                    article_html = ""
+            cookie_header = _debug_cookie_header()
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/146.0.0.0 Safari/537.36"
+                ),
+                "Accept": "*/*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Referer": article_url,
+            }
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+            supp_session = curl_requests.Session(impersonate="chrome124")
+            records = download_supplements_for_article(
+                article=article,
+                article_index=idx,
+                article_file=article_file,
+                article_html=article_html,
+                article_url=article_url,
+                output_dir=output_dir,
+                session=supp_session,
+                headers=headers,
+            )
+            _add_supplement_records(records)
+            article_success, article_failed, article_skipped, article_not_found = supplement_status_counts(records)
+            print(
+                f"    [补充材料] 成功/失败/跳过/未发现: "
+                f"{article_success}/{article_failed}/{article_skipped}/{article_not_found}"
+            )
 
         downloads_since_break = 0
 
@@ -1841,13 +2026,14 @@ class ScienceDirectScraper:
                     print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
                     skip += 1
                     _record(article, "skipped", file=filename, reason="文件已存在")
+                    _download_supplements(article, idx, filename)
                     continue
 
                 pdf_url = article.get("pdf_url") or ""
                 if not pdf_url or "pdfft" not in pdf_url:
                     pdf_url = f"{self.BASE_URL}/science/article/pii/{pii}/pdfft"
 
-                pdf_bytes, note = _fetch_one(pii, pdf_url)
+                pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
                 # 封锁处理：区分「速率限制」和「CAPTCHA」
                 if pdf_bytes is None and str(note).startswith("blocked:"):
@@ -1885,7 +2071,7 @@ class ScienceDirectScraper:
                                 time.sleep(30)
                         else:
                             time.sleep(min(max(login_wait_seconds, 30), 180))
-                        pdf_bytes, note = _fetch_one(pii, pdf_url)
+                        pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
                     else:
                         # 速率限制：自动等待后重试（无需人工）
                         print(f"  [{idx}/{total}] ⏳ 速率限制，等 {BLOCK_WAIT_1}s（约 {BLOCK_WAIT_1//60} 分钟）后自动重试...")
@@ -1903,13 +2089,13 @@ class ScienceDirectScraper:
                         )
                         _tab_navigate("about:blank", wait=2)
                         time.sleep(BLOCK_WAIT_1)
-                        pdf_bytes, note = _fetch_one(pii, pdf_url)
+                        pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
                         if pdf_bytes is None and str(note).startswith("blocked:"):
                             print(f"  [{idx}/{total}] ⏳ 仍被限速，再等 {BLOCK_WAIT_2}s（约 {BLOCK_WAIT_2//60} 分钟）...")
                             _tab_navigate("about:blank", wait=2)
                             time.sleep(BLOCK_WAIT_2)
-                            pdf_bytes, note = _fetch_one(pii, pdf_url)
+                            pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
                 if pdf_bytes and pdf_bytes[:4] == b"%PDF":
                     with open(filepath, "wb") as f:
@@ -1919,12 +2105,14 @@ class ScienceDirectScraper:
                     success += 1
                     downloads_since_break += 1
                     _record(article, "success", file=filename)
+                    _download_supplements(article, idx, filename, article_html)
                 else:
                     is_blocked = str(note).startswith("blocked:")
                     tag = "被封锁" if is_blocked else "未捕获PDF"
                     print(f"  [{idx}/{total}] ✗ {tag}: {title_short[:40]}  ({str(note)[:80]})")
                     fail += 1
-                    _record(article, "failed", reason=f"{tag}: {str(note)[:160]}")
+                    _record(article, "failed", file=filename, reason=f"{tag}: {str(note)[:160]}")
+                    _skip_supplements_for_pdf_failure(article, idx, filename)
 
                 if idx < total:
                     # 每 SESSION_BREAK_N 篇成功后主动歇息，避免触发封锁
@@ -1939,15 +2127,39 @@ class ScienceDirectScraper:
             close_tab(p_tab["id"])
 
         print(f"\n[完成] 成功: {success}  失败: {fail}  跳过: {skip}")
+        if download_supplements:
+            print(
+                f"[补充材料完成] 成功: {supplement_success}  失败: {supplement_failed}  "
+                f"跳过: {supplement_skipped}  未发现: {supplement_not_found}"
+            )
         safe_write_run_event(
             event_path,
             RunEvent(
                 stage="pdf",
                 status="complete",
-                counts={"pdf_success": success, "pdf_failed": fail, "pdf_skipped": skip, "pdf_total": total},
+                counts={
+                    "pdf_success": success,
+                    "pdf_failed": fail,
+                    "pdf_skipped": skip,
+                    "pdf_total": total,
+                    "supplement_success": supplement_success,
+                    "supplement_failed": supplement_failed,
+                    "supplement_skipped": supplement_skipped,
+                    "supplement_not_found": supplement_not_found,
+                },
             ),
         )
-        return success, fail, skip, pdf_records
+        return DownloadRunResult(
+            pdf_success=success,
+            pdf_failed=fail,
+            pdf_skipped=skip,
+            pdf_records=pdf_records,
+            supplement_success=supplement_success,
+            supplement_failed=supplement_failed,
+            supplement_skipped=supplement_skipped,
+            supplement_not_found=supplement_not_found,
+            supplement_records=supplement_records,
+        )
 
     # ── Chrome CDP（保留为备用，调试用）──────────────────────────────────────
 
@@ -2505,7 +2717,10 @@ def interactive_mode():
     if fmt in ("json", "all"):
         scraper.save_to_json(results, base + ".json", output_dir)
     if download_pdfs:
-        scraper.download_pdfs_devtools(results, output_dir)
+        download_result = scraper.download_pdfs_devtools(results, output_dir)
+        if isinstance(download_result, DownloadRunResult):
+            report_path = write_supplement_download_report(download_result.supplement_records, output_dir)
+            print(f"[报告] 补充材料下载明细已保存 -> {report_path}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2554,6 +2769,8 @@ def build_parser():
     parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
                         help="在保存文献列表后，继续下载对应 PDF")
+    parser.add_argument("--no-download-supplements", action="store_true",
+                        help="下载 PDF 时不自动下载 ScienceDirect 补充材料")
     parser.add_argument("--output",        help="输出目录（默认 ./results/）")
     parser.add_argument("--filename",      help="自定义输出文件名（不含扩展名）")
     parser.add_argument("--input", dest="input_file",
@@ -2663,10 +2880,25 @@ def main():
 
         pdf_success = pdf_failed = pdf_skipped = 0
         pdf_records = []
+        supplement_success = supplement_failed = supplement_skipped = supplement_not_found = 0
+        supplement_records = []
+        supplement_report_path = ""
+        download_supplements = args.download_pdfs and not args.no_download_supplements
         if args.download_pdfs and results:
-            download_result = scraper.download_pdfs_devtools(results, output_dir, event_path=event_path)
+            download_result = scraper.download_pdfs_devtools(
+                results,
+                output_dir,
+                event_path=event_path,
+                download_supplements=download_supplements,
+            )
             if download_result:
                 pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
+                if isinstance(download_result, DownloadRunResult):
+                    supplement_success = download_result.supplement_success
+                    supplement_failed = download_result.supplement_failed
+                    supplement_skipped = download_result.supplement_skipped
+                    supplement_not_found = download_result.supplement_not_found
+                    supplement_records = download_result.supplement_records
             else:
                 pdf_failed = len(results)
                 pdf_records = [
@@ -2694,6 +2926,8 @@ def main():
             ]
 
         pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
+        if download_supplements and results:
+            supplement_report_path = str(write_supplement_download_report(supplement_records, output_dir))
         retry_input_path = ""
         retry_input_count = 0
         retry_input_excluded_count = 0
@@ -2734,10 +2968,18 @@ def main():
             retry_input_path=retry_input_path,
             retry_input_count=retry_input_count,
             retry_input_excluded_count=retry_input_excluded_count,
+            supplement_requested=download_supplements and bool(results),
+            supplement_success=supplement_success,
+            supplement_failed=supplement_failed,
+            supplement_skipped=supplement_skipped,
+            supplement_not_found=supplement_not_found,
+            supplement_report_path=supplement_report_path,
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary, event_path=event_path)
         print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")
+        if supplement_report_path:
+            print(f"[报告] 补充材料下载明细已保存 -> {supplement_report_path}")
         print(f"[报告] 任务摘要已保存 -> {summary_path}")
         print(f"[报告] JSON 摘要已保存 -> {summary_json_path}")
         return
@@ -2797,7 +3039,14 @@ def main():
     if args.format in ("json", "all"):
         scraper.save_to_json(results, base + ".json", output_dir)
     if args.download_pdfs:
-        scraper.download_pdfs_devtools(results, output_dir)
+        download_result = scraper.download_pdfs_devtools(
+            results,
+            output_dir,
+            download_supplements=not args.no_download_supplements,
+        )
+        if not args.no_download_supplements and isinstance(download_result, DownloadRunResult):
+            report_path = write_supplement_download_report(download_result.supplement_records, output_dir)
+            print(f"[报告] 补充材料下载明细已保存 -> {report_path}")
 
 
 if __name__ == "__main__":

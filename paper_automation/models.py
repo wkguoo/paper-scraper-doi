@@ -41,6 +41,7 @@ class MetadataResult:
     is_oa: bool = False
     confidence: float = 0.0
     source: str = ""
+    match_basis: str = ""
     reason: str = ""
     crossref: dict = field(default_factory=dict)
     openalex: dict = field(default_factory=dict)
@@ -82,4 +83,3 @@ class WorkflowResult:
     manifest_csv: str
     manifest_json: str
     duplicates_csv: str
-

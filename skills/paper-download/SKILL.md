@@ -27,6 +27,14 @@ Use `paper_skill.py` for legal open-access downloads when the user asks for OA/o
 
 When intent is unclear, infer from wording and input. Ask only if the choice changes safety or expected access path.
 
+For noisy AI recommendations, title-only lists, short citations, or beginner users, route ScienceDirect requests through preflight first:
+
+```powershell
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --beginner --preflight --auto-web-search
+```
+
+Download only after reporting `doi_intake_preview.csv` and excluding `needs_review` rows.
+
 ## ScienceDirect Institutional Workflow
 
 Run `sd_institutional_skill.py` with one or more inputs:
@@ -43,9 +51,11 @@ Other input forms:
 .\.venv\Scripts\python.exe sd_institutional_skill.py --folder "D:\PapersToDownload" --out results
 ```
 
-Use `--dry-run` when the user asks to preview/resolve without downloading. Use `--resolve-title-only` only when the user explicitly wants file rows without DOI to be resolved by title.
+Use `--beginner --preflight` when the user asks for a safe preview or gives messy recommendations. Preflight writes intake/review outputs and does not download PDFs or supplement files. Use `--dry-run` only when the user specifically wants ScienceDirect DOI metadata/PII resolution without PDF download. Use `--resolve-title-only` only when the user explicitly wants file rows without DOI to be resolved by title.
 
-Report `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_resolved.xlsx`, `doi_batch_failed.csv`, `pdf_download_report.csv`, `run_summary.txt`, and `pdfs\`.
+When PDF downloading is active, ScienceDirect supplementary materials are downloaded by default into `supplements\` and summarized in `supplement_download_report.csv`. These supplement outputs are generated only when PDF download and supplement download are both active. Add `--no-download-supplements` only when the user explicitly wants PDFs without supplementary files. Explain supplement status `not_found` as no detectable supplement links, not as a PDF failure.
+
+Report preflight outputs separately from formal download outputs. Preflight centers on `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_resolved.xlsx`, `doi_batch_failed.csv`, and `run_summary.txt`. Formal downloads also report `pdf_download_report.csv`, `pdfs\`, and, when generated, `supplement_download_report.csv` plus `supplements\`.
 
 ## Legal OA Workflow
 

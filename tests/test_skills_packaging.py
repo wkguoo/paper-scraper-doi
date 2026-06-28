@@ -58,6 +58,59 @@ class SkillPackagingTests(unittest.TestCase):
         self.assertIn("Test-PathOverlap", text)
         self.assertIn("Refusing to install because target skills root overlaps", text)
 
+    def test_sciencedirect_skills_document_supplement_outputs(self) -> None:
+        for skill_name in ("paper-download", "sciencedirect-doi-download"):
+            with self.subTest(skill=skill_name):
+                text = (PROJECT_ROOT / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
+                self.assertIn("supplement_download_report.csv", text)
+                self.assertIn("supplements\\", text)
+                self.assertIn("--no-download-supplements", text)
+
+    def test_sciencedirect_reference_files_exist_and_are_linked(self) -> None:
+        references_dir = PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "references"
+        expected_reference_files = {
+            "beginner-workflow.md",
+            "failure-reasons.md",
+        }
+
+        self.assertTrue(references_dir.is_dir())
+        actual_reference_files = {path.name for path in references_dir.glob("*.md")}
+        self.assertTrue(expected_reference_files.issubset(actual_reference_files))
+
+        skill_text = (
+            PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        for filename in expected_reference_files:
+            with self.subTest(reference=filename):
+                self.assertIn(f"references/{filename}", skill_text)
+
+    def test_beginner_docs_preflight_before_download_not_dry_run(self) -> None:
+        beginner_docs = [
+            PROJECT_ROOT / "README.md",
+            PROJECT_ROOT / "README_zh.md",
+            PROJECT_ROOT / "docs" / "sciencedirect_skill_beginner_guide.md",
+            PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
+            PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md",
+            PROJECT_ROOT
+            / "skills"
+            / "sciencedirect-doi-download"
+            / "references"
+            / "beginner-workflow.md",
+        ]
+        blocked_first_pass_phrases = [
+            "Use $sciencedirect-doi-download to dry-run this paper list",
+            "Use $sciencedirect-doi-download to dry-run these paper recommendations",
+            "第一次拿到 AI 推荐列表，先跑 `--dry-run`",
+            "beginner_dry_run",
+        ]
+
+        for path in beginner_docs:
+            with self.subTest(path=path.relative_to(PROJECT_ROOT)):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("--beginner --preflight", text)
+                for phrase in blocked_first_pass_phrases:
+                    self.assertNotIn(phrase, text)
+
     def test_windows_ui_package_script_rebuilds_clean_package_dir(self) -> None:
         text = self._package_script_text()
 
@@ -75,6 +128,7 @@ class SkillPackagingTests(unittest.TestCase):
 
         expected_snippets = [
             'call :copy_required "sd_scraper_en.py" "%PACKAGE_DIR%\\"',
+            'call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "LICENSE" "%PACKAGE_DIR%\\"',
             'call :copy_optional "如何导出机构Cookie.md" "%PACKAGE_DIR%\\"',
             'call :copy_required "README.md" "%PACKAGE_DIR%\\"',
@@ -84,6 +138,15 @@ class SkillPackagingTests(unittest.TestCase):
             'call :copy_required "docs\\sciencedirect_skill_beginner_guide.md" "%PACKAGE_DIR%\\docs\\"',
             'call :robocopy_required "paper_automation" "%PACKAGE_DIR%\\paper_automation"',
             'call :robocopy_required "skills" "%PACKAGE_DIR%\\skills"',
+            'call :verify_required "%PACKAGE_DIR%\\skills\\sciencedirect-doi-download\\references"',
+            (
+                'call :verify_required "%PACKAGE_DIR%\\skills\\sciencedirect-doi-download'
+                '\\references\\beginner-workflow.md"'
+            ),
+            (
+                'call :verify_required "%PACKAGE_DIR%\\skills\\sciencedirect-doi-download'
+                '\\references\\failure-reasons.md"'
+            ),
         ]
 
         for snippet in expected_snippets:
@@ -107,6 +170,7 @@ class SkillPackagingTests(unittest.TestCase):
         self.assertIn(":copy_required", text)
         self.assertIn(":copy_optional", text)
         self.assertIn(":robocopy_required", text)
+        self.assertIn(":verify_required", text)
         self.assertIn('rmdir /S /Q "%PACKAGE_DIR%"', text)
         self.assertIn('if exist "%PACKAGE_DIR%" (', text)
         self.assertIn("|| exit /b 1", text)

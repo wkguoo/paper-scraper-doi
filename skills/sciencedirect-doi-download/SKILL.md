@@ -7,6 +7,8 @@ description: Download ScienceDirect PDFs through the user's institutional access
 
 Use the repository CLI instead of the Tkinter UI. Keep the legal OA `paper_skill.py` workflow separate; this skill is specifically for ScienceDirect institutional access on the user's local machine.
 
+Default to a two-stage beginner-safe workflow for noisy pasted lists: preflight first, then download only confirmed DOI rows. Read `references/beginner-workflow.md` when the user is new, asks "how to use", gives an AI-recommended list, or provides title-only/short citation text. Read `references/failure-reasons.md` when explaining reports or failures.
+
 For student-facing beginner instructions, refer to `docs/sciencedirect_skill_beginner_guide.md` in the repository when the user asks how to use this skill.
 
 ## Workflow
@@ -22,9 +24,12 @@ For student-facing beginner instructions, refer to `docs/sciencedirect_skill_beg
    - `--text "<pasted DOI or literature text>"`
    - `--input "<file>"`
    - `--folder "<folder>"`
-4. Let the script resolve mixed text first: DOI rows are normalized directly; title-only rows are resolved through public metadata and low-confidence matches go to review instead of download.
-5. Let the script manage Chrome/Edge login. If institutional access is missing, it opens a debug browser window and polls until the user finishes login.
-6. Report the output directory, recognized/needs-review counts, PDF success/failure/skip counts, `doi_intake_preview.csv`, `pdf_download_report.csv`, `doi_batch_failed.csv`, and `run_summary.txt`.
+4. For noisy or beginner input, run `--beginner --preflight` first. Add `--auto-web-search` only when title-only or short citation rows need optional Semantic Scholar fallback.
+5. Inspect `doi_intake_preview.csv`. Treat `needs_review` rows as unresolved; do not invent DOI values.
+6. For direct download requests with clear DOI rows, run without `--beginner`/`--preflight`.
+7. Let the script manage Chrome/Edge login. If institutional access is missing, it opens a debug browser window and polls until the user finishes login.
+8. When PDF downloading is active, supplementary materials are downloaded by default into `supplements\`; add `--no-download-supplements` only when the user explicitly asks to skip them.
+9. Report preflight outputs separately from formal download outputs. For preflight, report the output directory, recognized/needs-review counts, `doi_intake_preview.csv`, `doi_batch_failed.csv`, and `run_summary.txt`. For formal downloads, also report PDF success/failure/skip counts, `pdf_download_report.csv`, and `pdfs\`. Report supplement success/failure/skipped/not-found counts, `supplement_download_report.csv`, and `supplements\` only when PDF download and supplement download are both active.
 
 ## Commands
 
@@ -39,7 +44,13 @@ For pasted AI paper recommendations:
 
 ```powershell
 Set-Location "<resolved repository root>"
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<copied AI paper list with DOI or titles>" --out results
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<copied AI paper list with DOI or titles>" --out results --beginner --preflight --auto-web-search
+```
+
+After reviewing `doi_intake_preview.csv`, run confirmed rows without preflight:
+
+```powershell
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<confirmed DOI or paper list>" --out results
 ```
 
 For a file:
@@ -62,7 +73,13 @@ To choose the save folder interactively on Windows:
 .\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --choose-out
 ```
 
-Use `--dry-run` or `--no-download-pdfs` only when the user asks to preview/resolve without downloading.
+Use `--beginner --preflight` for first-pass recognition reports. Use `--dry-run` or `--no-download-pdfs` only when the user explicitly wants ScienceDirect DOI metadata/PII resolution without PDF download.
+
+To download PDFs but skip supplementary files:
+
+```powershell
+.\.venv\Scripts\python.exe sd_institutional_skill.py --input "D:\Papers\papers.xlsx" --out results --no-download-supplements
+```
 
 ## Troubleshooting
 
@@ -75,6 +92,8 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\chrome.exe"
 
 - If ScienceDirect shows CAPTCHA, wait for the user to complete it in the opened browser, then continue polling instead of restarting the job repeatedly.
 - If Chinese text in `run_summary.txt` looks garbled in PowerShell, inspect the CSV/XLSX reports or open the file in an editor with UTF-8 support.
+- If `review_hint` says to补 DOI or完整引用, report that row as unresolved and ask for DOI/title/journal/year/volume/pages before retrying.
+- If supplement status is `not_found`, explain that no detectable supplement links were exposed on the article page; do not count it as a PDF failure.
 
 ## Safety
 

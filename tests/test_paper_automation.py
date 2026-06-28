@@ -68,6 +68,57 @@ class ParserAndDeduplicatorTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0].status, "recognized")
         self.assertEqual(candidates[0].title, "Microstructure evolution in laser powder bed fused nickel superalloys")
+        self.assertIn("Acta Materialia, 2024", candidates[0].raw_text)
+
+    def test_parse_mixed_text_keeps_two_line_short_citation_context_for_resolution(self) -> None:
+        from paper_automation.metadata_resolver import MetadataResolver
+        from paper_automation.parser import parse_mixed_text
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            if "api.crossref.org/works?" in url:
+                return {
+                    "message": {
+                        "items": [
+                            {
+                                "DOI": "10.1016/j.scriptamat.2012.04.034",
+                                "title": [
+                                    "Three-dimensional morphology of cementite in steel studied by X-ray phase-contrast tomography"
+                                ],
+                                "container-title": ["Scripta Materialia"],
+                                "volume": "67",
+                                "page": "261-264",
+                                "published-print": {"date-parts": [[2012]]},
+                                "publisher": "Elsevier",
+                            }
+                        ]
+                    }
+                }
+            return {}
+
+        candidates = parse_mixed_text(
+            "X-ray tomography 3D cementite morphology\n"
+            "Scripta Materialia 67 261-264 2012"
+        )
+        metadata = MetadataResolver(http_json=fake_json).resolve_one(candidates[0])
+
+        self.assertEqual(len(candidates), 1)
+        self.assertIn("Scripta Materialia 67 261-264 2012", candidates[0].raw_text)
+        self.assertEqual(metadata.doi, "10.1016/j.scriptamat.2012.04.034")
+
+    def test_parse_mixed_text_skips_author_et_al_prefix(self) -> None:
+        from paper_automation.parser import parse_mixed_text
+
+        candidates = parse_mixed_text(
+            "Kostenko A. et al. Three-dimensional morphology of cementite in steel studied by "
+            "X-ray phase-contrast tomography. Scripta Materialia 67(3):261-264 2012."
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].status, "recognized")
+        self.assertEqual(
+            candidates[0].title,
+            "Three-dimensional morphology of cementite in steel studied by X-ray phase-contrast tomography",
+        )
 
     def test_parse_mixed_text_preserves_pure_doi_lines(self) -> None:
         from paper_automation.parser import parse_mixed_text
@@ -176,6 +227,222 @@ class MetadataAndPdfTests(unittest.TestCase):
         self.assertEqual(metadata.year, "2024")
         self.assertGreaterEqual(metadata.confidence, 0.9)
         self.assertTrue(any("api.crossref.org" in call for call in calls))
+
+    def test_resolver_accepts_crossref_match_by_citation_fingerprint(self) -> None:
+        from paper_automation.metadata_resolver import MetadataResolver
+        from paper_automation.models import PaperCandidate
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            if "api.crossref.org/works?" in url:
+                return {
+                    "message": {
+                        "items": [
+                            {
+                                "DOI": "10.1016/j.scriptamat.2012.04.034",
+                                "title": [
+                                    "Three-dimensional morphology of cementite in steel studied by X-ray phase-contrast tomography"
+                                ],
+                                "container-title": ["Scripta Materialia"],
+                                "volume": "67",
+                                "page": "261-264",
+                                "published-print": {"date-parts": [[2012]]},
+                                "publisher": "Elsevier",
+                            }
+                        ]
+                    }
+                }
+            return {}
+
+        resolver = MetadataResolver(http_json=fake_json)
+        metadata = resolver.resolve_one(
+            PaperCandidate(
+                source_index=1,
+                raw_text="X-ray tomography 3D cementite morphology. Scripta Materialia 67 261-264 2012.",
+                doi="",
+                title="X-ray tomography 3D cementite morphology",
+            )
+        )
+
+        self.assertEqual(metadata.doi, "10.1016/j.scriptamat.2012.04.034")
+        self.assertEqual(metadata.journal, "Scripta Materialia")
+        self.assertEqual(metadata.year, "2012")
+        self.assertGreaterEqual(metadata.confidence, 0.65)
+
+    def test_resolver_accepts_abbreviated_journal_citation_fingerprint(self) -> None:
+        from paper_automation.metadata_resolver import MetadataResolver
+        from paper_automation.models import PaperCandidate
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            if "api.crossref.org/works?" in url:
+                return {
+                    "message": {
+                        "items": [
+                            {
+                                "DOI": "10.1016/j.scriptamat.2012.04.034",
+                                "title": [
+                                    "Three-dimensional morphology of cementite in steel studied by X-ray phase-contrast tomography"
+                                ],
+                                "container-title": ["Scripta Materialia"],
+                                "volume": "67",
+                                "page": "261-264",
+                                "published-print": {"date-parts": [[2012]]},
+                                "publisher": "Elsevier",
+                            }
+                        ]
+                    }
+                }
+            return {}
+
+        resolver = MetadataResolver(http_json=fake_json)
+        metadata = resolver.resolve_one(
+            PaperCandidate(
+                source_index=1,
+                raw_text="Scripta Mater. 67, 261-264, 2012 cementite tomography",
+                doi="",
+                title="Scripta Mater. 67, 261-264, 2012 cementite tomography",
+            )
+        )
+
+        self.assertEqual(metadata.doi, "10.1016/j.scriptamat.2012.04.034")
+
+    def test_resolver_rejects_citation_fingerprint_with_wrong_pages(self) -> None:
+        from paper_automation.metadata_resolver import MetadataResolver
+        from paper_automation.models import PaperCandidate
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            if "api.crossref.org/works?" in url:
+                return {
+                    "message": {
+                        "items": [
+                            {
+                                "DOI": "10.1016/j.scriptamat.2012.04.034",
+                                "title": [
+                                    "Three-dimensional morphology of cementite in steel studied by X-ray phase-contrast tomography"
+                                ],
+                                "container-title": ["Scripta Materialia"],
+                                "volume": "67",
+                                "page": "261-264",
+                                "published-print": {"date-parts": [[2012]]},
+                                "publisher": "Elsevier",
+                            }
+                        ]
+                    }
+                }
+            return {}
+
+        resolver = MetadataResolver(http_json=fake_json)
+        metadata = resolver.resolve_one(
+            PaperCandidate(
+                source_index=1,
+                raw_text="Scripta Materialia 67 999-1000 2012 cementite tomography",
+                doi="",
+                title="Scripta Materialia 67 999-1000 2012 cementite tomography",
+            )
+        )
+
+        self.assertEqual(metadata.doi, "")
+
+    def test_resolver_uses_search_provider_only_after_crossref_confirmation(self) -> None:
+        from paper_automation.metadata_resolver import MetadataResolver
+        from paper_automation.models import PaperCandidate
+
+        calls: list[str] = []
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            calls.append(url)
+            if "api.crossref.org/works/10.1016" in url:
+                return {
+                    "message": {
+                        "DOI": "10.1016/j.scriptamat.2026.116999",
+                        "title": ["Search verified paper title"],
+                        "container-title": ["Scripta Materialia"],
+                        "published-print": {"date-parts": [[2026]]},
+                        "publisher": "Elsevier",
+                    }
+                }
+            return {}
+
+        def fake_search(query: str, max_results: int) -> list[dict[str, object]]:
+            self.assertEqual(max_results, 2)
+            return [
+                {
+                    "title": "Search verified paper title",
+                    "externalIds": {"DOI": "10.1016/j.scriptamat.2026.116999"},
+                }
+            ]
+
+        resolver = MetadataResolver(
+            http_json=fake_json,
+            search_provider=fake_search,
+            max_search_candidates=2,
+        )
+        metadata = resolver.resolve_one(
+            PaperCandidate(1, "Search verified paper title. Scripta Materialia 2026.", "", "Search verified paper title")
+        )
+
+        self.assertEqual(metadata.doi, "10.1016/j.scriptamat.2026.116999")
+        self.assertEqual(metadata.source, "semantic_scholar+crossref")
+        self.assertEqual(metadata.match_basis, "semantic_scholar_crossref_verified")
+        self.assertTrue(any("api.crossref.org/works/10.1016" in call for call in calls))
+
+    def test_resolver_rejects_search_provider_candidate_without_crossref_confirmation(self) -> None:
+        from paper_automation.metadata_resolver import MetadataResolver
+        from paper_automation.models import PaperCandidate
+
+        def fake_search(query: str, max_results: int) -> list[dict[str, object]]:
+            return [
+                {
+                    "title": "Unconfirmed search result",
+                    "externalIds": {"DOI": "10.1016/j.scriptamat.2026.116998"},
+                }
+            ]
+
+        resolver = MetadataResolver(
+            http_json=lambda *_args, **_kwargs: {},
+            search_provider=fake_search,
+        )
+        metadata = resolver.resolve_one(
+            PaperCandidate(1, "Unconfirmed search result. Scripta Materialia 2026.", "", "Unconfirmed search result")
+        )
+
+        self.assertEqual(metadata.doi, "")
+        self.assertNotEqual(metadata.source, "semantic_scholar+crossref")
+
+    def test_resolver_rejects_search_provider_candidate_unrelated_to_query(self) -> None:
+        from paper_automation.metadata_resolver import MetadataResolver
+        from paper_automation.models import PaperCandidate
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            if "api.crossref.org/works/10.1016" in url:
+                return {
+                    "message": {
+                        "DOI": "10.1016/j.scriptamat.2026.116997",
+                        "title": ["Hydrogen embrittlement in aluminum alloys"],
+                        "container-title": ["Scripta Materialia"],
+                        "published-print": {"date-parts": [[2026]]},
+                        "publisher": "Elsevier",
+                    }
+                }
+            return {}
+
+        def fake_search(query: str, max_results: int) -> list[dict[str, object]]:
+            return [
+                {
+                    "title": "Hydrogen embrittlement in aluminum alloys",
+                    "externalIds": {"DOI": "10.1016/j.scriptamat.2026.116997"},
+                }
+            ]
+
+        resolver = MetadataResolver(
+            http_json=fake_json,
+            search_provider=fake_search,
+        )
+        metadata = resolver.resolve_one(
+            PaperCandidate(1, "X-ray tomography 3D cementite morphology. Scripta Materialia 2012.", "", "X-ray tomography 3D cementite morphology")
+        )
+
+        self.assertEqual(metadata.doi, "")
+        self.assertNotEqual(metadata.source, "semantic_scholar+crossref")
 
     def test_pdf_finder_uses_only_oa_candidates_and_preserves_failure_reason(self) -> None:
         from paper_automation.models import MetadataResult

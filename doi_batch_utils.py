@@ -85,6 +85,41 @@ class PdfDownloadRecord:
 
 
 @dataclass(frozen=True)
+class SupplementDownloadRecord:
+    doi: str
+    pii: str
+    article_title: str
+    article_file: str = ""
+    supplement_index: int = 0
+    supplement_title: str = ""
+    source_url: str = ""
+    status: str = ""
+    file: str = ""
+    content_type: str = ""
+    size_bytes: int = 0
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class DownloadRunResult:
+    pdf_success: int
+    pdf_failed: int
+    pdf_skipped: int
+    pdf_records: list[PdfDownloadRecord] = field(default_factory=list)
+    supplement_success: int = 0
+    supplement_failed: int = 0
+    supplement_skipped: int = 0
+    supplement_not_found: int = 0
+    supplement_records: list[SupplementDownloadRecord] = field(default_factory=list)
+
+    def __iter__(self):
+        yield self.pdf_success
+        yield self.pdf_failed
+        yield self.pdf_skipped
+        yield self.pdf_records
+
+
+@dataclass(frozen=True)
 class RunSummary:
     input_path: str
     output_dir: str
@@ -101,6 +136,13 @@ class RunSummary:
     retry_input_path: str = ""
     retry_input_count: int = 0
     retry_input_excluded_count: int = 0
+    beginner_recommendations: list[str] = field(default_factory=list)
+    supplement_requested: bool = False
+    supplement_success: int = 0
+    supplement_failed: int = 0
+    supplement_skipped: int = 0
+    supplement_not_found: int = 0
+    supplement_report_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -311,6 +353,44 @@ def write_pdf_download_report(records: list[PdfDownloadRecord], output_dir: str 
     return path
 
 
+def write_supplement_download_report(records: list[SupplementDownloadRecord], output_dir: str | Path) -> Path:
+    path = Path(output_dir) / "supplement_download_report.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "doi",
+        "pii",
+        "article_title",
+        "article_file",
+        "supplement_index",
+        "supplement_title",
+        "source_url",
+        "status",
+        "file",
+        "content_type",
+        "size_bytes",
+        "reason",
+    ]
+    with path.open("w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in records:
+            writer.writerow({
+                "doi": record.doi,
+                "pii": record.pii,
+                "article_title": record.article_title,
+                "article_file": record.article_file,
+                "supplement_index": record.supplement_index,
+                "supplement_title": record.supplement_title,
+                "source_url": record.source_url,
+                "status": record.status,
+                "file": record.file,
+                "content_type": record.content_type,
+                "size_bytes": record.size_bytes,
+                "reason": record.reason,
+            })
+    return path
+
+
 def collect_retry_input_rows(
     pdf_report_path: str | Path | None = None,
     doi_failed_path: str | Path | None = None,
@@ -468,6 +548,13 @@ def write_run_summary_json(
         "retry_input_path": summary.retry_input_path,
         "retry_input_count": summary.retry_input_count,
         "retry_input_excluded_count": summary.retry_input_excluded_count,
+        "beginner_recommendations": summary.beginner_recommendations,
+        "supplement_requested": summary.supplement_requested,
+        "supplement_success": summary.supplement_success,
+        "supplement_failed": summary.supplement_failed,
+        "supplement_skipped": summary.supplement_skipped,
+        "supplement_not_found": summary.supplement_not_found,
+        "supplement_report_path": summary.supplement_report_path,
         "event_path": str(event_path) if event_path else "",
         "written_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -503,23 +590,45 @@ def write_run_summary(summary: RunSummary) -> Path:
         f"- 失败: {summary.pdf_failed}",
         f"- 跳过: {summary.pdf_skipped}",
         "",
+        "补充材料下载:",
+        f"- 是否请求: {'是' if summary.supplement_requested else '否'}",
+    ])
+    if summary.supplement_requested:
+        lines.extend([
+            f"- 成功: {summary.supplement_success}",
+            f"- 失败: {summary.supplement_failed}",
+            f"- 跳过: {summary.supplement_skipped}",
+            f"- 未发现: {summary.supplement_not_found}",
+        ])
+    else:
+        lines.append("- 未请求：PDF 下载未启用或补充材料下载已关闭。")
+    lines.extend([
+        "",
         "输出文件:",
         f"- 解析成功表: {summary.resolved_path or '未生成'}",
         f"- DOI 失败报告: {summary.failed_path or '未生成'}",
         f"- PDF 下载报告: {summary.pdf_report_path or '未生成'}",
+        f"- Supplement 下载报告: {summary.supplement_report_path or '未生成'}",
     ])
     if summary.retry_input_path:
         lines.append(f"- 重试输入表: {summary.retry_input_path}")
     if summary.cookie_message:
         lines.extend(["", f"Cookie 检查: {summary.cookie_message}"])
     lines.extend(["", "下一步建议:"])
+    if summary.beginner_recommendations:
+        lines.append("")
+        lines.append("小白下一步建议:")
+        for recommendation in summary.beginner_recommendations:
+            lines.append(f"- {recommendation}")
     if summary.retry_input_path:
         lines.append(f"- 已生成重试输入 {summary.retry_input_count} 条；请预览确认后再手动运行。")
     if summary.pdf_failed:
         lines.append("- 若 PDF 大量失败，优先检查 Cookie 是否过期、机构权限是否可访问 PDF、Chrome 中是否出现验证码或限速提示。")
+    if summary.supplement_failed:
+        lines.append("- 若补充材料失败，先查看 supplement_download_report.csv；常见原因是附件链接返回登录页、权限不足或远端响应不是附件文件。")
     if summary.failure_reasons:
         lines.append("- 先查看 doi_batch_failed.csv，非 ScienceDirect DOI 或重复 DOI 不会中断整个任务。")
-    if not summary.failure_reasons and not summary.pdf_failed:
+    if not summary.failure_reasons and not summary.pdf_failed and not summary.supplement_failed:
         lines.append("- 任务完成，无需处理。")
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

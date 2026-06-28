@@ -29,7 +29,7 @@ AUTHOR_RE = re.compile(
     re.I,
 )
 JOURNAL_RE = re.compile(
-    r"\b(?:Acta Materialia|Scripta Materialia|Materials Science and Engineering|"
+    r"\b(?:Acta Materialia|Acta Mater\.?|Scripta Materialia|Scripta Mater\.?|Materials Science and Engineering|"
     r"Journal of [A-Z][A-Za-z &-]+|Nature(?: Materials| Communications)?|Science|"
     r"Advanced Materials|Materials Today|Intermetallics|Metallurgical and Materials Transactions|"
     r"Additive Manufacturing|Corrosion Science|Surface and Coatings Technology)\b",
@@ -81,6 +81,9 @@ def parse_mixed_text(text: str) -> list[PaperCandidate]:
             continue
 
         title, confidence = _title_from_line(cleaned)
+        if not title and _has_strong_citation_fingerprint(cleaned):
+            title = cleaned
+            confidence = 0.72
         if _is_non_title_note(cleaned) or confidence < 0.72:
             candidates.append(PaperCandidate(source_index, cleaned, "", title, "needs_review", "not_probable_title"))
             idx += 1
@@ -95,7 +98,7 @@ def parse_mixed_text(text: str) -> list[PaperCandidate]:
                 consumed_next = True
 
         if has_extra_bibliographic_signal(combined, title):
-            candidates.append(PaperCandidate(source_index, cleaned, "", title))
+            candidates.append(PaperCandidate(source_index, combined, "", title))
         else:
             candidates.append(PaperCandidate(source_index, cleaned, "", title, "needs_review", "insufficient_bibliographic_context"))
 
@@ -149,6 +152,12 @@ def _extract_title_candidate(line: str) -> str:
 
 def _title_from_line(line: str) -> tuple[str, float]:
     value = re.sub(r"\(\d{4}[a-z]?\)", "", line, flags=re.I).strip()
+    value = re.sub(
+        r"^\s*[A-Z][A-Za-z'`-]+(?:\s+[A-Z]\.?)?\s+et\s+al\.?\s+",
+        "",
+        value,
+        flags=re.I,
+    )
     parts = [part.strip(" .;,") for part in re.split(r"\.\s+", value) if part.strip(" .;,")]
     if len(parts) >= 2 and _looks_like_author_segment(parts[0]):
         value = parts[1]
@@ -204,6 +213,11 @@ def bibliographic_signal_count(text: str) -> int:
     return signals
 
 
+def _has_strong_citation_fingerprint(text: str) -> bool:
+    value = str(text or "")
+    return bool(JOURNAL_RE.search(value) and YEAR_RE.search(value) and VOLUME_PAGE_RE.search(value))
+
+
 def _is_metadata_context_line(line: str) -> bool:
     if _is_non_title_note(line):
         return False
@@ -221,7 +235,7 @@ def _looks_like_author_segment(segment: str) -> bool:
 
 def _strip_trailing_journal_bits(value: str) -> str:
     return re.sub(
-        r"\b(?:Acta Materialia|Scripta Materialia|Materials Science and Engineering|"
+        r"\b(?:Acta Materialia|Acta Mater\.?|Scripta Materialia|Scripta Mater\.?|Materials Science and Engineering|"
         r"Journal of [A-Z][A-Za-z &-]+|Nature|Science|Elsevier|Springer)\b.*$",
         "",
         value,

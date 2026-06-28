@@ -4,10 +4,11 @@ import csv
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from urllib.parse import unquote_plus
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +64,561 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             self.assertIn("- 成功: 0", summary_text)
             self.assertIn("- 失败: 0", summary_text)
             self.assertIn("- 跳过: 0", summary_text)
+
+    def test_beginner_preflight_writes_review_hints_without_sciencedirect_resolution(self) -> None:
+        from sd_institutional_skill import main
+        from sd_scraper import ScienceDirectScraper
+        from paper_automation.models import MetadataResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(
+                ScienceDirectScraper,
+                "resolve_doi_batch",
+                side_effect=AssertionError("preflight must not resolve ScienceDirect DOI"),
+            ), patch(
+                "sd_institutional_skill.MetadataResolver.resolve_one",
+                return_value=MetadataResult(
+                    source_index=1,
+                    query_title="",
+                    doi="10.1016/j.actamat.2024.119999",
+                    title="Resolved DOI paper",
+                    journal="Acta Materialia",
+                    year="2024",
+                    confidence=1.0,
+                    source="crossref",
+                    match_basis="input_doi",
+                ),
+            ):
+                exit_code = main([
+                    "--text",
+                    "DOI: 10.1016/j.actamat.2024.119999\n"
+                    "P8: Ti-Mo beta-Ti stress-induced martensitic transformation 是否包含 SXRD",
+                    "--out",
+                    str(root),
+                    "--run-name",
+                    "beginner_preflight",
+                    "--beginner",
+                    "--preflight",
+                ])
+
+            run_dir = root / "beginner_preflight"
+            preview_text = (run_dir / "doi_intake_preview.csv").read_text(encoding="utf-8-sig")
+            summary_text = (run_dir / "run_summary.txt").read_text(encoding="utf-8")
+            pdf_report_text = (run_dir / "pdf_download_report.csv").read_text(encoding="utf-8-sig")
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("review_hint", preview_text)
+        self.assertIn("请补 DOI", preview_text)
+        self.assertIn("小白下一步建议", summary_text)
+        self.assertIn("preflight", pdf_report_text)
+
+    def test_main_downloads_supplements_by_default_and_can_disable_them(self) -> None:
+        from doi_batch_utils import DownloadRunResult, PdfDownloadRecord, SupplementDownloadRecord
+        from paper_automation.models import MetadataResult
+        from sd_institutional_skill import main
+
+        calls: list[bool] = []
+
+        class FakeScraper:
+            def resolve_doi_batch(self, _input_path: str):
+                return [
+                    {
+                        "doi": "10.1016/j.actamat.2024.119999",
+                        "pii": "S1359645424000012",
+                        "title": "Paper with supplements",
+                        "authors": "Zhang Wei",
+                        "year": "2024",
+                    }
+                ], []
+
+            def save_to_xlsx(self, _results: list[dict], filename: str, output_dir: str) -> str:
+                path = Path(output_dir) / filename
+                path.write_text("placeholder", encoding="utf-8")
+                return str(path)
+
+            def save_failed_doi_report(self, _failures: list[dict], filename: str, output_dir: str) -> str:
+                path = Path(output_dir) / filename
+                with path.open("w", newline="", encoding="utf-8-sig") as f:
+                    writer = csv.DictWriter(f, fieldnames=["row_number", "doi", "reason"])
+                    writer.writeheader()
+                return str(path)
+
+            def download_pdfs_devtools(self, results: list[dict], output_dir: str, **kwargs: object) -> DownloadRunResult:
+                download_supplements = bool(kwargs["download_supplements"])
+                calls.append(download_supplements)
+                article = results[0]
+                supplement_records = []
+                if download_supplements:
+                    supplement_records.append(
+                        SupplementDownloadRecord(
+                            doi=article["doi"],
+                            pii=article["pii"],
+                            article_title=article["title"],
+                            article_file="2024_Zhang_Paper with supplements_12345678.pdf",
+                            supplement_index=0,
+                            status="not_found",
+                            reason="未发现补充材料",
+                        )
+                    )
+                return DownloadRunResult(
+                    pdf_success=1,
+                    pdf_failed=0,
+                    pdf_skipped=0,
+                    pdf_records=[
+                        PdfDownloadRecord(
+                            doi=article["doi"],
+                            pii=article["pii"],
+                            title=article["title"],
+                            status="success",
+                            file="2024_Zhang_Paper with supplements_12345678.pdf",
+                        )
+                    ],
+                    supplement_success=0,
+                    supplement_failed=0,
+                    supplement_skipped=0,
+                    supplement_not_found=1 if download_supplements else 0,
+                    supplement_records=supplement_records,
+                )
+
+        def fake_make_scraper(_cookie_cache_path: Path) -> FakeScraper:
+            return FakeScraper()
+
+        def fake_resolve_one(_self: object, _candidate: object) -> MetadataResult:
+            return MetadataResult(
+                source_index=1,
+                query_title="",
+                doi="10.1016/j.actamat.2024.119999",
+                title="Paper with supplements",
+                confidence=1.0,
+                source="crossref",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "papers.csv"
+            input_path.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
+            with patch("sd_institutional_skill.make_scraper", side_effect=fake_make_scraper), patch(
+                "sd_institutional_skill.cache_devtools_cookies",
+                return_value=0,
+            ), patch("sd_institutional_skill.MetadataResolver.resolve_one", fake_resolve_one):
+                default_exit = main([
+                    "--input",
+                    str(input_path),
+                    "--out",
+                    str(root),
+                    "--run-name",
+                    "default_supplements",
+                ])
+                disabled_exit = main([
+                    "--input",
+                    str(input_path),
+                    "--out",
+                    str(root),
+                    "--run-name",
+                    "disabled_supplements",
+                    "--no-download-supplements",
+                ])
+
+            default_summary = json.loads((root / "default_supplements" / "run_summary.json").read_text(encoding="utf-8"))
+            disabled_summary = json.loads((root / "disabled_supplements" / "run_summary.json").read_text(encoding="utf-8"))
+            default_report_exists = (root / "default_supplements" / "supplement_download_report.csv").exists()
+
+        self.assertEqual(default_exit, 0)
+        self.assertEqual(disabled_exit, 0)
+        self.assertEqual(calls, [True, False])
+        self.assertTrue(default_report_exists)
+        self.assertTrue(default_summary["supplement_requested"])
+        self.assertEqual(default_summary["supplement_not_found"], 1)
+        self.assertFalse(disabled_summary["supplement_requested"])
+        self.assertEqual(disabled_summary["supplement_report_path"], "")
+        self.assertFalse((root / "disabled_supplements" / "supplement_download_report.csv").exists())
+
+    def test_main_marks_supplements_not_requested_for_non_pdf_runs(self) -> None:
+        from paper_automation.models import MetadataResult
+        from sd_institutional_skill import main
+
+        class FakeScraper:
+            def resolve_doi_batch(self, _input_path: str):
+                return [
+                    {
+                        "doi": "10.1016/j.actamat.2024.119999",
+                        "pii": "S1359645424000012",
+                        "title": "Dry run paper",
+                        "authors": "Zhang Wei",
+                        "year": "2024",
+                    }
+                ], []
+
+            def save_to_xlsx(self, _results: list[dict], filename: str, output_dir: str) -> str:
+                path = Path(output_dir) / filename
+                path.write_text("placeholder", encoding="utf-8")
+                return str(path)
+
+            def save_failed_doi_report(self, _failures: list[dict], filename: str, output_dir: str) -> str:
+                path = Path(output_dir) / filename
+                with path.open("w", newline="", encoding="utf-8-sig") as f:
+                    writer = csv.DictWriter(f, fieldnames=["row_number", "doi", "reason"])
+                    writer.writeheader()
+                return str(path)
+
+            def download_pdfs_devtools(self, *_args: object, **_kwargs: object) -> object:
+                raise AssertionError("PDF and supplement downloads must not run")
+
+        def fake_resolve_one(_self: object, _candidate: object) -> MetadataResult:
+            return MetadataResult(
+                source_index=1,
+                query_title="",
+                doi="10.1016/j.actamat.2024.119999",
+                title="Dry run paper",
+                confidence=1.0,
+                source="crossref",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "papers.csv"
+            input_path.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
+            scenarios = [
+                ("dry_run", ["--dry-run"]),
+                ("no_pdf", ["--no-download-pdfs"]),
+                ("preflight", ["--preflight"]),
+            ]
+            with patch("sd_institutional_skill.ScienceDirectScraper", side_effect=lambda *a, **k: FakeScraper()), patch(
+                "sd_institutional_skill.MetadataResolver.resolve_one",
+                fake_resolve_one,
+            ):
+                exit_codes = {
+                    name: main([
+                        "--input",
+                        str(input_path),
+                        "--out",
+                        str(root),
+                        "--run-name",
+                        name,
+                        *extra_args,
+                    ])
+                    for name, extra_args in scenarios
+                }
+            summaries = {
+                name: json.loads((root / name / "run_summary.json").read_text(encoding="utf-8"))
+                for name, _extra_args in scenarios
+            }
+            report_paths = {
+                name: root / name / "supplement_download_report.csv"
+                for name, _extra_args in scenarios
+            }
+
+        self.assertEqual(exit_codes, {"dry_run": 0, "no_pdf": 0, "preflight": 0})
+        for name, summary in summaries.items():
+            with self.subTest(name=name):
+                self.assertFalse(summary["supplement_requested"])
+                self.assertEqual(summary["supplement_report_path"], "")
+                self.assertFalse(report_paths[name].exists())
+
+    def test_pdf_failure_records_supplement_skipped_without_downloader(self) -> None:
+        from sd_scraper import ScienceDirectScraper
+
+        class FakeResponse:
+            def __init__(self, payload: dict[str, object]) -> None:
+                self.payload = payload
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(self.payload).encode("utf-8")
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.last_message: dict[str, object] = {}
+
+            def settimeout(self, _timeout: int) -> None:
+                return None
+
+            def send(self, payload: str) -> None:
+                self.last_message = json.loads(payload)
+
+            def recv(self) -> str:
+                method = self.last_message.get("method")
+                message_id = self.last_message.get("id", 1)
+                if method == "Runtime.evaluate":
+                    params = self.last_message.get("params") or {}
+                    expression = params.get("expression") if isinstance(params, dict) else ""
+                    value = (
+                        "https://pdf.sciencedirectassets.com/main.pdf"
+                        if expression == "location.href"
+                        else "<html><body>article</body></html>"
+                    )
+                    return json.dumps({"id": message_id, "result": {"result": {"value": value}}})
+                if method == "Network.getCookies":
+                    return json.dumps({"id": message_id, "result": {"cookies": []}})
+                return json.dumps({"method": "Page.loadEventFired"})
+
+            def close(self) -> None:
+                return None
+
+        tab_counter = {"value": 0}
+
+        def fake_urlopen(request: object, timeout: int = 0) -> FakeResponse:
+            url = getattr(request, "full_url", str(request))
+            if "/json/new" in url:
+                tab_counter["value"] += 1
+                tab_id = f"tab-{tab_counter['value']}"
+                return FakeResponse({"id": tab_id, "webSocketDebuggerUrl": f"ws://{tab_id}"})
+            if "/json/close/" in url:
+                return FakeResponse({})
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        article = {
+            "doi": "10.1016/j.actamat.2024.119999",
+            "pii": "S1359645424000012",
+            "title": "Failed PDF paper",
+            "authors": "Zhang Wei",
+            "year": "2024",
+        }
+        expected_filename = ScienceDirectScraper._make_pdf_filename(1, article)
+        fake_websocket_module = types.SimpleNamespace(create_connection=lambda *_args, **_kwargs: FakeWebSocket())
+        scraper = ScienceDirectScraper()
+        scraper._is_chrome_debug_ready = lambda: True
+        scraper._launch_chrome_with_debug = lambda: None
+        supplement_downloader = MagicMock(return_value=[])
+
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(sys.modules, {"websocket": fake_websocket_module}), patch(
+            "urllib.request.urlopen",
+            side_effect=fake_urlopen,
+        ), patch("sd_scraper._dt_capture_pdf", return_value=(None, "synthetic PDF failure")), patch(
+            "sd_scraper.download_supplements_for_article",
+            supplement_downloader,
+        ), patch("sd_scraper.time.sleep", return_value=None), patch("sd_scraper.random.uniform", return_value=0):
+            result = scraper.download_pdfs_devtools(
+                [article],
+                tmp,
+                interactive_login=False,
+                login_wait_seconds=0,
+                download_supplements=True,
+            )
+
+        supplement_downloader.assert_not_called()
+        self.assertEqual(result.pdf_failed, 1)
+        self.assertEqual(result.supplement_skipped, 1)
+        self.assertEqual(len(result.supplement_records), 1)
+        record = result.supplement_records[0]
+        self.assertEqual(record.status, "skipped")
+        self.assertEqual(record.supplement_index, 0)
+        self.assertEqual(record.article_file, expected_filename)
+        self.assertIn("PDF download failed", record.reason)
+
+    def test_english_cli_writes_supplement_report_from_download_result(self) -> None:
+        from doi_batch_utils import DownloadRunResult, PdfDownloadRecord, SupplementDownloadRecord
+        import sd_scraper_en
+
+        calls: list[bool] = []
+
+        class FakeScraper:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def search_by_keyword(
+                self,
+                _query: str,
+                _count: int,
+                _sort: str,
+                _date: str,
+                _article_type: str,
+            ) -> list[dict]:
+                return [
+                    {
+                        "doi": "10.1016/j.actamat.2024.119999",
+                        "pii": "S1359645424000012",
+                        "title": "English CLI paper",
+                        "authors": "Zhang Wei",
+                        "year": "2024",
+                    }
+                ]
+
+            def save_to_xlsx(self, _results: list[dict], filename: str, output_dir: str) -> str:
+                path = Path(output_dir) / filename
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("placeholder", encoding="utf-8")
+                return str(path)
+
+            def download_pdfs_devtools(self, results: list[dict], output_dir: str, **kwargs: object) -> DownloadRunResult:
+                calls.append(bool(kwargs["download_supplements"]))
+                article = results[0]
+                return DownloadRunResult(
+                    pdf_success=1,
+                    pdf_failed=0,
+                    pdf_skipped=0,
+                    pdf_records=[
+                        PdfDownloadRecord(
+                            doi=article["doi"],
+                            pii=article["pii"],
+                            title=article["title"],
+                            status="success",
+                            file="2024_Zhang_English CLI paper_12345678.pdf",
+                        )
+                    ],
+                    supplement_success=1,
+                    supplement_records=[
+                        SupplementDownloadRecord(
+                            doi=article["doi"],
+                            pii=article["pii"],
+                            article_title=article["title"],
+                            article_file="2024_Zhang_English CLI paper_12345678.pdf",
+                            supplement_index=1,
+                            supplement_title="Supplementary data",
+                            status="success",
+                            file="supplements/item.zip",
+                        )
+                    ],
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            argv = [
+                "sd_scraper_en.py",
+                "-m",
+                "keyword",
+                "-q",
+                "alloy",
+                "--download-pdfs",
+                "--output",
+                str(root),
+                "--filename",
+                "en_case",
+            ]
+            with patch.object(sd_scraper_en, "ScienceDirectScraper", FakeScraper), patch.object(sys, "argv", argv):
+                sd_scraper_en.main()
+
+            report_path = root / "supplement_download_report.csv"
+            self.assertTrue(report_path.exists())
+            with report_path.open("r", encoding="utf-8-sig") as f:
+                rows = list(csv.DictReader(f))
+
+        self.assertEqual(calls, [True])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "success")
+
+    def test_english_devtools_uses_legacy_existing_pdf_filename_for_supplements(self) -> None:
+        from doi_batch_utils import SupplementDownloadRecord
+        import sd_scraper_en
+
+        class FakeResponse:
+            def __init__(self, payload: dict[str, object]) -> None:
+                self.payload = payload
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(self.payload).encode("utf-8")
+
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self.last_message: dict[str, object] = {}
+
+            def settimeout(self, _timeout: int) -> None:
+                return None
+
+            def send(self, payload: str) -> None:
+                self.last_message = json.loads(payload)
+
+            def recv(self) -> str:
+                method = self.last_message.get("method")
+                message_id = self.last_message.get("id", 1)
+                if method == "Runtime.evaluate":
+                    params = self.last_message.get("params") or {}
+                    expression = params.get("expression") if isinstance(params, dict) else ""
+                    value = (
+                        "https://pdf.sciencedirectassets.com/main.pdf"
+                        if expression == "location.href"
+                        else "<html><body>supplement</body></html>"
+                    )
+                    return json.dumps({"id": message_id, "result": {"result": {"value": value}}})
+                if method == "Network.getCookies":
+                    return json.dumps({"id": message_id, "result": {"cookies": []}})
+                return json.dumps({"method": "Page.loadEventFired"})
+
+            def close(self) -> None:
+                return None
+
+        tab_counter = {"value": 0}
+
+        def fake_urlopen(request: object, timeout: int = 0) -> FakeResponse:
+            url = getattr(request, "full_url", str(request))
+            if "/json/new" in url:
+                tab_counter["value"] += 1
+                tab_id = f"tab-{tab_counter['value']}"
+                return FakeResponse({"id": tab_id, "webSocketDebuggerUrl": f"ws://{tab_id}"})
+            if "/json/close/" in url:
+                return FakeResponse({})
+            raise AssertionError(f"Unexpected URL: {url}")
+
+        article = {
+            "doi": "10.1016/j.actamat.2024.119999",
+            "pii": "S1359645424000012",
+            "title": "Legacy PDF paper",
+            "authors": "Zhang Wei",
+            "year": "2024",
+        }
+        scraper = sd_scraper_en.ScienceDirectScraper()
+        scraper._is_chrome_debug_ready = lambda: True
+        scraper._launch_chrome_with_debug = lambda: None
+        legacy_filename = scraper._make_legacy_english_pdf_filename(1, article)
+        seen_article_files: list[str] = []
+
+        def fake_download_supplements(
+            *,
+            article: dict,
+            article_index: int,
+            article_file: str,
+            article_html: str,
+            article_url: str,
+            output_dir: str,
+            session: object,
+            headers: dict[str, str],
+        ) -> list[SupplementDownloadRecord]:
+            seen_article_files.append(article_file)
+            return [
+                SupplementDownloadRecord(
+                    doi=article["doi"],
+                    pii=article["pii"],
+                    article_title=article["title"],
+                    article_file=article_file,
+                    supplement_index=0,
+                    status="not_found",
+                )
+            ]
+
+        fake_websocket_module = types.SimpleNamespace(create_connection=lambda *_args, **_kwargs: FakeWebSocket())
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdf_dir = root / "pdfs"
+            pdf_dir.mkdir()
+            (pdf_dir / legacy_filename).write_bytes(b"%PDF legacy")
+            with patch.dict(sys.modules, {"websocket": fake_websocket_module}), patch(
+                "urllib.request.urlopen",
+                side_effect=fake_urlopen,
+            ), patch("sd_scraper_en.download_supplements_for_article", side_effect=fake_download_supplements), patch(
+                "sd_scraper_en._dt_capture_pdf",
+                side_effect=AssertionError("existing PDF skip must not fetch PDF"),
+            ), patch("sd_scraper_en.time.sleep", return_value=None), patch(
+                "sd_scraper_en.random.uniform",
+                return_value=0,
+            ):
+                result = scraper.download_pdfs_devtools([article], str(root), download_supplements=True)
+
+        self.assertEqual(result.pdf_skipped, 1)
+        self.assertEqual(result.pdf_records[0].file, legacy_filename)
+        self.assertEqual(seen_article_files, [legacy_filename])
+        self.assertEqual(result.supplement_records[0].article_file, legacy_filename)
 
     def test_build_intake_merges_text_files_and_ignores_output_dirs(self) -> None:
         from sd_institutional_skill import build_intake, iter_input_files
@@ -153,6 +709,67 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertIn("Zhang Wei", preview_text)
         self.assertIn("Acta Materialia", preview_text)
         self.assertIn("重复 DOI", preview_text)
+
+    def test_build_intake_duplicate_after_metadata_resolution_rewrites_review_hint(self) -> None:
+        from paper_automation.models import MetadataResult
+        from sd_institutional_skill import SourceEntry, classify_entries
+
+        entries = [
+            SourceEntry(
+                1,
+                "text",
+                1,
+                "Austenite precipitation thermodynamics in steels. Acta Materialia, 2024",
+                title="Austenite precipitation thermodynamics in steels",
+            ),
+            SourceEntry(
+                2,
+                "text",
+                2,
+                "Hydrogen trapping behavior in titanium alloys. Acta Materialia, 2024",
+                title="Hydrogen trapping behavior in titanium alloys",
+            ),
+        ]
+        resolved = [
+            MetadataResult(
+                source_index=1,
+                query_title="Austenite precipitation thermodynamics in steels",
+                doi="10.1016/j.actamat.2024.119999",
+                title="Austenite precipitation thermodynamics in steels",
+                journal="Acta Materialia",
+                year="2024",
+                confidence=0.95,
+                source="crossref",
+                match_basis="title_similarity",
+            ),
+            MetadataResult(
+                source_index=2,
+                query_title="Hydrogen trapping behavior in titanium alloys",
+                doi="10.1016/j.actamat.2024.119999",
+                title="Hydrogen trapping behavior in titanium alloys",
+                journal="Acta Materialia",
+                year="2024",
+                confidence=0.95,
+                source="crossref",
+                match_basis="title_similarity",
+            ),
+        ]
+
+        with patch("sd_institutional_skill.MetadataResolver.resolve_one", side_effect=resolved) as resolve_one:
+            rows, unique_rows, counts = classify_entries(
+                entries,
+                resolve_metadata=True,
+                email="",
+                min_confidence=0.65,
+                http_json=lambda *_args, **_kwargs: {},
+            )
+
+        self.assertEqual(resolve_one.call_count, 2)
+        self.assertEqual(len(unique_rows), 1)
+        self.assertEqual(counts["duplicate"], 1)
+        self.assertEqual(rows[1].status, "duplicate")
+        self.assertEqual(rows[1].review_hint, "重复项，程序只保留首次识别记录。")
+        self.assertNotIn("可进入 ScienceDirect", rows[1].review_hint)
 
     def test_title_only_resolution_requires_extra_bibliographic_signal(self) -> None:
         from sd_institutional_skill import build_intake

@@ -13,6 +13,32 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+class _FakeVar:
+    def __init__(self, value: object = "") -> None:
+        self.value = value
+
+    def get(self) -> object:
+        return self.value
+
+    def set(self, value: object) -> None:
+        self.value = value
+
+
+class _FakeStateWidget:
+    def __init__(self) -> None:
+        self._states: set[str] = set()
+
+    def state(self, changes: list[str] | tuple[str, ...] | None = None) -> tuple[str, ...]:
+        if changes is None:
+            return tuple(sorted(self._states))
+        for change in changes:
+            if change.startswith("!"):
+                self._states.discard(change[1:])
+            else:
+                self._states.add(change)
+        return tuple(sorted(self._states))
+
+
 class DoiBatchUtilsTests(unittest.TestCase):
     def test_preview_reads_csv_with_chinese_doi_alias_and_cleans_url(self) -> None:
         from doi_batch_utils import preview_doi_input
@@ -651,10 +677,167 @@ class UiBehaviorTests(unittest.TestCase):
             self.assertEqual(app.mode_var.get(), "doi_batch")
             self.assertFalse(app.browser_cookies_var.get())
             self.assertTrue(app.download_pdf_var.get())
+            self.assertTrue(app.download_supplements_var.get())
             self.assertTrue(hasattr(app, "preview_tree"))
             self.assertTrue(hasattr(app, "retry_failed_button"))
         finally:
             root.destroy()
+
+    def test_ui_sciencedirect_supplement_command_defaults_and_disable_flag(self) -> None:
+        from paper_scraper_ui import PaperScraperUI
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = Path(tmp)
+            input_path = root_dir / "papers.csv"
+            input_path.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
+
+            app = PaperScraperUI.__new__(PaperScraperUI)
+            app.workflow_var = _FakeVar("sciencedirect")
+            app.mode_var = _FakeVar("doi_batch")
+            app.input_file_var = _FakeVar(str(input_path))
+            app.output_var = _FakeVar(str(root_dir / "results"))
+            app.doi_column_var = _FakeVar("")
+            app.sheet_var = _FakeVar("")
+            app.filename_var = _FakeVar("")
+            app.resume_from_var = _FakeVar("")
+            app.cookies_file_var = _FakeVar("")
+            app.browser_cookies_var = _FakeVar(False)
+            app.open_login_var = _FakeVar(False)
+            app.download_pdf_var = _FakeVar(True)
+            app.download_supplements_var = _FakeVar(True)
+            app._get_pasted_text = lambda: ""
+
+            default_cmd = app._build_command(materialize_paste=False)
+            app.download_supplements_var.set(False)
+            disabled_cmd = app._build_command(materialize_paste=False)
+            app.download_pdf_var.set(False)
+            no_pdf_cmd = app._build_command(materialize_paste=False)
+
+        self.assertIn("--download-pdfs", default_cmd)
+        self.assertNotIn("--no-download-supplements", default_cmd)
+        self.assertIn("--download-pdfs", disabled_cmd)
+        self.assertIn("--no-download-supplements", disabled_cmd)
+        self.assertNotIn("--download-pdfs", no_pdf_cmd)
+        self.assertNotIn("--no-download-supplements", no_pdf_cmd)
+
+    def test_ui_pdf_toggle_disables_supplement_checkbox_and_preserves_value(self) -> None:
+        from paper_scraper_ui import PaperScraperUI
+
+        app = PaperScraperUI.__new__(PaperScraperUI)
+        app.download_pdf_var = _FakeVar(True)
+        app.download_supplements_var = _FakeVar(False)
+        app.download_supplements_checkbuttons = [_FakeStateWidget(), _FakeStateWidget()]
+
+        app.download_pdf_var.set(False)
+        app._sync_download_supplements_state()
+        off_states = [widget.state() for widget in app.download_supplements_checkbuttons]
+        preserved_while_disabled = app.download_supplements_var.get()
+
+        app.download_pdf_var.set(True)
+        app._sync_download_supplements_state()
+        on_states = [widget.state() for widget in app.download_supplements_checkbuttons]
+        preserved_after_reenable = app.download_supplements_var.get()
+
+        self.assertTrue(all("disabled" in state for state in off_states))
+        self.assertFalse(preserved_while_disabled)
+        self.assertTrue(all("disabled" not in state for state in on_states))
+        self.assertFalse(preserved_after_reenable)
+
+    def test_ui_result_summary_displays_supplement_counts_from_json_and_text(self) -> None:
+        from paper_scraper_ui import PaperScraperUI
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            supplement_report = out / "supplement_download_report.csv"
+            supplement_report.write_text("doi,status\n10.1016/example,skipped\n", encoding="utf-8")
+            json_summary_path = out / "run_summary.json"
+            json_summary_path.write_text(
+                json.dumps(
+                    {
+                        "output_dir": str(out),
+                        "total_doi": 4,
+                        "resolved_count": 4,
+                        "resolve_failed_count": 0,
+                        "failure_reasons": {},
+                        "pdf_success": 4,
+                        "pdf_failed": 0,
+                        "pdf_skipped": 0,
+                        "supplement_success": 1,
+                        "supplement_failed": 2,
+                        "supplement_skipped": 3,
+                        "supplement_not_found": 4,
+                        "supplement_report_path": str(supplement_report),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            txt_summary_path = out / "run_summary.txt"
+            txt_summary_path.write_text(
+                "\n".join(
+                    [
+                        "DOI 批量任务报告",
+                        "==================",
+                        "识别 DOI 数: 4",
+                        "成功解析数: 4",
+                        "解析失败数: 0",
+                        "",
+                        "解析失败原因:",
+                        "- 无",
+                        "",
+                        "PDF 下载:",
+                        "- 成功: 4",
+                        "- 失败: 0",
+                        "- 跳过: 0",
+                        "",
+                        "补充材料下载:",
+                        "- 成功: 1",
+                        "- 失败: 2",
+                        "- 跳过: 3",
+                        "- 未发现: 4",
+                        "",
+                        "输出文件:",
+                        f"- Supplement 下载报告: {supplement_report}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            app = PaperScraperUI.__new__(PaperScraperUI)
+            app.result_summary_var = _FakeVar("")
+            app.workflow_var = _FakeVar("sciencedirect")
+            app.last_run_output_dir = None
+            app.last_failed_report_path = None
+            app.last_pdf_report_path = None
+            app.last_events_path = None
+            app.last_retry_input_path = None
+            app.last_summary_path = None
+
+            app.last_summary_json_path = json_summary_path
+            app._refresh_result_summary()
+            json_result_summary = app.result_summary_var.get()
+
+            app.last_summary_json_path = None
+            app.last_summary_path = txt_summary_path
+            app._refresh_result_summary()
+            txt_result_summary = app.result_summary_var.get()
+
+        for result_summary in (json_result_summary, txt_result_summary):
+            self.assertIn("补充材料成功: 1", result_summary)
+            self.assertIn("补充材料失败: 2", result_summary)
+            self.assertIn("补充材料跳过: 3", result_summary)
+            self.assertIn("补充材料未发现: 4", result_summary)
+
+    def test_ui_supplement_summary_uses_current_requested_json_field(self) -> None:
+        from paper_scraper_ui import PaperScraperUI
+
+        self.assertTrue(PaperScraperUI._should_show_supplement_summary_from_json({
+            "supplement_requested": True,
+            "supplement_success": 0,
+            "supplement_failed": 0,
+            "supplement_skipped": 0,
+            "supplement_not_found": 0,
+            "supplement_report_path": "",
+        }))
 
     def test_ui_legal_oa_mode_builds_paper_skill_command(self) -> None:
         try:

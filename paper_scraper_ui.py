@@ -84,6 +84,7 @@ class PaperScraperUI:
         self.browser_cookies_var = BooleanVar(value=bool(self.settings.get("browser_cookies", False)))
         self.open_login_var = BooleanVar(value=bool(self.settings.get("open_login", False)))
         self.download_pdf_var = BooleanVar(value=bool(self.settings.get("download_pdf", True)))
+        self.download_supplements_var = BooleanVar(value=bool(self.settings.get("download_supplements", True)))
         self.open_access_var = BooleanVar(value=False)
         self.oa_dry_run_var = BooleanVar(value=False)
         self.oa_overwrite_var = BooleanVar(value=False)
@@ -110,8 +111,10 @@ class PaperScraperUI:
         self.auto_retry_after_run = False
         self.last_smart_wizard_summary = ""
         self.ui_ready = False
+        self.download_supplements_checkbuttons: list[ttk.Checkbutton] = []
 
         self._build_ui()
+        self._sync_download_supplements_state()
         self.ui_ready = True
         self._bind_updates()
         self._refresh_command_preview()
@@ -143,6 +146,7 @@ class PaperScraperUI:
                 "browser_cookies": bool(self.browser_cookies_var.get()),
                 "open_login": bool(self.open_login_var.get()),
                 "download_pdf": bool(self.download_pdf_var.get()),
+                "download_supplements": bool(self.download_supplements_var.get()),
                 "oa_email": self.oa_email_var.get().strip(),
                 "active_tab": self.notebook.index(self.notebook.select()) if hasattr(self, "notebook") else 0,
             }
@@ -580,19 +584,22 @@ class PaperScraperUI:
         ttk.Checkbutton(frame, text="检索后下载 PDF", variable=self.download_pdf_var).grid(
             row=next_row, column=0, columnspan=3, sticky="w", pady=(4, 2)
         )
+        supplement_checkbutton = ttk.Checkbutton(frame, text="同时下载补充材料", variable=self.download_supplements_var)
+        supplement_checkbutton.grid(row=next_row + 1, column=0, columnspan=3, sticky="w", pady=2)
+        self.download_supplements_checkbuttons.append(supplement_checkbutton)
 
         ttk.Label(frame, text="高级登录方式", foreground="#444444").grid(
-            row=next_row + 1, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=next_row + 2, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
         ttk.Checkbutton(frame, text="从本机 Chrome 读取 Cookie", variable=self.browser_cookies_var).grid(
-            row=next_row + 2, column=0, columnspan=3, sticky="w", pady=2
+            row=next_row + 3, column=0, columnspan=3, sticky="w", pady=2
         )
         ttk.Checkbutton(frame, text="先弹出 Chrome 手动登录", variable=self.open_login_var).grid(
-            row=next_row + 3, column=0, columnspan=3, sticky="w", pady=2
+            row=next_row + 4, column=0, columnspan=3, sticky="w", pady=2
         )
 
         if compact:
-            text = "推荐：优先选择 Cookie Editor 导出的 cookies.json。PDF 下载依赖机构权限和 Cookie 有效性。"
+            text = "推荐：优先选择 Cookie Editor 导出的 cookies.json。PDF 和补充材料下载依赖机构权限和 Cookie 有效性。"
             wrap = 500
         else:
             text = (
@@ -601,7 +608,7 @@ class PaperScraperUI:
             )
             wrap = 420
         ttk.Label(frame, text=text, foreground="#555555", wraplength=wrap).grid(
-            row=next_row + 4, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+            row=next_row + 5, column=0, columnspan=3, sticky="ew", pady=(8, 0)
         )
 
     def _bind_updates(self) -> None:
@@ -630,6 +637,7 @@ class PaperScraperUI:
             self.browser_cookies_var,
             self.open_login_var,
             self.download_pdf_var,
+            self.download_supplements_var,
             self.open_access_var,
             self.oa_dry_run_var,
             self.oa_overwrite_var,
@@ -637,9 +645,15 @@ class PaperScraperUI:
             var.trace_add("write", self._on_parameter_changed)
 
     def _on_parameter_changed(self, *_args: object) -> None:
+        self._sync_download_supplements_state()
         self._refresh_command_preview()
         self._refresh_task_summary()
         self._save_settings()
+
+    def _sync_download_supplements_state(self) -> None:
+        state = ["!disabled"] if self.download_pdf_var.get() else ["disabled"]
+        for checkbutton in getattr(self, "download_supplements_checkbuttons", []):
+            checkbutton.state(state)
 
     def _on_paste_text_changed(self, *_args: object) -> None:
         self.root.after_idle(self._on_parameter_changed)
@@ -688,7 +702,10 @@ class PaperScraperUI:
             cookie_source = "手动登录 Chrome"
         else:
             cookie_source = "未选择 Cookie"
-        pdf_text = "下载 PDF" if self.download_pdf_var.get() else "仅保存元数据/解析结果"
+        if self.download_pdf_var.get():
+            pdf_text = "下载 PDF+补充材料" if self.download_supplements_var.get() else "下载 PDF"
+        else:
+            pdf_text = "仅保存元数据/解析结果"
 
         if mode == "doi_batch":
             input_text = self.input_file_var.get().strip() or ("粘贴内容" if self._get_pasted_text() else "未选择")
@@ -963,6 +980,8 @@ class PaperScraperUI:
                 cmd.append("--open-browser-login")
             if self.download_pdf_var.get():
                 cmd.append("--download-pdfs")
+                if not self.download_supplements_var.get():
+                    cmd.append("--no-download-supplements")
             if auto_retry_input:
                 cmd.append("--auto-retry-input")
             return cmd
@@ -988,6 +1007,8 @@ class PaperScraperUI:
             cmd.append("--open-browser-login")
         if self.download_pdf_var.get():
             cmd.append("--download-pdfs")
+            if not self.download_supplements_var.get():
+                cmd.append("--no-download-supplements")
 
         return cmd
 
@@ -1560,6 +1581,13 @@ class PaperScraperUI:
             f"PDF 失败: {values.get('PDF 失败', '未知')}",
             f"PDF 跳过: {values.get('PDF 跳过', '未知')}",
         ]
+        if self._should_show_supplement_summary_from_values(values):
+            parts.extend([
+                f"补充材料成功: {values.get('补充材料成功', '0')}",
+                f"补充材料失败: {values.get('补充材料失败', '0')}",
+                f"补充材料跳过: {values.get('补充材料跳过', '0')}",
+                f"补充材料未发现: {values.get('补充材料未发现', '0')}",
+            ])
         if failure_reasons:
             parts.append("主要失败原因: " + "；".join(failure_reasons[:5]))
         self.result_summary_var.set("；".join(parts))
@@ -1590,6 +1618,13 @@ class PaperScraperUI:
             f"PDF 失败: {data.get('pdf_failed', '未知')}",
             f"PDF 跳过: {data.get('pdf_skipped', '未知')}",
         ]
+        if self._should_show_supplement_summary_from_json(data):
+            parts.extend([
+                f"补充材料成功: {data.get('supplement_success', 0)}",
+                f"补充材料失败: {data.get('supplement_failed', 0)}",
+                f"补充材料跳过: {data.get('supplement_skipped', 0)}",
+                f"补充材料未发现: {data.get('supplement_not_found', 0)}",
+            ])
         if data.get("retry_input_path"):
             self.last_retry_input_path = Path(str(data["retry_input_path"]))
             parts.append(
@@ -1617,6 +1652,9 @@ class PaperScraperUI:
             if line == "PDF 下载:":
                 section = "pdf"
                 continue
+            if line == "补充材料下载:":
+                section = "supplements"
+                continue
             if line == "输出文件:":
                 section = "outputs"
                 continue
@@ -1630,7 +1668,69 @@ class PaperScraperUI:
                 label_map = {"成功": "PDF 成功", "失败": "PDF 失败", "跳过": "PDF 跳过"}
                 if label.strip() in label_map:
                     values[label_map[label.strip()]] = value.strip()
+            elif section == "supplements" and line.startswith("- "):
+                label, _, value = line[2:].partition(":")
+                label_map = {
+                    "成功": "补充材料成功",
+                    "失败": "补充材料失败",
+                    "跳过": "补充材料跳过",
+                    "未发现": "补充材料未发现",
+                }
+                if label.strip() in label_map:
+                    values[label_map[label.strip()]] = value.strip()
+            elif section == "outputs" and line.startswith("- "):
+                label, _, value = line[2:].partition(":")
+                if label.strip() in {"Supplement 下载报告", "补充材料下载报告"}:
+                    values["Supplement 下载报告"] = value.strip()
         return values, failure_reasons
+
+    @classmethod
+    def _should_show_supplement_summary_from_json(cls, data: dict) -> bool:
+        if data.get("supplement_report_path"):
+            return True
+        if cls._truthy_summary_value(data.get("supplement_requested")):
+            return True
+        if cls._truthy_summary_value(data.get("supplements_requested")):
+            return True
+        if cls._truthy_summary_value(data.get("download_supplements")):
+            return True
+        return any(
+            cls._summary_count(data.get(key)) > 0
+            for key in (
+                "supplement_success",
+                "supplement_failed",
+                "supplement_skipped",
+                "supplement_not_found",
+            )
+        )
+
+    @classmethod
+    def _should_show_supplement_summary_from_values(cls, values: dict[str, str]) -> bool:
+        report_path = values.get("Supplement 下载报告", "").strip()
+        if report_path and report_path not in {"未生成", "无", "None", "none"}:
+            return True
+        return any(
+            cls._summary_count(values.get(key)) > 0
+            for key in (
+                "补充材料成功",
+                "补充材料失败",
+                "补充材料跳过",
+                "补充材料未发现",
+            )
+        )
+
+    @staticmethod
+    def _summary_count(value: object) -> int:
+        try:
+            return int(str(value or "0").strip())
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _truthy_summary_value(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "是"}
 
     def _update_result_buttons(self) -> None:
         if not hasattr(self, "retry_failed_button"):

@@ -49,13 +49,21 @@ python -m venv .venv
 1. 在“1 数据来源”中选择 DOI 表格，或直接粘贴 DOI/表格内容。
 2. 如需指定 Excel 工作表或 DOI 列名，填写“Excel 工作表名”和“DOI 列名”。
 3. 在“2 权限与输出”中选择输出目录和 Cookie Editor 导出的 `cookies.json`。
-4. 保持“检索后下载 PDF”勾选；如果不用 Cookie JSON，再按需选择高级登录方式。
+4. 保持“检索后下载 PDF”勾选；默认会同时下载 ScienceDirect 补充材料。如只要正文 PDF，可取消“同时下载补充材料”。
 5. 点击“预览解析”，在“3 预览检查”中确认 DOI 总数、列识别方式和前 200 条预览。
 6. 点击底部固定操作栏中的“开始运行”，运行后会自动切到“运行日志”页。
 
 注意：使用 `cookies.json` 时，不需要勾选“从本机 Chrome 读取 Cookie”，也不需要勾选“先弹出 Chrome 手动登录”。
 
 如果不想导入文件，也可以把 DOI 列表或从 Excel 复制出的表格直接粘贴到“直接粘贴 DOI 或表格内容”。点击“开始运行”时，程序会自动生成临时 CSV 文件。大批量导入时，界面只预览前 200 条并统计总数，避免一次性渲染全部数据导致卡死。
+
+如果输入是新手第一次拿到的 ScienceDirect AI 推荐列表、题名-only 列表或格式很乱的复制文本，第一步先做 preflight，而不是 dry-run：
+
+```powershell
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<论文列表>" --out results --beginner --preflight --auto-web-search
+```
+
+preflight 只生成识别和复核报告，例如 `doi_intake_preview.csv`、`doi_batch_failed.csv` 和 `run_summary.txt`；不会下载 PDF，也不会生成补充材料目录。`--dry-run` 只用于 ScienceDirect DOI 元数据/PII 解析且不下载 PDF 的检查。
 
 界面会记住最近的输出目录、Cookie 文件、窗口尺寸和常用登录选项，配置保存在 `results/_ui_settings.json`。请不要把该文件和 Cookie 一起上传到公开平台。
 
@@ -98,6 +106,10 @@ results\doi_batch_20260616_120000\
 - `pdf_download_report.csv`：逐篇记录 PDF 下载成功、失败或跳过原因。
 - `run_summary.txt`：本次任务摘要、失败原因分组和下一步建议。
 - `pdfs`：下载成功的 PDF 文件。
+- `supplement_download_report.csv`：只在本次启用 PDF 下载且启用补充材料下载时生成，逐个记录补充材料成功、失败、跳过或未发现原因。
+- `supplements`：只在 PDF 下载和补充材料下载都启用时生成，按文章文件名前缀建立子目录保存对应附件。
+
+补充材料状态 `not_found` 表示页面上没有检测到可下载的 supplement 链接，不代表正文 PDF 下载失败。
 
 ## 混合文本识别与合法 OA PDF 下载
 
@@ -158,6 +170,12 @@ powershell -ExecutionPolicy Bypass -File install_codex_skills.ps1
 
 ```powershell
 .\.venv\Scripts\python.exe sd_scraper.py -m doi_batch --input "papers.csv" --doi-column "doi" --cookies "cookies.json" --download-pdfs
+```
+
+`--download-pdfs` 默认也会尝试下载 ScienceDirect 补充材料。只有启用 PDF 下载且未关闭补充材料下载时，才会生成 `supplement_download_report.csv` 和 `supplements\`。如只下载正文 PDF：
+
+```powershell
+.\.venv\Scripts\python.exe sd_scraper.py -m doi_batch --input "papers.csv" --doi-column "doi" --cookies "cookies.json" --download-pdfs --no-download-supplements
 ```
 
 如果 DOI 在普通文本或 Markdown 文件中：
