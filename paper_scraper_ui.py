@@ -169,7 +169,7 @@ class PaperScraperUI:
                 warnings.append(f"当前解释器未检测到 {package_name}；请通过启动脚本或 requirements.txt 安装。")
         chrome_path = chrome_bin()
         if not Path(chrome_path).exists() and shutil.which(chrome_path) is None:
-            warnings.append("未在常见位置检测到 Chrome；PDF 下载可能无法自动打开调试 Chrome。")
+            warnings.append("未在常见位置检测到 Edge/Chrome/Chromium；PDF 下载可能无法自动打开调试浏览器。")
         return warnings
 
     def _on_close(self) -> None:
@@ -591,10 +591,10 @@ class PaperScraperUI:
         ttk.Label(frame, text="高级登录方式", foreground="#444444").grid(
             row=next_row + 2, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
-        ttk.Checkbutton(frame, text="从本机 Chrome 读取 Cookie", variable=self.browser_cookies_var).grid(
+        ttk.Checkbutton(frame, text="从本机浏览器读取 Cookie", variable=self.browser_cookies_var).grid(
             row=next_row + 3, column=0, columnspan=3, sticky="w", pady=2
         )
-        ttk.Checkbutton(frame, text="先弹出 Chrome 手动登录", variable=self.open_login_var).grid(
+        ttk.Checkbutton(frame, text="先弹出浏览器手动登录", variable=self.open_login_var).grid(
             row=next_row + 4, column=0, columnspan=3, sticky="w", pady=2
         )
 
@@ -603,8 +603,8 @@ class PaperScraperUI:
             wrap = 500
         else:
             text = (
-                "推荐：优先选择 Cookie JSON。未提供 Cookie 文件时，可使用本机 Chrome Cookie；"
-                "手动登录会等待你在 Chrome 中完成机构登录。"
+                "推荐：优先选择 Cookie JSON。未提供 Cookie 文件时，可使用本机浏览器 Cookie；"
+                "手动登录会等待你在调试浏览器中完成机构登录。"
             )
             wrap = 420
         ttk.Label(frame, text=text, foreground="#555555", wraplength=wrap).grid(
@@ -697,9 +697,9 @@ class PaperScraperUI:
         if cookie_path:
             cookie_source = check_cookie_json(cookie_path).message
         elif self.browser_cookies_var.get():
-            cookie_source = "本机 Chrome Cookie"
+            cookie_source = "本机浏览器 Cookie"
         elif self.open_login_var.get():
-            cookie_source = "手动登录 Chrome"
+            cookie_source = "手动登录浏览器"
         else:
             cookie_source = "未选择 Cookie"
         if self.download_pdf_var.get():
@@ -804,11 +804,11 @@ class PaperScraperUI:
             level = "ok" if cookie_check.is_usable else "warn"
             items.append((level, cookie_check.message))
         elif self.browser_cookies_var.get():
-            items.append(("warn", "未选择 Cookie JSON；将尝试从本机 Chrome 读取 Cookie"))
+            items.append(("warn", "未选择 Cookie JSON；将尝试从本机浏览器读取 Cookie"))
         elif self.open_login_var.get():
-            items.append(("warn", "未选择 Cookie JSON；运行时将等待手动登录 Chrome"))
+            items.append(("warn", "未选择 Cookie JSON；运行时将等待手动登录浏览器"))
         else:
-            items.append(("warn", "下载 PDF 通常需要 Cookie JSON 或已登录的 Chrome"))
+            items.append(("warn", "下载 PDF 通常需要 Cookie JSON 或已登录的 Edge/浏览器"))
         return items
 
     def _refresh_preflight_panel(self, items: list[tuple[str, str]]) -> None:
@@ -932,7 +932,7 @@ class PaperScraperUI:
             and not self.open_login_var.get()
             and not messagebox.askyesno(
                 "缺少 Cookie",
-                "当前开启了 PDF 下载，但没有选择 Cookie JSON，也没有启用 Chrome Cookie/手动登录。\n\n仍要继续运行吗？",
+                "当前开启了 PDF 下载，但没有选择 Cookie JSON，也没有启用浏览器 Cookie/手动登录。\n\n仍要继续运行吗？",
             )
         ):
             return False
@@ -1336,7 +1336,7 @@ class PaperScraperUI:
             "有效 DOI: {valid}；重复: {duplicate}；空值: {empty}；异常: {invalid}".format(**counts),
             f"DOI 列/方式: {preview.doi_column or '自动识别'}",
             f"Cookie/权限: {cookie_message}",
-            f"Chrome 登录窗口: {'是' if self.open_login_var.get() else '否'}",
+            f"浏览器登录窗口: {'是' if self.open_login_var.get() else '否'}",
             f"断点恢复: {self.resume_from_var.get().strip() or '未启用'}",
             f"恢复建议: {resume_message}",
             f"预计输出目录: {expected_output}",
@@ -1368,11 +1368,11 @@ class PaperScraperUI:
             self.cookies_file_var.set("")
             self.browser_cookies_var.set(False)
             self.open_login_var.set(True)
-            return f"{cookie_check.message}；已改用 Chrome 登录引导"
+            return f"{cookie_check.message}；已改用浏览器登录引导"
         if not self.browser_cookies_var.get():
             self.open_login_var.set(True)
-            return "未选择 Cookie JSON；已启用 Chrome 登录引导"
-        return "未选择 Cookie JSON；将尝试从本机 Chrome 读取 Cookie"
+            return "未选择 Cookie JSON；已启用浏览器登录引导"
+        return "未选择 Cookie JSON；将尝试从本机浏览器读取 Cookie"
 
     def _prepare_wizard_resume(self, output_dir: Path, input_path: str, current_dois: set[str]) -> str:
         if self.resume_from_var.get().strip():

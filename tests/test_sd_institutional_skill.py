@@ -181,7 +181,8 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
                     supplement_records=supplement_records,
                 )
 
-        def fake_make_scraper(_cookie_cache_path: Path) -> FakeScraper:
+        def fake_make_scraper(_cookie_cache_path: Path, browser_exe: str | None = None) -> FakeScraper:
+            self.assertIsNone(browser_exe)
             return FakeScraper()
 
         def fake_resolve_one(_self: object, _candidate: object) -> MetadataResult:
@@ -620,6 +621,45 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertEqual(seen_article_files, [legacy_filename])
         self.assertEqual(result.supplement_records[0].article_file, legacy_filename)
 
+    def test_main_passes_browser_exe_to_dry_run_scraper(self) -> None:
+        import sd_institutional_skill
+
+        constructed: list[dict[str, object]] = []
+
+        class FakeScraper:
+            def __init__(self, **kwargs: object) -> None:
+                constructed.append(kwargs)
+                self.last_browser_message = "Edge: fake"
+                self.last_download_next_steps = ""
+
+            def resolve_doi_batch(self, _input_path: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+                return [], []
+
+            def save_failed_doi_report(self, _failures: list[dict[str, str]], filename: str, output_dir: str) -> str:
+                path = Path(output_dir) / filename
+                path.write_text("row_number,doi,reason\n", encoding="utf-8-sig")
+                return str(path)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(sd_institutional_skill, "ScienceDirectScraper", FakeScraper):
+                exit_code = sd_institutional_skill.main([
+                    "--text",
+                    "10.1016/j.actamat.2026.121972",
+                    "--out",
+                    str(root),
+                    "--run-name",
+                    "dry",
+                    "--dry-run",
+                    "--browser-exe",
+                    r"C:\Program Files (x86)\Microsoft\Edge Beta\Application\msedge.exe",
+                ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            constructed,
+            [{"browser_exe": r"C:\Program Files (x86)\Microsoft\Edge Beta\Application\msedge.exe"}],
+        )
     def test_build_intake_merges_text_files_and_ignores_output_dirs(self) -> None:
         from sd_institutional_skill import build_intake, iter_input_files
 
@@ -1104,6 +1144,33 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
 
 
 class InstitutionalSkillCookieTests(unittest.TestCase):
+    def test_scraper_reads_edge_cookies_before_chrome_cookies(self) -> None:
+        import sd_scraper
+
+        class Cookie:
+            def __init__(self, name: str, value: str) -> None:
+                self.name = name
+                self.value = value
+
+        chrome_called = False
+
+        def fake_edge(domain_name: str) -> list[Cookie]:
+            self.assertEqual(domain_name, ".sciencedirect.com")
+            return [Cookie("SDMSESSION", "edge-secret")]
+
+        def fake_chrome(domain_name: str) -> list[Cookie]:
+            nonlocal chrome_called
+            chrome_called = True
+            return [Cookie("SDMSESSION", "chrome-secret")]
+
+        with patch.object(sd_scraper, "HAS_BROWSER_COOKIE3", True), \
+                patch.object(sd_scraper.browser_cookie3, "edge", fake_edge), \
+                patch.object(sd_scraper.browser_cookie3, "chrome", fake_chrome):
+            scraper = sd_scraper.ScienceDirectScraper(use_browser_cookies=True)
+
+        self.assertFalse(chrome_called)
+        self.assertEqual(scraper._cookie_dict["SDMSESSION"], "edge-secret")
+
     def test_extract_devtools_cookies_and_cache_filters_relevant_domains(self) -> None:
         from sd_institutional_skill import cache_devtools_cookies
 

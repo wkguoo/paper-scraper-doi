@@ -68,7 +68,7 @@ Use one DOI that the user's institution can access.
 
 Expected:
 
-- If the cached cookie is insufficient, a Chrome/Edge debug window opens.
+- If the cached cookie is insufficient, an Edge/Chrome debug window opens.
 - The user completes institutional login in the browser; no password is pasted into Codex or the terminal.
 - `pdf_download_report.csv` records `success` and the PDF exists under `pdfs\`.
 - `results\_auth\sciencedirect_cookies.json` may be created and must stay local.

@@ -69,11 +69,13 @@ from sd_supplements import (
 )
 from windows_paths import (
     BROWSER_EXE_ENV,
+    browser_bin,
     browser_candidate_paths,
+    browser_default_profile,
+    browser_display_name,
     chrome_bin,
     chrome_debug_log,
     chrome_debug_profile,
-    chrome_default_profile,
 )
 
 try:
@@ -419,17 +421,38 @@ class ScienceDirectScraper:
     BASE_URL = "https://www.sciencedirect.com"
     SEARCH_API = "https://www.sciencedirect.com/search/api"
 
-    def __init__(self, cookies_file=None, use_browser_cookies=False, delay_range=(2, 5)):
+    def __init__(self, cookies_file=None, use_browser_cookies=False, delay_range=(2, 5), browser_exe=None):
         self.session = curl_requests.Session(impersonate="chrome124")
         self.delay_range = delay_range
         self._search_token = None
         self._cookie_dict = {}     # 机构 cookie（来自 Chrome/文件，用于 PDF 下载）
         self._session_cookies = {} # 搜索 session cookie（来自服务器，用于搜索 API）
 
+        self.browser_exe = browser_exe
+        self.CHROME_BIN = browser_bin(browser_exe)
+        self.browser_name = browser_display_name(browser_exe)
+        self.last_browser_message = self.browser_status_message()
+        self.last_download_next_steps = ""
+
         if use_browser_cookies:
             self._load_browser_cookies()
         elif cookies_file:
             self._load_cookies(cookies_file)
+
+    def browser_status_message(self) -> str:
+        return (
+            f"{self.browser_name}: {self.CHROME_BIN}; "
+            f"profile: {browser_default_profile(self.CHROME_BIN)}; "
+            f"debug_port: {self.CHROME_DBG_PORT}"
+        )
+
+    @staticmethod
+    def default_download_next_steps() -> str:
+        return (
+            "Open pdf_download_report.csv and run_summary.json to inspect exact failures.\n"
+            "If institutional access failed, sign in through the Edge debug window and retry the DOI batch.\n"
+            "If ScienceDirect remains inaccessible, use only legal public sources such as publisher OA pages, author/lab pages, or Unpaywall; do not use Sci-Hub/LibGen."
+        )
 
     # ── Cookie 支持 ──────────────────────────────────────────────────────────
 
@@ -441,25 +464,37 @@ class ScienceDirectScraper:
             )
 
     def _load_browser_cookies(self):
-        """直接从本机 Chrome 读取 sciencedirect.com 的 cookie。"""
+        """直接从本机 Edge/Chrome 读取 sciencedirect.com 的 cookie。"""
         if not HAS_BROWSER_COOKIE3:
             print("[错误] 未安装 browser-cookie3，请运行：pip install browser-cookie3")
             return
-        try:
-            jar = browser_cookie3.chrome(domain_name='.sciencedirect.com')
-            for c in jar:
-                self._cookie_dict[c.name] = c.value
-            if self._cookie_dict:
-                self._apply_cookie_header()
-                print(f"[信息] 已从 Chrome 自动读取 {len(self._cookie_dict)} 个 cookie（机构账号模式）")
-            else:
-                print("[警告] Chrome 中未找到 sciencedirect.com 的 cookie，请先在 Chrome 中登录")
-        except Exception as e:
-            print(f"[警告] 读取 Chrome cookie 失败：{e}")
-            if sys.platform.startswith("win"):
-                print("       提示：Windows 上可通过弹出的调试 Chrome 完成机构登录并刷新 Cookie")
-            elif sys.platform == "darwin":
-                print("       提示：macOS 可能弹出钥匙串权限请求，请点允许")
+        loaders = []
+        if hasattr(browser_cookie3, "edge"):
+            loaders.append(("Edge", browser_cookie3.edge))
+        loaders.append(("Chrome", browser_cookie3.chrome))
+
+        errors: list[str] = []
+        for label, loader in loaders:
+            before = len(self._cookie_dict)
+            try:
+                jar = loader(domain_name='.sciencedirect.com')
+                for c in jar:
+                    self._cookie_dict[c.name] = c.value
+                added = len(self._cookie_dict) - before
+                if added:
+                    self._apply_cookie_header()
+                    print(f"[信息] 已从 {label} 自动读取 {added} 个 cookie（机构账号模式）")
+                    return
+            except Exception as e:
+                errors.append(f"{label}: {e}")
+
+        print("[警告] Edge/Chrome 中未找到 sciencedirect.com 的 cookie；下载时可能需要在调试浏览器中登录")
+        if errors:
+            print(f"[警告] 本机浏览器 cookie 读取失败: {'; '.join(errors[:2])}")
+        if sys.platform.startswith("win"):
+            print("       提示：Windows 上可通过弹出的调试浏览器完成机构登录并刷新 Cookie")
+        elif sys.platform == "darwin":
+            print("       提示：macOS 可能弹出钥匙串权限请求，请点允许")
 
     def _load_cookies(self, cookies_file):
         """从 JSON 文件加载 cookies。"""
@@ -1301,11 +1336,11 @@ class ScienceDirectScraper:
             return h, False
 
         if not self._is_chrome_debug_ready():
-            print("  调试端口未就绪，尝试启动 Chrome…")
+            print(f"  调试端口未就绪，尝试启动 {self.browser_name}...")
             self._launch_chrome_with_debug()
 
         if not self._is_chrome_debug_ready():
-            print("  [警告] 无法启动调试 Chrome，使用磁盘 Cookie（可能缺少 session 信息）")
+            print("  [警告] 无法启动调试浏览器，使用磁盘 Cookie（可能缺少 session 信息）")
             _, h = self._get_cookies_via_browser_cookie3()
             return h, False
 
@@ -1380,10 +1415,10 @@ class ScienceDirectScraper:
 
         # ── 启动 / 连接调试 Chrome ────────────────────────────────────────
         if not self._is_chrome_debug_ready():
-            print("  自动启动调试 Chrome…")
+            print(f"  自动启动调试 {self.browser_name}...")
             self._launch_chrome_with_debug()
             if not self._is_chrome_debug_ready():
-                print("[错误] Chrome 调试端口无法启动，查看：cat /tmp/chrome_debug.log")
+                print("[错误] 浏览器调试端口无法启动，查看调试日志")
                 return
 
         with sync_playwright() as p:
@@ -1391,7 +1426,7 @@ class ScienceDirectScraper:
                 f"http://127.0.0.1:{self.CHROME_DBG_PORT}"
             )
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            print("  已连接 Chrome ✓")
+            print(f"  已连接 {self.browser_name} ✓")
 
             # 访问主页，让 Cloudflare 验证真实浏览器（自动通过，无需人工操作）
             setup_page = ctx.new_page()
@@ -1676,18 +1711,19 @@ class ScienceDirectScraper:
         # 启动 / 连接 Chrome
         chrome_was_fresh = not self._is_chrome_debug_ready()
         if chrome_was_fresh:
-            print("  调试端口未就绪，自动启动 Chrome...")
+            print(f"  Debug port is not ready; starting {self.browser_name}...")
             self._launch_chrome_with_debug()
             if not self._is_chrome_debug_ready():
-                print("[错误] Chrome 调试端口仍不可用，PDF 下载中止")
+                print("[error] Browser debug port is unavailable; PDF download aborted")
                 for idx, article in enumerate(results, 1):
                     fail += 1
                     filename = self._make_pdf_filename(idx, article)
-                    _record(article, "failed", file=filename, reason="Chrome 调试端口不可用")
+                    _record(article, "failed", file=filename, reason="browser_debug_port_unavailable")
                     _skip_supplements_for_pdf_failure(article, idx, filename)
+                self.last_download_next_steps = self.default_download_next_steps()
                 return DownloadRunResult(
                     pdf_success=success,
-                    pdf_failed=total,
+                    pdf_failed=fail,
                     pdf_skipped=skip,
                     pdf_records=pdf_records,
                     supplement_success=supplement_success,
@@ -1697,7 +1733,7 @@ class ScienceDirectScraper:
                     supplement_records=supplement_records,
                 )
         else:
-            print("  已检测到 Chrome 调试端口 ✓")
+            print("  Browser debug port detected")
 
         base_url = f"http://127.0.0.1:{debug_port}"
 
@@ -1722,7 +1758,7 @@ class ScienceDirectScraper:
             except Exception:
                 pass
             print("\n" + "=" * 60)
-            print("  请在弹出的 Chrome 窗口中完成机构账号登录：")
+            print(f"  Please finish institutional sign-in in the opened {self.browser_name} window:")
             print("  1. 如果显示学校/机构登录页，请输入你的机构账号")
             print("  2. 如果停留在 ScienceDirect，请点击 Sign in → Access through your institution")
             print("  3. 确认 PDF 能正常显示（看到 PDF 内容，不是登录页）")
@@ -1735,7 +1771,7 @@ class ScienceDirectScraper:
                 try:
                     input("  >>> 登录完成后按 Enter：")
                 except EOFError:
-                    print("  [提示] 非交互模式，改为自动等待并轮询权限")
+                    print("  [info] Non-interactive mode; polling for access automatically")
 
         def _wait_for_institutional_access(pii: str) -> bool:
             if interactive_login:
@@ -1786,23 +1822,27 @@ class ScienceDirectScraper:
         test_pii = next((a["pii"] for a in results if a.get("pii")), None)
 
         if chrome_was_fresh:
-            # Chrome 刚启动，用本机 Cookie 克隆，未必有机构登录状态
+            # Fresh debug browser may not have institutional login state.
             _prompt_login(test_pii)
 
+        has_institutional_pdf_access = True
         if test_pii:
             print("  检查机构访问权限（导航至 PDF URL）...")
-            has_access = _check_institutional_access(test_pii)
-            if has_access:
+            has_institutional_pdf_access = _check_institutional_access(test_pii)
+            if has_institutional_pdf_access:
                 print("  机构访问权限确认 ✓")
             else:
-                print("  未检测到机构下载权限。")
+                print("  Institutional PDF access was not detected.")
                 _prompt_login(test_pii)
                 # 登录后再检查一次
                 print("  重新检查权限...")
                 if _wait_for_institutional_access(test_pii):
+                    has_institutional_pdf_access = True
                     print("  机构访问权限确认 ✓")
                 else:
-                    print("  [警告] 仍未检测到权限，将继续尝试下载（可能全部失败）")
+                    has_institutional_pdf_access = False
+                    print("  [warning] Still no institutional PDF access; attempting downloads may fail.")
+                    self.last_download_next_steps = self.default_download_next_steps()
 
         print()
 
@@ -1818,12 +1858,13 @@ class ScienceDirectScraper:
             p_tab = open_tab("about:blank")
         except Exception as e:
             fail += total
-            print(f"  [错误] 无法创建 Chrome 调试标签页，PDF 下载中止：{e}")
+            print(f"  [error] Cannot create browser debug tab; PDF download aborted: {e}")
             print(f"\n[完成] 成功: {success}  失败: {fail}  跳过: {skip}")
             for idx, article in enumerate(results, 1):
                 filename = self._make_pdf_filename(idx, article)
-                _record(article, "failed", file=filename, reason=f"无法创建 Chrome 调试标签页: {e}")
+                _record(article, "failed", file=filename, reason=f"browser_debug_tab_unavailable: {e}")
                 _skip_supplements_for_pdf_failure(article, idx, filename)
+            self.last_download_next_steps = self.default_download_next_steps()
             return DownloadRunResult(
                 pdf_success=success,
                 pdf_failed=fail,
@@ -1944,7 +1985,7 @@ class ScienceDirectScraper:
                     p_tab = open_tab("about:blank")
                     time.sleep(1)
                 except Exception as exc:
-                    raise RuntimeError(f"无法重建 Chrome 调试标签页: {exc}") from exc
+                    raise RuntimeError(f"browser_debug_tab_rebuild_failed: {exc}") from exc
 
         def _fetch_one(pii, pdf_url):
             """
@@ -2041,7 +2082,7 @@ class ScienceDirectScraper:
                     is_captcha = any(s in note_low for s in CAPTCHA_SIGNALS)
 
                     if is_captcha:
-                        # CAPTCHA：等待无效，必须人工在 Chrome 里点一次验证
+                        # CAPTCHA requires one manual browser verification.
                         # 点完后整个会话恢复，后续篇目无需再次干预
                         print(f"\n  🔒 [{idx}/{total}] Elsevier 要求人机验证（CAPTCHA）")
                         safe_write_run_event(
@@ -2057,7 +2098,7 @@ class ScienceDirectScraper:
                             ),
                         )
                         print("  ─────────────────────────────────────────────")
-                        print("  请切换到 Chrome 窗口，完成人机验证：")
+                        print(f"  Switch to the {self.browser_name} window and complete verification:")
                         print("  · 勾选「I'm not a robot」或完成图片验证")
                         if interactive_login:
                             print("  · 验证通过后，回到此终端按 Enter 继续")
@@ -2109,9 +2150,12 @@ class ScienceDirectScraper:
                 else:
                     is_blocked = str(note).startswith("blocked:")
                     tag = "被封锁" if is_blocked else "未捕获PDF"
+                    reason = f"{tag}: {str(note)[:160]}"
+                    if not has_institutional_pdf_access:
+                        reason = f"no_institutional_pdf_access: {str(note)[:160]}"
                     print(f"  [{idx}/{total}] ✗ {tag}: {title_short[:40]}  ({str(note)[:80]})")
                     fail += 1
-                    _record(article, "failed", file=filename, reason=f"{tag}: {str(note)[:160]}")
+                    _record(article, "failed", file=filename, reason=reason)
                     _skip_supplements_for_pdf_failure(article, idx, filename)
 
                 if idx < total:
@@ -2149,6 +2193,8 @@ class ScienceDirectScraper:
                 },
             ),
         )
+        if fail and not self.last_download_next_steps:
+            self.last_download_next_steps = self.default_download_next_steps()
         return DownloadRunResult(
             pdf_success=success,
             pdf_failed=fail,
@@ -2187,7 +2233,7 @@ class ScienceDirectScraper:
         """
         import subprocess, shutil
 
-        default_profile = chrome_default_profile()
+        default_profile = browser_default_profile(self.CHROME_BIN)
         tmp_default = os.path.join(self.CHROME_DBG_PROFILE, "Default")
         os.makedirs(tmp_default, exist_ok=True)
 
@@ -2237,10 +2283,10 @@ class ScienceDirectScraper:
         try:
             with open(log_path, "w") as log_f:
                 proc = subprocess.Popen(cmd, stdout=log_f, stderr=subprocess.STDOUT)
-            print(f"  Chrome 已启动 (PID {proc.pid})，等待调试端口就绪...")
+            print(f"  {self.browser_name} debug browser started (PID {proc.pid}); waiting for port...")
         except FileNotFoundError:
-            print(f"  [错误] 找不到 Chrome/Edge/Chromium：{self.CHROME_BIN}")
-            print(f"  提示：安装 Chrome/Edge，或设置 {BROWSER_EXE_ENV} 指向可用的 chrome.exe/msedge.exe")
+            print(f"  [error] Browser executable not found: {self.CHROME_BIN}")
+            print(f"  Tip: install Edge/Chrome, pass --browser-exe, or set {BROWSER_EXE_ENV}.")
             candidates = browser_candidate_paths()
             if candidates:
                 print("  已检查候选路径：")
@@ -2252,12 +2298,12 @@ class ScienceDirectScraper:
         for i in range(40):
             time.sleep(1)
             if self._is_chrome_debug_ready():
-                print(f"  Chrome 调试端口已就绪 ({i+1}s) ✓")
+                print(f"  Browser debug port is ready ({i+1}s)")
                 return proc
             if (i + 1) % 5 == 0:
-                print(f"  等待 Chrome 启动... ({i+1}s)")
+                print(f"  Waiting for browser startup... ({i+1}s)")
 
-        print(f"  [警告] Chrome 40s 内未就绪，查看日志：cat {log_path}")
+        print(f"  [warning] Browser did not become ready within 40s; log: {log_path}")
         return None
 
     def open_chrome_for_login(self, target_url=None, keep_page_open=True):
@@ -2266,11 +2312,11 @@ class ScienceDirectScraper:
         """
         target_url = target_url or self.BASE_URL
         if not self._is_chrome_debug_ready():
-            print("  正在启动调试 Chrome…")
+            print(f"  Starting debug {self.browser_name}...")
             self._launch_chrome_with_debug()
 
         if not self._is_chrome_debug_ready():
-            print("\n[错误] Chrome 调试端口不可用，请查看：cat /tmp/chrome_debug.log")
+            print("\n[error] Browser debug port is unavailable; check the debug log.")
             return False
 
         try:
@@ -2292,7 +2338,7 @@ class ScienceDirectScraper:
                 pass
 
             print("\n" + "=" * 60)
-            print("  Chrome 已打开。请在浏览器中完成下面操作：")
+            print(f"  {self.browser_name} is open. Finish these steps in the browser:")
             print("  1. 登录 ScienceDirect / 学校机构账号")
             print("  2. 确认能正常打开一篇有权限的文章")
             print("  3. 回到终端按 Enter，继续执行后续抓取")
@@ -2366,8 +2412,8 @@ class ScienceDirectScraper:
             pass
 
         print("\n" + "="*60)
-        print("  Chrome 窗口可能已跳转到机构登录页（CARSI/深技大）")
-        print("  请在 Chrome 中完成登录：")
+        print(f"  {self.browser_name} may have redirected to the institutional login page.")
+        print(f"  Please finish sign-in in {self.browser_name}:")
         print("  · 若显示 SZTU 登录页：直接输入工号/密码登录")
         print("  · 若显示 ScienceDirect：点右上角 Sign in → Access through")
         print("    your institution → 搜索选择你的学校 → 完成登录")
@@ -2400,19 +2446,19 @@ class ScienceDirectScraper:
         total = len(results)
         success = skip = fail = 0
 
-        print(f"\n[Chrome PDF 下载]  共 {total} 篇，保存至 {pdf_dir}")
+        print(f"\n[浏览器 PDF 下载]  共 {total} 篇，保存至 {pdf_dir}")
 
         # 如果调试端口未就绪，自动启动 Chrome
         chrome_proc = None
         if not self._is_chrome_debug_ready():
-            print("  调试端口未就绪，自动启动 Chrome...")
+            print(f"  调试端口未就绪，自动启动 {self.browser_name}...")
             chrome_proc = self._launch_chrome_with_debug()
             if not self._is_chrome_debug_ready():
-                print("\n[错误] Chrome 调试端口仍不可用，PDF 下载中止")
+                print("\n[错误] 浏览器调试端口仍不可用，PDF 下载中止")
                 print("  请查看日志：cat /tmp/chrome_debug.log")
                 return
         else:
-            print("  已检测到 Chrome 调试端口 ✓")
+            print("  已检测到浏览器调试端口 ✓")
 
         with sync_playwright() as p:
             try:
@@ -2420,11 +2466,11 @@ class ScienceDirectScraper:
                     f"http://127.0.0.1:{self.CHROME_DBG_PORT}"
                 )
             except Exception as e:
-                print(f"\n[错误] 连接 Chrome 失败：{e}")
+                print(f"\n[错误] 连接浏览器失败：{e}")
                 return
 
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
-            print("  已连接 Chrome ✓")
+            print(f"  已连接 {self.browser_name} ✓")
 
             # 检查机构访问权限，取第一篇有 pii 的文章测试
             test_pii = next((a["pii"] for a in results if a.get("pii")), None)
@@ -2627,7 +2673,7 @@ def interactive_mode():
 
     # ── 机构 Cookie ───────────────────────────────────────────────
     print("\n【机构账号 Cookie】")
-    print("  1. 自动从 Chrome 读取（推荐）")
+    print("  1. 自动从 Edge/Chrome 读取（推荐）")
     print("  2. 手动指定 cookie 文件")
     print("  3. 跳过，以游客身份运行")
     cookie_choice = input("  请选择 [1/2/3，默认 1]: ").strip() or "1"
@@ -2697,8 +2743,8 @@ def interactive_mode():
 
     print("\n【PDF 下载】")
     print("  1. 下载 PDF（推荐）")
-    print("     读取你 Chrome 浏览器的 Cookie，用 HTTP 直连下载，无需机器人验证")
-    print("     前提：Chrome 已通过机构账号（CARSI/深技大）登录 ScienceDirect")
+    print("     读取你 Edge/Chrome 浏览器的 Cookie，用 HTTP 直连下载，无需机器人验证")
+    print("     前提：Edge/Chrome 已通过机构账号（CARSI/深技大）登录 ScienceDirect")
     print("  2. 跳过，只保存文献列表")
     dl_choice = input("  请选择 [1/2，默认 2]: ").strip() or "2"
     download_pdfs = (dl_choice == "1")
@@ -2745,9 +2791,9 @@ def build_parser():
     )
     parser.add_argument("--interactive", action="store_true", help="启动交互式向导")
     parser.add_argument("--open-browser-login", action="store_true",
-                        help="先从终端打开真实 Chrome，手动完成机构登录后再继续")
+                        help="先从终端打开真实浏览器，手动完成机构登录后再继续")
     parser.add_argument("--login-only", action="store_true",
-                        help="只打开 Chrome 并等待你登录，不执行搜索")
+                        help="只打开浏览器并等待你登录，不执行搜索")
     parser.add_argument("-m", "--mode",
                         choices=["keyword", "journal", "journal_keyword",
                                  "author", "issn", "advanced", "doi_batch"],
@@ -2764,8 +2810,10 @@ def build_parser():
                         help="文章类型: FLA 完整文章 / REV 综述 / SCO 短通讯")
     parser.add_argument("--open-access",   action="store_true", help="仅抓取开放获取文章")
     parser.add_argument("--browser-cookies", dest="browser_cookies", action="store_true",
-                        help="自动从本机 Chrome 读取 cookie")
+                        help="自动从本机 Edge/Chrome 读取 cookie")
     parser.add_argument("--cookies",       help="Cookie JSON 文件路径")
+    parser.add_argument("--browser-exe",
+                        help="Browser executable path for institutional login/download (defaults to Edge first)")
     parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
                         help="在保存文献列表后，继续下载对应 PDF")
@@ -2795,7 +2843,7 @@ def main():
         return
 
     if args.login_only and args.mode:
-        print("提示: --login-only 会忽略搜索参数，只负责打开 Chrome 供你登录。")
+        print("提示: --login-only 会忽略搜索参数，只负责打开浏览器供你登录。")
     if args.login_only and not args.open_browser_login:
         args.open_browser_login = True
 
@@ -2809,7 +2857,8 @@ def main():
 
     scraper = ScienceDirectScraper(
         cookies_file=args.cookies,
-        use_browser_cookies=args.browser_cookies
+        use_browser_cookies=args.browser_cookies,
+        browser_exe=args.browser_exe,
     )
 
     if args.open_browser_login:
@@ -2817,7 +2866,7 @@ def main():
         if not ok:
             return
         if args.login_only:
-            print("\nChrome 会保持打开，当前登录状态也会保留。")
+            print(f"\n{scraper.browser_name} will stay open and keep the current login state.")
             print("接下来请直接运行真正的抓取命令，例如：")
             print('python sd_scraper.py -m keyword -q "machine learning" -n 20 --browser-cookies --format xlsx --download-pdfs')
             return
@@ -2835,9 +2884,9 @@ def main():
             if not cookie_check.is_usable:
                 print("[警告] Cookie 文件可能无法用于 ScienceDirect PDF 下载，将继续尝试。")
         elif args.download_pdfs and args.browser_cookies:
-            cookie_message = "未选择 Cookie JSON 文件；将尝试从本机 Chrome/调试会话获取 Cookie"
+            cookie_message = "未选择 Cookie JSON 文件；将尝试从本机浏览器/调试会话获取 Cookie"
         elif args.download_pdfs:
-            cookie_message = "未选择 Cookie JSON 文件；PDF 下载可能需要手动登录 Chrome"
+            cookie_message = "未选择 Cookie JSON 文件；PDF 下载可能需要在调试浏览器中手动登录"
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         base = args.filename or f"doi_batch_{timestamp}"
@@ -2974,6 +3023,8 @@ def main():
             supplement_skipped=supplement_skipped,
             supplement_not_found=supplement_not_found,
             supplement_report_path=supplement_report_path,
+            browser_message=scraper.last_browser_message,
+            download_next_steps=scraper.last_download_next_steps,
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary, event_path=event_path)

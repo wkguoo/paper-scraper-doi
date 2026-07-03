@@ -223,16 +223,16 @@ preflight 输出重点看这些文件：
 
 1. 已经有可用 cookie，程序直接继续。
 2. 本机浏览器调试端口已经打开。
-3. Chrome/Edge/Chromium 启动失败。
+3. Edge/Chrome/Chromium 启动失败。
 
 处理方法：
 
 1. 先看 Codex 最后的错误信息。
-2. 如果提示找不到浏览器，安装 Chrome 或 Edge。
+2. 如果提示找不到浏览器，优先安装 Microsoft Edge；Chrome/Chromium 仍可作为后备。
 3. 如果浏览器装在特殊位置，先设置：
 
 ```powershell
-$env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\chrome.exe"
+$env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 ```
 
 再重新运行下载命令。

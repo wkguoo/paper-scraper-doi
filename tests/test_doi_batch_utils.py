@@ -40,6 +40,20 @@ class _FakeStateWidget:
 
 
 class DoiBatchUtilsTests(unittest.TestCase):
+    def test_sd_scraper_parser_accepts_browser_exe(self) -> None:
+        import sd_scraper
+
+        args = sd_scraper.build_parser().parse_args([
+            "-m",
+            "doi_batch",
+            "--input",
+            "papers.csv",
+            "--browser-exe",
+            r"C:\Edge\msedge.exe",
+        ])
+
+        self.assertEqual(args.browser_exe, r"C:\Edge\msedge.exe")
+
     def test_preview_reads_csv_with_chinese_doi_alias_and_cleans_url(self) -> None:
         from doi_batch_utils import preview_doi_input
 
@@ -321,6 +335,8 @@ class ReportTests(unittest.TestCase):
                 failed_path=str(out / "doi_batch_failed.csv"),
                 pdf_report_path=str(out / "pdf_download_report.csv"),
                 cookie_message="已识别 5 个 Cookie，其中 2 个与 ScienceDirect/Elsevier 相关",
+                browser_message=r"Edge: C:\Edge\msedge.exe; profile: C:\Edge\User Data\Default; debug_port: 9222",
+                download_next_steps="Retry after Edge institutional sign-in.\nUse only legal public sources.",
             )
             summary_path = write_run_summary(summary)
             report_path = write_pdf_download_report(
@@ -339,9 +355,13 @@ class ReportTests(unittest.TestCase):
 
             summary_text = summary_path.read_text(encoding="utf-8")
             report_text = report_path.read_text(encoding="utf-8-sig")
+            report_header = report_text.splitlines()[0]
 
         self.assertIn("DOI 批量任务报告", summary_text)
         self.assertIn("重复 DOI，已跳过: 1", summary_text)
+        self.assertIn("Browser: Edge:", summary_text)
+        self.assertIn("Retry after Edge institutional sign-in.", summary_text)
+        self.assertEqual(report_header, "doi,pii,title,status,file,reason")
         self.assertIn("10.1016/example", report_text)
 
     def test_collects_retry_rows_from_failed_reports(self) -> None:
@@ -439,6 +459,8 @@ class ReportTests(unittest.TestCase):
                 resolved_path=str(out / "doi_batch_resolved.xlsx"),
                 failed_path=str(out / "doi_batch_failed.csv"),
                 pdf_report_path=str(out / "pdf_download_report.csv"),
+                browser_message="Edge: fake",
+                download_next_steps="Inspect failure reports.",
             )
             summary_path = write_run_summary_json(summary, event_path=event_path)
 
@@ -449,6 +471,8 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(events[0]["stage"], "resolve")
         self.assertEqual(events[0]["status"], "success")
         self.assertEqual(events[0]["counts"]["resolved"], 1)
+        self.assertEqual(summary_data["browser_message"], "Edge: fake")
+        self.assertEqual(summary_data["download_next_steps"], "Inspect failure reports.")
         self.assertEqual(summary_data["total_doi"], 2)
         self.assertEqual(summary_data["resolved_count"], 1)
         self.assertEqual(summary_data["pdf_success"], 1)

@@ -36,11 +36,11 @@ cd "C:\Users\wkguopro\Documents\New project 2\paper-scraper-main"
 2. 如需指定 Excel 工作表或 DOI 列名，填写“Excel 工作表名”和“DOI 列名”。
 3. 在“2 权限与输出”中选择输出目录和 Cookie Editor 导出的 `cookies.json`。
 4. 如果输入来自 AI 推荐、题名-only 列表或格式混乱的复制文本，先在“运行前体检（本地）”面板做本地预检查，确认 `valid` 和 `needs_review` 行后再正式下载。
-5. 保持“检索后下载 PDF”勾选；默认会同时下载 ScienceDirect 补充材料，如只要正文 PDF，可取消“同时下载补充材料”。只有 PDF 下载启用且该复选框保持勾选时，才会生成补充材料报告和目录。如果不用 Cookie JSON，再按需选择“从本机 Chrome 读取 Cookie”或“先弹出 Chrome 手动登录”。
+5. 保持“检索后下载 PDF”勾选；默认会同时下载 ScienceDirect 补充材料，如只要正文 PDF，可取消“同时下载补充材料”。只有 PDF 下载启用且该复选框保持勾选时，才会生成补充材料报告和目录。如果不用 Cookie JSON，再按需选择“从本机浏览器读取 Cookie”或“先弹出浏览器手动登录”（默认优先 Edge，Chrome 作为后备）。
 6. 点击“预览解析”，在“3 预览检查”中确认识别到的 DOI 数量、列识别方式和前 200 条预览。
 7. 点击底部固定操作栏中的“开始运行”；运行后界面会切到“运行日志”页。
 
-不要勾选“从本机 Chrome 读取 Cookie”，也不要勾选“先弹出 Chrome 手动登录”。使用 Cookie Editor 导出的 `cookies.json` 时，程序会通过 `--cookies` 参数读取该文件。
+不要勾选“从本机浏览器读取 Cookie”，也不要勾选“先弹出浏览器手动登录”。使用 Cookie Editor 导出的 `cookies.json` 时，程序会通过 `--cookies` 参数读取该文件。
 
 也可以不选择文件，直接把 DOI 列表或从 Excel 复制出的表格粘贴到“直接粘贴 DOI 或表格内容”。点击“预览解析”后，界面只显示前 200 条，但会统计全部 DOI 数量；点击“开始运行”时会自动生成临时 CSV。
 

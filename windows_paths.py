@@ -12,6 +12,24 @@ from pathlib import Path
 BROWSER_EXE_ENV = "PAPER_SCRAPER_BROWSER_EXE"
 
 
+def _windows_edge_profile_candidates(base: str | None) -> list[Path]:
+    if not base:
+        return []
+    root = Path(base) / "Microsoft"
+    return [
+        root / "Edge" / "User Data" / "Default",
+        root / "Edge Beta" / "User Data" / "Default",
+        root / "Edge Dev" / "User Data" / "Default",
+        root / "Edge SxS" / "User Data" / "Default",
+    ]
+
+
+def _windows_chrome_profile_candidates(base: str | None) -> list[Path]:
+    if not base:
+        return []
+    return [Path(base) / "Google" / "Chrome" / "User Data" / "Default"]
+
+
 def browser_candidate_paths() -> list[str]:
     """Return browser executable candidates in preference order."""
     candidates: list[Path] = []
@@ -20,6 +38,15 @@ def browser_candidate_paths() -> list[str]:
         candidates.append(Path(override).expanduser())
 
     if sys.platform.startswith("win"):
+        windows_bases = (
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMFILES(X86)"),
+            os.environ.get("LOCALAPPDATA"),
+        )
+        for channel in ("Edge", "Edge Beta", "Edge Dev", "Edge SxS"):
+            for base in windows_bases:
+                if base:
+                    candidates.append(Path(base) / "Microsoft" / channel / "Application" / "msedge.exe")
         for base in (
             os.environ.get("PROGRAMFILES"),
             os.environ.get("PROGRAMFILES(X86)"),
@@ -27,13 +54,6 @@ def browser_candidate_paths() -> list[str]:
         ):
             if base:
                 candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
-        for base in (
-            os.environ.get("PROGRAMFILES"),
-            os.environ.get("PROGRAMFILES(X86)"),
-            os.environ.get("LOCALAPPDATA"),
-        ):
-            if base:
-                candidates.append(Path(base) / "Microsoft" / "Edge" / "Application" / "msedge.exe")
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata:
             playwright_root = Path(local_appdata) / "ms-playwright"
@@ -43,7 +63,7 @@ def browser_candidate_paths() -> list[str]:
                     reverse=True,
                 )
             )
-        for name in ("chrome.exe", "chrome", "msedge.exe", "msedge"):
+        for name in ("msedge.exe", "msedge", "chrome.exe", "chrome"):
             found = shutil.which(name)
             if found:
                 candidates.append(Path(found))
@@ -66,9 +86,9 @@ def browser_candidate_paths() -> list[str]:
     return unique
 
 
-def chrome_bin() -> str:
-    """Return a likely Chrome/Edge/Chromium executable path."""
-    override = os.environ.get(BROWSER_EXE_ENV)
+def browser_bin(browser_exe: str | None = None) -> str:
+    """Return a likely Edge/Chrome/Chromium executable path."""
+    override = browser_exe or os.environ.get(BROWSER_EXE_ENV)
     if override:
         return str(Path(override).expanduser())
 
@@ -80,15 +100,31 @@ def chrome_bin() -> str:
     return candidates[0] if candidates else "google-chrome"
 
 
-def chrome_default_profile() -> str:
-    """Return the default Chrome profile directory for this operating system."""
+def chrome_bin() -> str:
+    """Return a likely Chrome/Edge/Chromium executable path."""
+    return browser_bin()
+
+
+def browser_default_profile(browser_exe: str | None = None) -> str:
+    """Return the default Edge/Chrome profile directory for this operating system."""
     if sys.platform.startswith("win"):
         base = os.environ.get("LOCALAPPDATA")
         if base:
-            candidates = (
-                Path(base) / "Google" / "Chrome" / "User Data" / "Default",
-                Path(base) / "Microsoft" / "Edge" / "User Data" / "Default",
-            )
+            selected_browser = browser_bin(browser_exe)
+            exe_name = Path(selected_browser).name.lower()
+            exe_path = os.path.normcase(selected_browser)
+            edge_profiles = _windows_edge_profile_candidates(base)
+            if "edge beta" in exe_path:
+                ordered = edge_profiles[1:2] + edge_profiles[0:1] + edge_profiles[2:] + _windows_chrome_profile_candidates(base)
+            elif "edge dev" in exe_path:
+                ordered = edge_profiles[2:3] + edge_profiles[0:2] + edge_profiles[3:] + _windows_chrome_profile_candidates(base)
+            elif "edge sxs" in exe_path:
+                ordered = edge_profiles[3:] + edge_profiles[:3] + _windows_chrome_profile_candidates(base)
+            elif "chrome" in exe_name and "msedge" not in exe_name:
+                ordered = _windows_chrome_profile_candidates(base) + _windows_edge_profile_candidates(base)
+            else:
+                ordered = edge_profiles + _windows_chrome_profile_candidates(base)
+            candidates = tuple(ordered)
             for candidate in candidates:
                 if candidate.exists():
                     return str(candidate)
@@ -96,6 +132,21 @@ def chrome_default_profile() -> str:
     if sys.platform == "darwin":
         return str(Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Default")
     return str(Path.home() / ".config" / "google-chrome" / "Default")
+
+
+def chrome_default_profile() -> str:
+    """Return the default Edge/Chrome profile directory for this operating system."""
+    return browser_default_profile()
+
+
+def browser_display_name(browser_exe: str | None = None) -> str:
+    """Return a short display name for the selected browser executable."""
+    exe = Path(browser_bin(browser_exe)).name.lower()
+    if "msedge" in exe:
+        return "Edge"
+    if "chrome" in exe:
+        return "Chrome/Chromium"
+    return "browser"
 
 
 def chrome_debug_profile(name: str) -> str:

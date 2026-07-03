@@ -143,6 +143,8 @@ class RunSummary:
     supplement_skipped: int = 0
     supplement_not_found: int = 0
     supplement_report_path: str = ""
+    browser_message: str = ""
+    download_next_steps: str = ""
 
 
 @dataclass(frozen=True)
@@ -555,6 +557,8 @@ def write_run_summary_json(
         "supplement_skipped": summary.supplement_skipped,
         "supplement_not_found": summary.supplement_not_found,
         "supplement_report_path": summary.supplement_report_path,
+        "browser_message": summary.browser_message,
+        "download_next_steps": summary.download_next_steps,
         "event_path": str(event_path) if event_path else "",
         "written_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -623,13 +627,21 @@ def write_run_summary(summary: RunSummary) -> Path:
     if summary.retry_input_path:
         lines.append(f"- 已生成重试输入 {summary.retry_input_count} 条；请预览确认后再手动运行。")
     if summary.pdf_failed:
-        lines.append("- 若 PDF 大量失败，优先检查 Cookie 是否过期、机构权限是否可访问 PDF、Chrome 中是否出现验证码或限速提示。")
+        lines.append("- 若 PDF 大量失败，优先检查 Cookie 是否过期、机构权限是否可访问 PDF、Edge/调试浏览器中是否出现验证码或限速提示。")
     if summary.supplement_failed:
         lines.append("- 若补充材料失败，先查看 supplement_download_report.csv；常见原因是附件链接返回登录页、权限不足或远端响应不是附件文件。")
     if summary.failure_reasons:
         lines.append("- 先查看 doi_batch_failed.csv，非 ScienceDirect DOI 或重复 DOI 不会中断整个任务。")
     if not summary.failure_reasons and not summary.pdf_failed and not summary.supplement_failed:
         lines.append("- 任务完成，无需处理。")
+
+    if summary.browser_message:
+        lines.extend(["", f"Browser: {summary.browser_message}"])
+    if summary.download_next_steps:
+        for step in summary.download_next_steps.splitlines():
+            step = step.strip()
+            if step:
+                lines.append(f"- {step}")
 
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path

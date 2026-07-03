@@ -171,11 +171,12 @@ def main(argv: list[str] | None = None) -> int:
             supplement_requested=False,
         )
         summary_path = write_run_summary(summary)
-        write_run_summary_json(summary)
+        summary_json_path = write_run_summary_json(summary)
         print("[结束] 没有可处理的有效 DOI。")
         print(f"- DOI failure report: {failed_path}")
         print(f"- PDF report: {pdf_report_path}")
         print(f"- Run summary: {summary_path}")
+        print(f"- Run summary JSON: {summary_json_path}")
         return 1
 
     if preflight_only:
@@ -222,7 +223,11 @@ def main(argv: list[str] | None = None) -> int:
 
     download_pdfs = not args.dry_run and not args.no_download_pdfs
     cookie_cache_path = auth_dir / COOKIE_CACHE_NAME
-    scraper = make_scraper(cookie_cache_path) if download_pdfs else ScienceDirectScraper()
+    scraper = (
+        make_scraper(cookie_cache_path, browser_exe=args.browser_exe)
+        if download_pdfs
+        else ScienceDirectScraper(browser_exe=args.browser_exe)
+    )
     cookie_message = cookie_status_message(cookie_cache_path)
 
     results, failures = scraper.resolve_doi_batch(str(intake.merged_input_path))
@@ -315,9 +320,11 @@ def main(argv: list[str] | None = None) -> int:
             preflight_only=False,
             auto_web_search=args.auto_web_search,
         ),
+        browser_message=getattr(scraper, "last_browser_message", "") if download_pdfs else "",
+        download_next_steps=getattr(scraper, "last_download_next_steps", ""),
     )
     summary_path = write_run_summary(summary)
-    write_run_summary_json(summary)
+    summary_json_path = write_run_summary_json(summary)
 
     print("[报告] 完成")
     print(f"- 输出目录: {run_dir}")
@@ -332,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     if supplement_report_path:
         print(f"- 补充材料明细: {supplement_report_path}")
     print(f"- 任务摘要: {summary_path}")
+    print(f"- JSON 摘要: {summary_json_path}")
     return 0
 
 
@@ -362,6 +370,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_LOGIN_WAIT_SECONDS,
         help="Seconds to wait for browser institutional login when needed",
+    )
+    parser.add_argument(
+        "--browser-exe",
+        help="Browser executable path for institutional login/download (defaults to Edge first)",
     )
     return parser
 
@@ -1184,13 +1196,18 @@ def choose_output_root(default_out: str, dialog_func: Callable[[], str] | None =
     return Path(selected or default_out).expanduser().resolve()
 
 
-def make_scraper(cookie_cache_path: Path) -> ScienceDirectScraper:
+def make_scraper(cookie_cache_path: Path, browser_exe: str | None = None) -> ScienceDirectScraper:
+    browser_kwargs = {"browser_exe": browser_exe} if browser_exe else {}
     if cookie_cache_path.exists() and cookie_cache_path.stat().st_size > 0:
         cookie_check = check_cookie_json(cookie_cache_path)
         if cookie_check.is_usable:
-            return ScienceDirectScraper(cookies_file=str(cookie_cache_path), use_browser_cookies=False)
+            return ScienceDirectScraper(
+                cookies_file=str(cookie_cache_path),
+                use_browser_cookies=False,
+                **browser_kwargs,
+            )
         print(f"[Cookie] 缓存不可用，将改从本机浏览器读取: {cookie_check.message}")
-    return ScienceDirectScraper(use_browser_cookies=True)
+    return ScienceDirectScraper(use_browser_cookies=True, **browser_kwargs)
 
 
 def cookie_status_message(cookie_cache_path: Path) -> str:
@@ -1204,7 +1221,7 @@ def cookie_status_message(cookie_cache_path: Path) -> str:
             return f"Cookie 缓存存在但不可读: {cookie_cache_path}"
     if count:
         return f"已缓存 {count} 个 ScienceDirect/Elsevier 相关 Cookie: {cookie_cache_path}"
-    return "未发现可用 Cookie 缓存；下载时将尝试从本机 Chrome/调试会话获取"
+    return "未发现可用 Cookie 缓存；下载时将尝试从本机浏览器/调试会话获取"
 
 
 def cache_devtools_cookies(

@@ -1,6 +1,6 @@
 ---
 name: paper-download
-description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or legal open-access PDF downloads. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Chrome/Edge login and cookies for ScienceDirect, or find legal OA PDFs without institutional cookies, Sci-Hub, LibGen, or paywall bypasses.
+description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or legal open-access PDF downloads. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Edge/Chrome login and cookies for ScienceDirect, or find legal OA PDFs without institutional cookies, Sci-Hub, LibGen, or paywall bypasses.
 ---
 
 # Paper Download
@@ -21,7 +21,7 @@ Use `.venv\Scripts\python.exe` when it exists; otherwise create the venv and ins
 
 ## Route
 
-Use `sd_institutional_skill.py` for ScienceDirect institutional access when the user mentions ScienceDirect, Elsevier, institution/school access, cookies, Chrome/Edge login, DOI batch download, or when the input is clearly dominated by Elsevier DOI values such as `10.1016/...`.
+Use `sd_institutional_skill.py` for ScienceDirect institutional access when the user mentions ScienceDirect, Elsevier, institution/school access, cookies, Edge/Chrome login, DOI batch download, or when the input is clearly dominated by Elsevier DOI values such as `10.1016/...`.
 
 Use `paper_skill.py` for legal open-access downloads when the user asks for OA/open-access PDFs, public-source PDFs, no login, no cookies, or mixed publisher lists where institutional access is not requested.
 

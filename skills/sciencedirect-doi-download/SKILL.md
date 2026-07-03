@@ -1,6 +1,6 @@
 ---
 name: sciencedirect-doi-download
-description: Download ScienceDirect PDFs through the user's institutional access from pasted DOI text, AI-recommended paper lists, title-only literature text, DOI tables, or folders of literature files. Use when the user asks Codex to fetch/download ScienceDirect or Elsevier papers, process DOI batches, resolve copied paper recommendations into DOI/PDF downloads, or use local Chrome/Edge institutional login rather than the Tkinter UI.
+description: Download ScienceDirect PDFs through the user's institutional access from pasted DOI text, AI-recommended paper lists, title-only literature text, DOI tables, or folders of literature files. Use when the user asks Codex to fetch/download ScienceDirect or Elsevier papers, process DOI batches, resolve copied paper recommendations into DOI/PDF downloads, or use local Edge/Chrome institutional login rather than the Tkinter UI.
 ---
 
 # ScienceDirect DOI Download
@@ -24,12 +24,13 @@ For student-facing beginner instructions, refer to `docs/sciencedirect_skill_beg
    - `--text "<pasted DOI or literature text>"`
    - `--input "<file>"`
    - `--folder "<folder>"`
-4. For noisy or beginner input, run `--beginner --preflight` first. Add `--auto-web-search` only when title-only or short citation rows need optional Semantic Scholar fallback.
-5. Inspect `doi_intake_preview.csv`. Treat `needs_review` rows as unresolved; do not invent DOI values.
-6. For direct download requests with clear DOI rows, run without `--beginner`/`--preflight`.
-7. Let the script manage Chrome/Edge login. If institutional access is missing, it opens a debug browser window and polls until the user finishes login.
-8. When PDF downloading is active, supplementary materials are downloaded by default into `supplements\`; add `--no-download-supplements` only when the user explicitly asks to skip them.
-9. Report preflight outputs separately from formal download outputs. For preflight, report the output directory, recognized/needs-review counts, `doi_intake_preview.csv`, `doi_batch_failed.csv`, and `run_summary.txt`. For formal downloads, also report PDF success/failure/skip counts, `pdf_download_report.csv`, and `pdfs\`. Report supplement success/failure/skipped/not-found counts, `supplement_download_report.csv`, and `supplements\` only when PDF download and supplement download are both active.
+4. Let the script resolve mixed text first: DOI rows are normalized directly; title-only rows are resolved through public metadata and low-confidence matches go to review instead of download.
+5. For noisy or beginner input, run `--beginner --preflight` first. Add `--auto-web-search` only when title-only or short citation rows need optional Semantic Scholar fallback.
+6. Inspect `doi_intake_preview.csv`. Treat `needs_review` rows as unresolved; do not invent DOI values.
+7. For direct download requests with clear DOI rows, run without `--beginner`/`--preflight`.
+8. Let the script manage Edge-first browser login. If institutional access is missing, it opens a debug browser window and polls until the user finishes login. Default browser order on Windows is Edge Stable, Edge Beta, Edge Dev/Canary, Chrome, then Playwright Chromium.
+9. When PDF downloading is active, supplementary materials are downloaded by default into `supplements\`; add `--no-download-supplements` only when the user explicitly asks to skip them.
+10. Report preflight outputs separately from formal download outputs. For preflight, report the output directory, recognized/needs-review counts, `doi_intake_preview.csv`, `doi_batch_failed.csv`, `run_summary.txt`, and `run_summary.json`. For formal downloads, also report PDF success/failure/skip counts, `pdf_download_report.csv`, and `pdfs\`. Report supplement success/failure/skipped/not-found counts, `supplement_download_report.csv`, and `supplements\` only when PDF download and supplement download are both active.
 
 ## Commands
 
@@ -81,16 +82,23 @@ To download PDFs but skip supplementary files:
 .\.venv\Scripts\python.exe sd_institutional_skill.py --input "D:\Papers\papers.xlsx" --out results --no-download-supplements
 ```
 
-## Troubleshooting
-
-- If Chrome/Edge is not installed in a standard location, the script checks Playwright Chromium as a fallback.
-- To force a specific browser executable for the login window, set:
+To force a specific browser executable:
 
 ```powershell
-$env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\chrome.exe"
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --browser-exe "C:\Program Files (x86)\Microsoft\Edge Beta\Application\msedge.exe"
+```
+
+## Troubleshooting
+
+- If Edge/Chrome is not installed in a standard location, the script checks Playwright Chromium as a fallback.
+- To force a specific browser executable for the login window, prefer `--browser-exe`; the environment variable remains supported:
+
+```powershell
+$env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 ```
 
 - If ScienceDirect shows CAPTCHA, wait for the user to complete it in the opened browser, then continue polling instead of restarting the job repeatedly.
+- If institutional access still fails, inspect `pdf_download_report.csv` and `run_summary.json`, then use only legal public sources such as publisher OA pages, author/lab pages, or Unpaywall. Do not use Sci-Hub, LibGen, or paywall-bypass sources.
 - If Chinese text in `run_summary.txt` looks garbled in PowerShell, inspect the CSV/XLSX reports or open the file in an editor with UTF-8 support.
 - If `review_hint` says to补 DOI or完整引用, report that row as unresolved and ask for DOI/title/journal/year/volume/pages before retrying.
 - If supplement status is `not_found`, explain that no detectable supplement links were exposed on the article page; do not count it as a PDF failure.
