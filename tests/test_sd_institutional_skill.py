@@ -42,11 +42,20 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             failed_path = run_dir / "doi_batch_failed.csv"
             pdf_report_path = run_dir / "pdf_download_report.csv"
             summary_path = run_dir / "run_summary.txt"
+            summary_json_path = run_dir / "run_summary.json"
+            student_dir = run_dir / "00_给研究生查看"
 
             self.assertNotEqual(exit_code, 0)
             self.assertTrue(failed_path.exists())
             self.assertTrue(pdf_report_path.exists())
             self.assertTrue(summary_path.exists())
+            self.assertTrue((student_dir / "README_先看我.txt").exists())
+            self.assertTrue((student_dir / "paper_index.csv").exists())
+            self.assertTrue((student_dir / "paper_index.xlsx").exists())
+            self.assertTrue((student_dir / "失败项_下一步处理.csv").exists())
+            summary_json = json.loads(summary_json_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary_json["paper_index_path"], str(student_dir / "paper_index.csv"))
+            self.assertEqual(summary_json["failure_next_steps_path"], str(student_dir / "失败项_下一步处理.csv"))
             with failed_path.open("r", encoding="utf-8-sig") as f:
                 failed_rows = list(csv.DictReader(f))
             self.assertEqual(len(failed_rows), 1)
@@ -105,13 +114,20 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             run_dir = root / "beginner_preflight"
             preview_text = (run_dir / "doi_intake_preview.csv").read_text(encoding="utf-8-sig")
             summary_text = (run_dir / "run_summary.txt").read_text(encoding="utf-8")
+            summary_json = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
             pdf_report_text = (run_dir / "pdf_download_report.csv").read_text(encoding="utf-8-sig")
+            student_dir = run_dir / "00_给研究生查看"
+            paper_index_exists = (student_dir / "paper_index.csv").exists()
+            failure_next_steps_exists = (student_dir / "失败项_下一步处理.csv").exists()
 
         self.assertEqual(exit_code, 0)
         self.assertIn("review_hint", preview_text)
         self.assertIn("请补 DOI", preview_text)
         self.assertIn("小白下一步建议", summary_text)
         self.assertIn("preflight", pdf_report_text)
+        self.assertTrue(paper_index_exists)
+        self.assertTrue(failure_next_steps_exists)
+        self.assertEqual(summary_json["paper_index_xlsx_path"], str(student_dir / "paper_index.xlsx"))
 
     def test_main_downloads_supplements_by_default_and_can_disable_them(self) -> None:
         from doi_batch_utils import DownloadRunResult, PdfDownloadRecord, SupplementDownloadRecord
@@ -181,8 +197,13 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
                     supplement_records=supplement_records,
                 )
 
-        def fake_make_scraper(_cookie_cache_path: Path, browser_exe: str | None = None) -> FakeScraper:
+        def fake_make_scraper(
+            _cookie_cache_path: Path,
+            browser_exe: str | None = None,
+            cookies_path: str | None = None,
+        ) -> FakeScraper:
             self.assertIsNone(browser_exe)
+            self.assertIsNone(cookies_path)
             return FakeScraper()
 
         def fake_resolve_one(_self: object, _candidate: object) -> MetadataResult:
@@ -224,6 +245,9 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             default_summary = json.loads((root / "default_supplements" / "run_summary.json").read_text(encoding="utf-8"))
             disabled_summary = json.loads((root / "disabled_supplements" / "run_summary.json").read_text(encoding="utf-8"))
             default_report_exists = (root / "default_supplements" / "supplement_download_report.csv").exists()
+            default_paper_index_exists = Path(default_summary["paper_index_path"]).exists()
+            default_paper_index_xlsx_exists = Path(default_summary["paper_index_xlsx_path"]).exists()
+            default_student_readme_exists = Path(default_summary["student_readme_path"]).exists()
 
         self.assertEqual(default_exit, 0)
         self.assertEqual(disabled_exit, 0)
@@ -231,6 +255,9 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertTrue(default_report_exists)
         self.assertTrue(default_summary["supplement_requested"])
         self.assertEqual(default_summary["supplement_not_found"], 1)
+        self.assertTrue(default_paper_index_exists)
+        self.assertTrue(default_paper_index_xlsx_exists)
+        self.assertTrue(default_student_readme_exists)
         self.assertFalse(disabled_summary["supplement_requested"])
         self.assertEqual(disabled_summary["supplement_report_path"], "")
         self.assertFalse((root / "disabled_supplements" / "supplement_download_report.csv").exists())
@@ -1263,6 +1290,27 @@ class InstitutionalSkillCookieTests(unittest.TestCase):
                 make_scraper(cache_path)
 
         factory.assert_called_once_with(use_browser_cookies=True)
+
+    def test_make_scraper_prefers_explicit_cookie_file(self) -> None:
+        from sd_institutional_skill import make_scraper
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_path = root / "sciencedirect_cookies.json"
+            cache_path.write_text("[]", encoding="utf-8")
+            explicit = root / "cookies.json"
+            explicit.write_text(
+                json.dumps([{"domain": ".sciencedirect.com", "name": "SDMSESSION", "value": "secret"}]),
+                encoding="utf-8",
+            )
+            with patch("sd_institutional_skill.ScienceDirectScraper") as factory:
+                make_scraper(cache_path, browser_exe="C:/Edge/msedge.exe", cookies_path=str(explicit))
+
+        factory.assert_called_once_with(
+            cookies_file=str(explicit.resolve()),
+            use_browser_cookies=False,
+            browser_exe="C:/Edge/msedge.exe",
+        )
 
 
 class InstitutionalSkillFilenameTests(unittest.TestCase):

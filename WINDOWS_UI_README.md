@@ -35,7 +35,7 @@ cd "C:\Users\wkguopro\Documents\New project 2\paper-scraper-main"
 1. 在“1 数据来源”中选择 DOI 表格，例如 `lookup_preview.csv`、`papers.txt` 或 `papers.md`；也可以直接粘贴 DOI/表格内容。
 2. 如需指定 Excel 工作表或 DOI 列名，填写“Excel 工作表名”和“DOI 列名”。
 3. 在“2 权限与输出”中选择输出目录和 Cookie Editor 导出的 `cookies.json`。
-4. 如果输入来自 AI 推荐、题名-only 列表或格式混乱的复制文本，先在“运行前体检（本地）”面板做本地预检查，确认 `valid` 和 `needs_review` 行后再正式下载。
+4. 如果输入来自 AI 推荐、题名-only 列表或格式混乱的复制文本，先点击“生成新手预检报告”。它会调用 `sd_institutional_skill.py --beginner --preflight --auto-web-search`，不下载 PDF；确认 `doi_intake_preview.csv` 后，可点击“使用预检合并表”进入正式下载。
 5. 保持“检索后下载 PDF”勾选；默认会同时下载 ScienceDirect 补充材料，如只要正文 PDF，可取消“同时下载补充材料”。只有 PDF 下载启用且该复选框保持勾选时，才会生成补充材料报告和目录。如果不用 Cookie JSON，再按需选择“从本机浏览器读取 Cookie”或“先弹出浏览器手动登录”（默认优先 Edge，Chrome 作为后备）。
 6. 点击“预览解析”，在“3 预览检查”中确认识别到的 DOI 数量、列识别方式和前 200 条预览。
 7. 点击底部固定操作栏中的“开始运行”；运行后界面会切到“运行日志”页。
@@ -44,7 +44,7 @@ cd "C:\Users\wkguopro\Documents\New project 2\paper-scraper-main"
 
 也可以不选择文件，直接把 DOI 列表或从 Excel 复制出的表格粘贴到“直接粘贴 DOI 或表格内容”。点击“预览解析”后，界面只显示前 200 条，但会统计全部 DOI 数量；点击“开始运行”时会自动生成临时 CSV。
 
-“运行前体检（本地）”只做输入识别、去重和复核提示，不下载 PDF，也不会生成 `supplement_download_report.csv` 或 `supplements\`。
+“生成新手预检报告”和“运行前体检（本地）”都不会下载 PDF，也不会生成 `supplement_download_report.csv` 或 `supplements\`。预检完成后结果区会出现“打开研究生查看入口”和“使用预检合并表”。
 
 ## 合法 OA 下载流程
 
@@ -85,14 +85,20 @@ doi号
 
 ```text
 results\doi_batch_时间戳\
+├── 00_给研究生查看\
+│   ├── README_先看我.txt
+│   ├── paper_index.csv
+│   ├── paper_index.xlsx
+│   └── 失败项_下一步处理.csv
 ├── doi_batch_resolved.xlsx
 ├── doi_batch_failed.csv
 ├── pdf_download_report.csv
+├── library_index.csv
 ├── run_summary.txt
 └── pdfs\
 ```
 
-`doi_batch_failed.csv` 用于查看哪些 DOI 没有解析；`pdf_download_report.csv` 逐篇记录 PDF 下载成功、失败或跳过；`run_summary.txt` 汇总本次任务和下一步建议。`supplement_download_report.csv` 和 `supplements\` 只在启用 PDF 下载并勾选“同时下载补充材料”时生成；补充材料状态 `not_found` 表示页面没有检测到 supplement 链接，不是正文 PDF 失败。
+`00_给研究生查看` 是课题组交付入口：`paper_index.csv/xlsx` 汇总正文 PDF、补充材料、状态和失败原因，`失败项_下一步处理.csv` 按可操作类别给出下一步。`library_index.csv` 是同内容的根目录索引。`doi_batch_failed.csv` 用于查看哪些 DOI 没有解析；`pdf_download_report.csv` 逐篇记录 PDF 下载成功、失败或跳过；`run_summary.txt` 汇总本次任务和下一步建议。`supplement_download_report.csv` 和 `supplements\` 只在启用 PDF 下载并勾选“同时下载补充材料”时生成；补充材料状态 `not_found` 表示页面没有检测到 supplement 链接，不是正文 PDF 失败。
 
 ## 生成 Windows UI 源码包
 

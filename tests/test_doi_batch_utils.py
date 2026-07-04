@@ -39,6 +39,14 @@ class _FakeStateWidget:
         return tuple(sorted(self._states))
 
 
+class _FakeButton:
+    def __init__(self) -> None:
+        self.options: dict[str, object] = {}
+
+    def configure(self, **kwargs: object) -> None:
+        self.options.update(kwargs)
+
+
 class DoiBatchUtilsTests(unittest.TestCase):
     def test_sd_scraper_parser_accepts_browser_exe(self) -> None:
         import sd_scraper
@@ -73,6 +81,59 @@ class DoiBatchUtilsTests(unittest.TestCase):
         self.assertEqual(preview.rows[0].doi, "10.1016/j.actamat.2024.119999")
         self.assertEqual(preview.rows[0].title, "Example paper")
         self.assertEqual(preview.doi_column, "DOI号")
+
+    def test_preview_scans_table_when_no_doi_header_is_present(self) -> None:
+        from doi_batch_utils import preview_doi_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "papers.csv"
+            with path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["标题", "备注"])
+                writer.writeheader()
+                writer.writerow({
+                    "标题": "Hidden DOI paper",
+                    "备注": "推荐文献 https://doi.org/10.1016/j.actamat.2024.119999",
+                })
+                writer.writerow({"标题": "No DOI paper", "备注": "no identifier"})
+
+            preview = preview_doi_input(input_path=path, limit=10)
+
+        self.assertEqual(preview.doi_column, "全表扫描")
+        self.assertEqual(preview.total_doi, 1)
+        self.assertEqual(preview.rows[0].doi, "10.1016/j.actamat.2024.119999")
+        self.assertEqual(preview.rows[0].title, "Hidden DOI paper")
+
+    def test_preview_keeps_explicit_missing_doi_column_as_error(self) -> None:
+        from doi_batch_utils import preview_doi_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "papers.csv"
+            path.write_text("备注\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                preview_doi_input(input_path=path, doi_column="missing_doi")
+
+    def test_preview_scans_xlsx_when_no_doi_header_is_present(self) -> None:
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            self.skipTest("openpyxl is not installed")
+        from doi_batch_utils import preview_doi_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "papers.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Sheet1"
+            ws.append(["题名", "来源"])
+            ws.append(["Workbook DOI paper", "DOI: 10.1016/j.scriptamat.2024.115000"])
+            wb.save(path)
+
+            preview = preview_doi_input(input_path=path)
+
+        self.assertEqual(preview.doi_column, "全表扫描")
+        self.assertEqual(preview.sheet_name, "Sheet1")
+        self.assertEqual(preview.rows[0].doi, "10.1016/j.scriptamat.2024.115000")
 
     def test_load_records_preserves_empty_and_duplicate_rows_for_reporting(self) -> None:
         from doi_batch_utils import load_doi_records
@@ -312,6 +373,43 @@ class CookieCheckTests(unittest.TestCase):
 
 
 class ReportTests(unittest.TestCase):
+    def test_write_pdf_bytes_atomic_replaces_target_only_for_valid_pdf(self) -> None:
+        from doi_batch_utils import write_pdf_bytes_atomic
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "paper.pdf"
+            size = write_pdf_bytes_atomic(target, b"%PDF-1.7\nbody")
+
+            self.assertEqual(size, target.stat().st_size)
+            self.assertEqual(target.read_bytes(), b"%PDF-1.7\nbody")
+            self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
+
+    def test_write_pdf_bytes_atomic_rejects_non_pdf_without_target(self) -> None:
+        from doi_batch_utils import write_pdf_bytes_atomic
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "paper.pdf"
+
+            with self.assertRaises(ValueError):
+                write_pdf_bytes_atomic(target, b"<html>login</html>")
+
+            self.assertFalse(target.exists())
+            self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
+
+    def test_write_pdf_bytes_atomic_cleans_temp_when_replace_fails(self) -> None:
+        from unittest.mock import patch
+        from doi_batch_utils import write_pdf_bytes_atomic
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "paper.pdf"
+
+            with patch("doi_batch_utils.os.replace", side_effect=OSError("replace failed")):
+                with self.assertRaises(OSError):
+                    write_pdf_bytes_atomic(target, b"%PDF-1.7\nbody")
+
+            self.assertFalse(target.exists())
+            self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
+
     def test_writes_run_summary_and_pdf_download_report_without_cookie_values(self) -> None:
         from doi_batch_utils import (
             PdfDownloadRecord,
@@ -674,12 +772,18 @@ class CliBehaviorTests(unittest.TestCase):
             retry_files = list(run_dir.glob("retry_failed_doi_*.csv"))
             summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
             retry_text = retry_files[0].read_text(encoding="utf-8-sig") if retry_files else ""
+            paper_index_exists = Path(summary["paper_index_path"]).exists()
+            paper_index_xlsx_exists = Path(summary["paper_index_xlsx_path"]).exists()
+            failure_next_steps_exists = Path(summary["failure_next_steps_path"]).exists()
 
         self.assertEqual(len(retry_files), 1)
         self.assertIn("10.1016/j.failed.2024.1", retry_text)
         self.assertNotIn("DOI 为空", retry_text)
         self.assertEqual(summary["retry_input_count"], 1)
         self.assertEqual(summary["retry_input_path"], str(retry_files[0]))
+        self.assertTrue(paper_index_exists)
+        self.assertTrue(paper_index_xlsx_exists)
+        self.assertTrue(failure_next_steps_exists)
 
 
 class UiBehaviorTests(unittest.TestCase):
@@ -743,6 +847,92 @@ class UiBehaviorTests(unittest.TestCase):
         self.assertIn("--no-download-supplements", disabled_cmd)
         self.assertNotIn("--download-pdfs", no_pdf_cmd)
         self.assertNotIn("--no-download-supplements", no_pdf_cmd)
+
+    def test_ui_beginner_preflight_command_uses_institutional_skill_without_download(self) -> None:
+        from paper_scraper_ui import PaperScraperUI, SD_SKILL_SCRIPT
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = Path(tmp)
+            input_path = root_dir / "papers.csv"
+            input_path.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
+
+            app = PaperScraperUI.__new__(PaperScraperUI)
+            app.input_file_var = _FakeVar(str(input_path))
+            app.output_var = _FakeVar(str(root_dir / "results"))
+            app.doi_column_var = _FakeVar("")
+            app.sheet_var = _FakeVar("")
+            app._get_pasted_text = lambda: ""
+
+            cmd = app._build_beginner_preflight_command(materialize_paste=False)
+
+        self.assertEqual(cmd[2], str(SD_SKILL_SCRIPT))
+        self.assertIn("--beginner", cmd)
+        self.assertIn("--preflight", cmd)
+        self.assertIn("--auto-web-search", cmd)
+        self.assertIn("--input", cmd)
+        self.assertNotIn("--download-pdfs", cmd)
+        self.assertNotIn("--cookies", cmd)
+
+    def test_ui_json_summary_captures_student_handoff_paths_and_preflight_input(self) -> None:
+        from paper_scraper_ui import PaperScraperUI
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            student_dir = out / "00_给研究生查看"
+            student_dir.mkdir()
+            paper_index = student_dir / "paper_index.csv"
+            paper_index.write_text("序号,DOI\n", encoding="utf-8")
+            failure_next = student_dir / "失败项_下一步处理.csv"
+            failure_next.write_text("类别,DOI\n", encoding="utf-8")
+            merged_input = out / "merged_doi_input.csv"
+            merged_input.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
+            json_summary = out / "run_summary.json"
+            json_summary.write_text(
+                json.dumps({
+                    "output_dir": str(out),
+                    "input_path": str(merged_input),
+                    "total_doi": 1,
+                    "resolved_count": 0,
+                    "resolve_failed_count": 0,
+                    "failure_reasons": {},
+                    "pdf_success": 0,
+                    "pdf_failed": 0,
+                    "pdf_skipped": 1,
+                    "paper_index_path": str(paper_index),
+                    "failure_next_steps_path": str(failure_next),
+                    "student_readme_path": str(student_dir / "README_先看我.txt"),
+                }),
+                encoding="utf-8",
+            )
+
+            app = PaperScraperUI.__new__(PaperScraperUI)
+            app.result_summary_var = _FakeVar("")
+            app.last_failed_report_path = None
+            app.last_pdf_report_path = None
+            app.last_events_path = None
+            app.last_retry_input_path = None
+            app.last_summary_json_path = json_summary
+            app.last_summary_path = None
+            app.last_run_output_dir = None
+            app.open_run_output_button = _FakeButton()
+            app.open_failed_report_button = _FakeButton()
+            app.open_pdf_report_button = _FakeButton()
+            app.open_summary_button = _FakeButton()
+            app.retry_failed_button = _FakeButton()
+            app.open_student_handoff_button = _FakeButton()
+            app.open_failure_next_steps_button = _FakeButton()
+            app.use_preflight_input_button = _FakeButton()
+            app._load_failure_table = lambda: None
+
+            app._refresh_result_summary()
+
+        self.assertEqual(app.last_student_handoff_dir, student_dir)
+        self.assertEqual(app.last_failure_next_steps_path, failure_next)
+        self.assertEqual(app.last_preflight_merged_input_path, merged_input)
+        self.assertEqual(app.open_student_handoff_button.options["state"], "normal")
+        self.assertEqual(app.open_failure_next_steps_button.options["state"], "normal")
+        self.assertEqual(app.use_preflight_input_button.options["state"], "normal")
+        self.assertIn("研究生入口", app.result_summary_var.get())
 
     def test_ui_pdf_toggle_disables_supplement_checkbox_and_preserves_value(self) -> None:
         from paper_scraper_ui import PaperScraperUI

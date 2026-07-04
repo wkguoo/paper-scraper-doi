@@ -38,6 +38,7 @@ from paper_automation.metadata_resolver import JsonGetter, MetadataResolver, Sea
 from paper_automation.models import MetadataResult, PaperCandidate
 from paper_automation.parser import has_extra_bibliographic_signal, is_probable_paper_title, parse_mixed_text
 from sd_scraper import ScienceDirectScraper
+from student_handoff import write_student_handoff
 
 
 SUPPORTED_INPUT_EXTENSIONS = {".xlsx", ".xlsm", ".csv", ".tsv", ".txt", ".md", ".markdown"}
@@ -154,6 +155,13 @@ def main(argv: list[str] | None = None) -> int:
     if intake.valid_count == 0:
         failed_path = write_intake_failed_report(intake.all_rows, run_dir / "doi_batch_failed.csv")
         pdf_report_path = write_pdf_download_report([], run_dir)
+        handoff_paths = write_student_handoff(
+            run_dir,
+            intake_preview_path=intake.preview_path,
+            merged_input_path=intake.merged_input_path,
+            failed_path=failed_path,
+            pdf_report_path=pdf_report_path,
+        )
         summary = RunSummary(
             input_path=str(intake.merged_input_path),
             output_dir=str(run_dir),
@@ -169,19 +177,25 @@ def main(argv: list[str] | None = None) -> int:
             cookie_message="",
             beginner_recommendations=build_beginner_recommendations(intake, preflight_only=preflight_only),
             supplement_requested=False,
+            student_readme_path=str(handoff_paths.readme_path),
+            paper_index_path=str(handoff_paths.paper_index_path),
+            paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
+            failure_next_steps_path=str(handoff_paths.failure_next_steps_path),
+            library_index_path=str(handoff_paths.library_index_path),
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary)
         print("[结束] 没有可处理的有效 DOI。")
         print(f"- DOI failure report: {failed_path}")
         print(f"- PDF report: {pdf_report_path}")
+        print(f"- 研究生查看入口: {handoff_paths.student_dir}")
         print(f"- Run summary: {summary_path}")
         print(f"- Run summary JSON: {summary_json_path}")
         return 1
 
     if preflight_only:
         failed_path = write_intake_failed_report(intake.all_rows, run_dir / "doi_batch_failed.csv")
-        pdf_report_path = write_pdf_download_report([
+        preflight_pdf_records = [
             PdfDownloadRecord(
                 doi=row.doi,
                 pii="",
@@ -190,7 +204,16 @@ def main(argv: list[str] | None = None) -> int:
                 reason="preflight",
             )
             for row in intake.unique_rows
-        ], run_dir)
+        ]
+        pdf_report_path = write_pdf_download_report(preflight_pdf_records, run_dir)
+        handoff_paths = write_student_handoff(
+            run_dir,
+            pdf_records=preflight_pdf_records,
+            intake_preview_path=intake.preview_path,
+            merged_input_path=intake.merged_input_path,
+            failed_path=failed_path,
+            pdf_report_path=pdf_report_path,
+        )
         summary = RunSummary(
             input_path=str(intake.merged_input_path),
             output_dir=str(run_dir),
@@ -210,25 +233,32 @@ def main(argv: list[str] | None = None) -> int:
                 auto_web_search=args.auto_web_search,
             ),
             supplement_requested=False,
+            student_readme_path=str(handoff_paths.readme_path),
+            paper_index_path=str(handoff_paths.paper_index_path),
+            paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
+            failure_next_steps_path=str(handoff_paths.failure_next_steps_path),
+            library_index_path=str(handoff_paths.library_index_path),
         )
         summary_path = write_run_summary(summary)
-        write_run_summary_json(summary)
+        summary_json_path = write_run_summary_json(summary)
         print("[预检] 完成；未解析 ScienceDirect PII，未下载 PDF。")
         print(f"- 输出目录: {run_dir}")
         print(f"- 可进入后续解析的 DOI: {intake.valid_count}")
         print(f"- 需复核/排除: {sum(intake_failure_reasons(intake.all_rows).values())}")
         print(f"- PDF 明细: {pdf_report_path}")
+        print(f"- 研究生查看入口: {handoff_paths.student_dir}")
         print(f"- 任务摘要: {summary_path}")
+        print(f"- JSON 摘要: {summary_json_path}")
         return 0
 
     download_pdfs = not args.dry_run and not args.no_download_pdfs
     cookie_cache_path = auth_dir / COOKIE_CACHE_NAME
     scraper = (
-        make_scraper(cookie_cache_path, browser_exe=args.browser_exe)
+        make_scraper(cookie_cache_path, browser_exe=args.browser_exe, cookies_path=args.cookies)
         if download_pdfs
         else ScienceDirectScraper(browser_exe=args.browser_exe)
     )
-    cookie_message = cookie_status_message(cookie_cache_path)
+    cookie_message = explicit_cookie_status_message(args.cookies) if args.cookies else cookie_status_message(cookie_cache_path)
 
     results, failures = scraper.resolve_doi_batch(str(intake.merged_input_path))
 
@@ -294,6 +324,19 @@ def main(argv: list[str] | None = None) -> int:
     pdf_report_path = write_pdf_download_report(pdf_records, run_dir)
     if download_supplements and results:
         supplement_report_path = str(write_supplement_download_report(supplement_records, run_dir))
+    handoff_paths = write_student_handoff(
+        run_dir,
+        resolved_records=results,
+        failed_records=failures,
+        pdf_records=pdf_records,
+        supplement_records=supplement_records,
+        intake_preview_path=intake.preview_path,
+        merged_input_path=intake.merged_input_path,
+        resolved_path=resolved_path,
+        failed_path=failed_path,
+        pdf_report_path=pdf_report_path,
+        supplement_report_path=supplement_report_path,
+    )
     summary = RunSummary(
         input_path=str(intake.merged_input_path),
         output_dir=str(run_dir),
@@ -322,6 +365,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
         browser_message=getattr(scraper, "last_browser_message", "") if download_pdfs else "",
         download_next_steps=getattr(scraper, "last_download_next_steps", ""),
+        student_readme_path=str(handoff_paths.readme_path),
+        paper_index_path=str(handoff_paths.paper_index_path),
+        paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
+        failure_next_steps_path=str(handoff_paths.failure_next_steps_path),
+        library_index_path=str(handoff_paths.library_index_path),
     )
     summary_path = write_run_summary(summary)
     summary_json_path = write_run_summary_json(summary)
@@ -338,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"- PDF 明细: {pdf_report_path}")
     if supplement_report_path:
         print(f"- 补充材料明细: {supplement_report_path}")
+    print(f"- 研究生查看入口: {handoff_paths.student_dir}")
     print(f"- 任务摘要: {summary_path}")
     print(f"- JSON 摘要: {summary_json_path}")
     return 0
@@ -365,6 +414,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Resolve DOI metadata but do not download PDFs")
     parser.add_argument("--no-download-pdfs", action="store_true", help="Skip PDF downloads after DOI resolution")
     parser.add_argument("--no-download-supplements", action="store_true", help="When downloading PDFs, do not download ScienceDirect supplementary files")
+    parser.add_argument("--cookies", help="Explicit Cookie JSON file to use before cached/browser cookies")
     parser.add_argument(
         "--login-wait-seconds",
         type=int,
@@ -1196,8 +1246,22 @@ def choose_output_root(default_out: str, dialog_func: Callable[[], str] | None =
     return Path(selected or default_out).expanduser().resolve()
 
 
-def make_scraper(cookie_cache_path: Path, browser_exe: str | None = None) -> ScienceDirectScraper:
+def make_scraper(
+    cookie_cache_path: Path,
+    browser_exe: str | None = None,
+    cookies_path: str | None = None,
+) -> ScienceDirectScraper:
     browser_kwargs = {"browser_exe": browser_exe} if browser_exe else {}
+    if cookies_path:
+        cookie_check = check_cookie_json(cookies_path)
+        print(f"[Cookie] {cookie_check.message}")
+        if cookie_check.is_usable:
+            return ScienceDirectScraper(
+                cookies_file=str(Path(cookies_path).expanduser().resolve()),
+                use_browser_cookies=False,
+                **browser_kwargs,
+            )
+        print("[Cookie] 显式 Cookie 文件不可用，将回退到缓存或本机浏览器 Cookie。")
     if cookie_cache_path.exists() and cookie_cache_path.stat().st_size > 0:
         cookie_check = check_cookie_json(cookie_cache_path)
         if cookie_check.is_usable:
@@ -1208,6 +1272,12 @@ def make_scraper(cookie_cache_path: Path, browser_exe: str | None = None) -> Sci
             )
         print(f"[Cookie] 缓存不可用，将改从本机浏览器读取: {cookie_check.message}")
     return ScienceDirectScraper(use_browser_cookies=True, **browser_kwargs)
+
+
+def explicit_cookie_status_message(cookies_path: str | None) -> str:
+    if not cookies_path:
+        return ""
+    return check_cookie_json(cookies_path).message
 
 
 def cookie_status_message(cookie_cache_path: Path) -> str:

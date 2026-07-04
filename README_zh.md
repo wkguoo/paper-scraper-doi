@@ -51,7 +51,8 @@ python -m venv .venv
 3. 在“2 权限与输出”中选择输出目录和 Cookie Editor 导出的 `cookies.json`。
 4. 保持“检索后下载 PDF”勾选；默认会同时下载 ScienceDirect 补充材料。如只要正文 PDF，可取消“同时下载补充材料”。
 5. 点击“预览解析”，在“3 预览检查”中确认 DOI 总数、列识别方式和前 200 条预览。
-6. 点击底部固定操作栏中的“开始运行”，运行后会自动切到“运行日志”页。
+6. 如果输入来自 AI 推荐、题名-only 列表或格式混乱的复制文本，先点击“生成新手预检报告”。确认 `doi_intake_preview.csv` 后，可用结果区的“使用预检合并表”把 `merged_doi_input.csv` 填回正式下载输入。
+7. 点击底部固定操作栏中的“开始运行”，运行后会自动切到“运行日志”页。
 
 注意：使用 `cookies.json` 时，不需要勾选“从本机 Chrome 读取 Cookie”，也不需要勾选“先弹出 Chrome 手动登录”。
 
@@ -63,7 +64,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe sd_institutional_skill.py --text "<论文列表>" --out results --beginner --preflight --auto-web-search
 ```
 
-preflight 只生成识别和复核报告，例如 `doi_intake_preview.csv`、`doi_batch_failed.csv` 和 `run_summary.txt`；不会下载 PDF，也不会生成补充材料目录。`--dry-run` 只用于 ScienceDirect DOI 元数据/PII 解析且不下载 PDF 的检查。
+preflight 只生成识别和复核报告，例如 `doi_intake_preview.csv`、`merged_doi_input.csv`、`doi_batch_failed.csv`、`run_summary.txt` 和 `00_给研究生查看\`；不会下载 PDF，也不会生成补充材料目录。`--dry-run` 只用于 ScienceDirect DOI 元数据/PII 解析且不下载 PDF 的检查。
 
 界面会记住最近的输出目录、Cookie 文件、窗口尺寸和常用登录选项，配置保存在 `results/_ui_settings.json`。请不要把该文件和 Cookie 一起上传到公开平台。
 
@@ -94,9 +95,15 @@ DOI 批量模式会在输出目录下生成一个时间戳子目录，例如：
 
 ```text
 results\doi_batch_20260616_120000\
+├── 00_给研究生查看\
+│   ├── README_先看我.txt
+│   ├── paper_index.csv
+│   ├── paper_index.xlsx
+│   └── 失败项_下一步处理.csv
 ├── doi_batch_resolved.xlsx
 ├── doi_batch_failed.csv
 ├── pdf_download_report.csv
+├── library_index.csv
 ├── run_summary.txt
 └── pdfs\
 ```
@@ -105,6 +112,8 @@ results\doi_batch_20260616_120000\
 - `doi_batch_failed.csv`：空 DOI、重复 DOI、非 ScienceDirect DOI 或解析失败的记录。
 - `pdf_download_report.csv`：逐篇记录 PDF 下载成功、失败或跳过原因。
 - `run_summary.txt`：本次任务摘要、失败原因分组和下一步建议。
+- `00_给研究生查看`：给课题组学生直接打开的入口；`paper_index.csv/xlsx` 汇总正文 PDF、补充材料、状态和失败原因，`失败项_下一步处理.csv` 给出可操作分类。
+- `library_index.csv`：与 `paper_index.csv` 同内容，放在 run 根目录，便于脚本或后续批处理读取。
 - `pdfs`：下载成功的 PDF 文件。
 - `supplement_download_report.csv`：只在本次启用 PDF 下载且启用补充材料下载时生成，逐个记录补充材料成功、失败、跳过或未发现原因。
 - `supplements`：只在 PDF 下载和补充材料下载都启用时生成，按文章文件名前缀建立子目录保存对应附件。

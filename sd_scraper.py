@@ -41,7 +41,19 @@ import argparse
 from datetime import datetime
 from urllib.parse import parse_qs, urlencode, unquote, urlparse
 
-from curl_cffi import requests as curl_requests
+try:
+    from curl_cffi import requests as curl_requests
+    HAS_CURL_CFFI = True
+except ImportError as exc:
+    HAS_CURL_CFFI = False
+    CURL_CFFI_IMPORT_ERROR = exc
+
+    class _MissingCurlRequests:
+        @staticmethod
+        def Session(*_args, **_kwargs):
+            raise RuntimeError(_curl_cffi_missing_message())
+
+    curl_requests = _MissingCurlRequests()
 from doi_batch_utils import (
     DownloadRunResult,
     PdfDownloadRecord,
@@ -57,6 +69,7 @@ from doi_batch_utils import (
     load_resume_success_dois,
     safe_write_run_event,
     write_pdf_download_report,
+    write_pdf_bytes_atomic,
     write_retry_input_from_reports,
     write_run_summary,
     write_run_summary_json,
@@ -67,6 +80,7 @@ from sd_supplements import (
     make_article_stem,
     supplement_status_counts,
 )
+from student_handoff import write_student_handoff
 from windows_paths import (
     BROWSER_EXE_ENV,
     browser_bin,
@@ -88,6 +102,7 @@ try:
     import browser_cookie3
     HAS_BROWSER_COOKIE3 = True
 except ImportError:
+    browser_cookie3 = None
     HAS_BROWSER_COOKIE3 = False
 
 try:
@@ -104,6 +119,33 @@ BROWSER_PROFILE_COPY_FILES = (
     "Secure Preferences",
 )
 BROWSER_PROFILE_COPY_DIRS = ()
+
+
+def _curl_cffi_missing_message() -> str:
+    return (
+        "缺少依赖 curl_cffi，ScienceDirect 网络请求无法执行。"
+        "请运行: python -m pip install -r requirements.txt "
+        "或 python -m pip install curl_cffi"
+    )
+
+
+class _MissingCurlSession:
+    def __getattr__(self, _name: str):
+        raise RuntimeError(_curl_cffi_missing_message())
+
+    def get(self, *_args, **_kwargs):
+        raise RuntimeError(_curl_cffi_missing_message())
+
+    def post(self, *_args, **_kwargs):
+        raise RuntimeError(_curl_cffi_missing_message())
+
+
+def _new_curl_session(*args, allow_missing: bool = False, **kwargs):
+    if HAS_CURL_CFFI:
+        return curl_requests.Session(*args, **kwargs)
+    if allow_missing:
+        return _MissingCurlSession()
+    raise RuntimeError(_curl_cffi_missing_message())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -422,7 +464,7 @@ class ScienceDirectScraper:
     SEARCH_API = "https://www.sciencedirect.com/search/api"
 
     def __init__(self, cookies_file=None, use_browser_cookies=False, delay_range=(2, 5), browser_exe=None):
-        self.session = curl_requests.Session(impersonate="chrome124")
+        self.session = _new_curl_session(impersonate="chrome124", allow_missing=True)
         self.delay_range = delay_range
         self._search_token = None
         self._cookie_dict = {}     # 机构 cookie（来自 Chrome/文件，用于 PDF 下载）
@@ -1557,9 +1599,7 @@ class ScienceDirectScraper:
                     )
                     ct = resp.headers.get("content-type", "")
                     if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
-                        with open(filepath, "wb") as f:
-                            f.write(resp.content)
-                        size_kb = len(resp.content) // 1024
+                        size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
                         print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)")
                         success += 1
                     else:
@@ -2139,9 +2179,7 @@ class ScienceDirectScraper:
                             pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
                 if pdf_bytes and pdf_bytes[:4] == b"%PDF":
-                    with open(filepath, "wb") as f:
-                        f.write(pdf_bytes)
-                    size_kb = len(pdf_bytes) // 1024
+                    size_kb = write_pdf_bytes_atomic(filepath, pdf_bytes) // 1024
                     print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)")
                     success += 1
                     downloads_since_break += 1
@@ -2550,9 +2588,7 @@ class ScienceDirectScraper:
                         )
                         ct = resp.headers.get("content-type", "")
                         if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
-                            with open(filepath, "wb") as f:
-                                f.write(resp.content)
-                            size_kb = os.path.getsize(filepath) // 1024
+                            size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
                             print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)  [直连]")
                             success += 1
                             downloaded = True
@@ -2625,9 +2661,7 @@ class ScienceDirectScraper:
                     )
                     ct = resp.headers.get("content-type", "")
                     if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
-                        with open(filepath, "wb") as f:
-                            f.write(resp.content)
-                        size_kb = os.path.getsize(filepath) // 1024
+                        size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
                         print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)  [CDP+直连]")
                         success += 1
                     else:
@@ -2996,6 +3030,18 @@ def main():
                 )
             else:
                 print(f"[报告] 未发现可重试失败 DOI，未生成重试输入。排除 {retry_result.excluded_count} 条。")
+        handoff_paths = write_student_handoff(
+            output_dir,
+            resolved_records=results,
+            failed_records=failures,
+            pdf_records=pdf_records,
+            supplement_records=supplement_records,
+            merged_input_path=args.input_file,
+            resolved_path=resolved_path,
+            failed_path=failed_path,
+            pdf_report_path=pdf_report_path,
+            supplement_report_path=supplement_report_path,
+        )
         total_doi = getattr(
             scraper,
             "last_doi_batch_total_doi",
@@ -3025,12 +3071,18 @@ def main():
             supplement_report_path=supplement_report_path,
             browser_message=scraper.last_browser_message,
             download_next_steps=scraper.last_download_next_steps,
+            student_readme_path=str(handoff_paths.readme_path),
+            paper_index_path=str(handoff_paths.paper_index_path),
+            paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
+            failure_next_steps_path=str(handoff_paths.failure_next_steps_path),
+            library_index_path=str(handoff_paths.library_index_path),
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary, event_path=event_path)
         print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")
         if supplement_report_path:
             print(f"[报告] 补充材料下载明细已保存 -> {supplement_report_path}")
+        print(f"[报告] 研究生查看入口 -> {handoff_paths.student_dir}")
         print(f"[报告] 任务摘要已保存 -> {summary_path}")
         print(f"[报告] JSON 摘要已保存 -> {summary_json_path}")
         return

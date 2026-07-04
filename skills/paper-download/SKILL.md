@@ -33,7 +33,7 @@ For noisy AI recommendations, title-only lists, short citations, or beginner use
 .\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --beginner --preflight --auto-web-search
 ```
 
-Download only after reporting `doi_intake_preview.csv` and excluding `needs_review` rows.
+Download only after reporting `doi_intake_preview.csv`, `merged_doi_input.csv`, `00_给研究生查看\paper_index.csv`, and excluding `needs_review` rows.
 
 ## ScienceDirect Institutional Workflow
 
@@ -55,7 +55,19 @@ Use `--beginner --preflight` when the user asks for a safe preview or gives mess
 
 When PDF downloading is active, ScienceDirect supplementary materials are downloaded by default into `supplements\` and summarized in `supplement_download_report.csv`. These supplement outputs are generated only when PDF download and supplement download are both active. Add `--no-download-supplements` only when the user explicitly wants PDFs without supplementary files. Explain supplement status `not_found` as no detectable supplement links, not as a PDF failure.
 
-Report preflight outputs separately from formal download outputs. Preflight centers on `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, and `run_summary.txt`; do not report `doi_batch_resolved.xlsx` as a preflight output. Formal downloads also report `doi_batch_resolved.xlsx`, `pdf_download_report.csv`, `pdfs\`, and, when generated, `supplement_download_report.csv` plus `supplements\`.
+Report preflight outputs separately from formal download outputs. Preflight centers on `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, `run_summary.txt`, and `00_给研究生查看\`; do not report `doi_batch_resolved.xlsx` as a preflight output. Formal downloads also report `doi_batch_resolved.xlsx`, `pdf_download_report.csv`, `pdfs\`, `library_index.csv`, and `00_给研究生查看\paper_index.csv/xlsx`. When generated, also report `supplement_download_report.csv` plus `supplements\`.
+
+Every ScienceDirect institutional run writes a student handoff folder:
+
+```text
+00_给研究生查看\
+├── README_先看我.txt
+├── paper_index.csv
+├── paper_index.xlsx
+└── 失败项_下一步处理.csv
+```
+
+Explain that this folder indexes PDFs and supplements by relative path and does not copy downloaded files. Use `失败项_下一步处理.csv` before retrying failed DOI values.
 
 ## Legal OA Workflow
 

@@ -20,6 +20,7 @@ call :copy_required "sd_scraper.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_scraper_en.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_institutional_skill.py" "%PACKAGE_DIR%\" || exit /b 1
+call :copy_required "student_handoff.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "paper_skill.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "doi_batch_utils.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "windows_paths.py" "%PACKAGE_DIR%\" || exit /b 1

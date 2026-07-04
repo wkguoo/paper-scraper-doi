@@ -30,7 +30,7 @@ For student-facing beginner instructions, refer to `docs/sciencedirect_skill_beg
 7. For direct download requests with clear DOI rows, run without `--beginner`/`--preflight`.
 8. Let the script manage Edge-first browser login. If institutional access is missing, it opens a debug browser window and polls until the user finishes login. Default browser order on Windows is Edge Stable, Edge Beta, Edge Dev/Canary, Chrome, then Playwright Chromium.
 9. When PDF downloading is active, supplementary materials are downloaded by default into `supplements\`; add `--no-download-supplements` only when the user explicitly asks to skip them.
-10. Report preflight outputs separately from formal download outputs. For preflight, report the output directory, recognized/needs-review counts, `doi_intake_preview.csv`, `doi_batch_failed.csv`, `run_summary.txt`, and `run_summary.json`. For formal downloads, also report PDF success/failure/skip counts, `pdf_download_report.csv`, and `pdfs\`. Report supplement success/failure/skipped/not-found counts, `supplement_download_report.csv`, and `supplements\` only when PDF download and supplement download are both active.
+10. Report preflight outputs separately from formal download outputs. For preflight, report the output directory, recognized/needs-review counts, `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, `run_summary.txt`, `run_summary.json`, and `00_给研究生查看\`. For formal downloads, also report PDF success/failure/skip counts, `pdf_download_report.csv`, `pdfs\`, `library_index.csv`, and `00_给研究生查看\paper_index.csv/xlsx`. Report supplement success/failure/skipped/not-found counts, `supplement_download_report.csv`, and `supplements\` only when PDF download and supplement download are both active.
 
 ## Commands
 
@@ -61,6 +61,12 @@ Set-Location "<resolved repository root>"
 .\.venv\Scripts\python.exe sd_institutional_skill.py --input "D:\Papers\papers.xlsx" --out results
 ```
 
+To use an explicit Cookie Editor export:
+
+```powershell
+.\.venv\Scripts\python.exe sd_institutional_skill.py --input "D:\Papers\papers.xlsx" --out results --cookies "D:\Papers\cookies.json"
+```
+
 For a folder:
 
 ```powershell
@@ -75,6 +81,18 @@ To choose the save folder interactively on Windows:
 ```
 
 Use `--beginner --preflight` for first-pass recognition reports. Use `--dry-run` or `--no-download-pdfs` only when the user explicitly wants ScienceDirect DOI metadata/PII resolution without PDF download.
+
+Every run writes a student handoff folder:
+
+```text
+00_给研究生查看\
+├── README_先看我.txt
+├── paper_index.csv
+├── paper_index.xlsx
+└── 失败项_下一步处理.csv
+```
+
+Explain that `paper_index.csv/xlsx` links to `pdfs\` and `supplements\` by relative path without copying files. Tell users to inspect `失败项_下一步处理.csv` before retrying failures.
 
 To download PDFs but skip supplementary files:
 

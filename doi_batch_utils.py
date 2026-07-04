@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
+import tempfile
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -145,6 +147,11 @@ class RunSummary:
     supplement_report_path: str = ""
     browser_message: str = ""
     download_next_steps: str = ""
+    student_readme_path: str = ""
+    paper_index_path: str = ""
+    paper_index_xlsx_path: str = ""
+    failure_next_steps_path: str = ""
+    library_index_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -257,11 +264,11 @@ def preview_doi_input(
         path = Path(input_path)
         ext = path.suffix.lower()
         if ext == ".csv":
-            records, encoding, found_column = _read_delimited_records(path, ",", doi_column)
+            records, encoding, found_column = _read_delimited_records_for_preview(path, ",", doi_column)
             return _preview_from_records(records, str(path), found_column, encoding, "", limit)
         if ext == ".tsv":
             try:
-                records, encoding, found_column = _read_delimited_records(path, "\t", doi_column)
+                records, encoding, found_column = _read_delimited_records_for_preview(path, "\t", doi_column)
                 return _preview_from_records(records, str(path), found_column, encoding, "", limit)
             except ValueError:
                 records = _read_text_records(path)
@@ -270,8 +277,7 @@ def preview_doi_input(
             records = _read_text_records(path)
             return _preview_from_records(records, str(path), "逐行扫描", "", "", limit)
         if ext in {".xlsx", ".xlsm"}:
-            records, found_sheet = _read_xlsx_records(path, doi_column, sheet_name)
-            found_column = _find_doi_column_from_records_source(path, doi_column, found_sheet)
+            records, found_sheet, found_column = _read_xlsx_records_for_preview(path, doi_column, sheet_name)
             return _preview_from_records(records, str(path), found_column, "", found_sheet, limit)
         raise ValueError("仅支持 .csv、.xlsx、.xlsm、.txt、.md、.markdown、.tsv 文件")
 
@@ -391,6 +397,33 @@ def write_supplement_download_report(records: list[SupplementDownloadRecord], ou
                 "reason": record.reason,
             })
     return path
+
+
+def write_pdf_bytes_atomic(target_path: str | Path, pdf_bytes: bytes) -> int:
+    target = Path(target_path)
+    if not pdf_bytes:
+        raise ValueError("PDF 响应为空")
+    if not bytes(pdf_bytes).startswith(b"%PDF"):
+        raise ValueError("响应不是有效 PDF")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{target.stem}.", suffix=".tmp", dir=str(target.parent))
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(pdf_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+        if temp_path.stat().st_size <= 0:
+            raise ValueError("PDF 临时文件为空")
+        os.replace(temp_path, target)
+        return target.stat().st_size
+    except Exception:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def collect_retry_input_rows(
@@ -559,6 +592,11 @@ def write_run_summary_json(
         "supplement_report_path": summary.supplement_report_path,
         "browser_message": summary.browser_message,
         "download_next_steps": summary.download_next_steps,
+        "student_readme_path": summary.student_readme_path,
+        "paper_index_path": summary.paper_index_path,
+        "paper_index_xlsx_path": summary.paper_index_xlsx_path,
+        "failure_next_steps_path": summary.failure_next_steps_path,
+        "library_index_path": summary.library_index_path,
         "event_path": str(event_path) if event_path else "",
         "written_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -614,6 +652,14 @@ def write_run_summary(summary: RunSummary) -> Path:
         f"- PDF 下载报告: {summary.pdf_report_path or '未生成'}",
         f"- Supplement 下载报告: {summary.supplement_report_path or '未生成'}",
     ])
+    if summary.paper_index_path or summary.student_readme_path:
+        lines.extend([
+            f"- 研究生索引 CSV: {summary.paper_index_path or '未生成'}",
+            f"- 研究生索引 XLSX: {summary.paper_index_xlsx_path or '未生成'}",
+            f"- 研究生说明: {summary.student_readme_path or '未生成'}",
+            f"- 失败下一步表: {summary.failure_next_steps_path or '未生成'}",
+            f"- Library index: {summary.library_index_path or '未生成'}",
+        ])
     if summary.retry_input_path:
         lines.append(f"- 重试输入表: {summary.retry_input_path}")
     if summary.cookie_message:
@@ -817,6 +863,18 @@ def _read_delimited_records(path: Path, delimiter: str, doi_column: str | None) 
     raise ValueError(f"无法识别表格编码，请另存为 UTF-8；最后一次错误: {last_error}")
 
 
+def _read_delimited_records_for_preview(path: Path, delimiter: str, doi_column: str | None) -> tuple[list[DoiRecord], str, str]:
+    if doi_column:
+        return _read_delimited_records(path, delimiter, doi_column)
+    try:
+        return _read_delimited_records(path, delimiter, doi_column)
+    except ValueError as exc:
+        records, encoding = _scan_delimited_records_for_explicit_dois(path, delimiter)
+        if records:
+            return records, encoding, "全表扫描"
+        raise exc
+
+
 def _read_text_records(path: Path) -> list[DoiRecord]:
     last_error: Exception | None = None
     for encoding in TEXT_ENCODINGS:
@@ -861,6 +919,20 @@ def _read_xlsx_records(path: Path, doi_column: str | None, sheet_name: str | Non
         wb.close()
 
 
+def _read_xlsx_records_for_preview(path: Path, doi_column: str | None, sheet_name: str | None) -> tuple[list[DoiRecord], str, str]:
+    if doi_column:
+        records, found_sheet = _read_xlsx_records(path, doi_column, sheet_name)
+        return records, found_sheet, _find_doi_column_from_records_source(path, doi_column, found_sheet)
+    try:
+        records, found_sheet = _read_xlsx_records(path, doi_column, sheet_name)
+        return records, found_sheet, _find_doi_column_from_records_source(path, doi_column, found_sheet)
+    except ValueError as exc:
+        records, found_sheet = _scan_xlsx_records_for_explicit_dois(path, sheet_name)
+        if records:
+            return records, found_sheet, "全表扫描"
+        raise exc
+
+
 def _find_doi_column(headers: list[str], doi_column: str | None) -> str:
     requested = (doi_column or "").strip()
     if requested:
@@ -885,6 +957,75 @@ def _record_from_row(row_number: int, row: dict[str, object], doi_column: str) -
         year=row_value(row, "year"),
         date=row_value(row, "date"),
         raw_value=raw_value,
+    )
+
+
+def _scan_delimited_records_for_explicit_dois(path: Path, delimiter: str) -> tuple[list[DoiRecord], str]:
+    last_error: Exception | None = None
+    for encoding in TEXT_ENCODINGS:
+        try:
+            records: list[DoiRecord] = []
+            with path.open("r", newline="", encoding=encoding) as f:
+                reader = csv.DictReader(f, delimiter=delimiter)
+                for row_number, row in enumerate(reader, start=2):
+                    normalized = {str(key or ""): value for key, value in row.items()}
+                    doi = extract_doi_from_text(_row_text(normalized))
+                    if doi:
+                        records.append(_record_from_explicit_doi_row(row_number, normalized))
+            return records, encoding
+        except UnicodeDecodeError as exc:
+            last_error = exc
+    raise ValueError(f"无法识别表格编码，请另存为 UTF-8；最后一次错误: {last_error}")
+
+
+def _scan_xlsx_records_for_explicit_dois(path: Path, sheet_name: str | None) -> tuple[list[DoiRecord], str]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError("读取 xlsx 需要安装 openpyxl") from exc
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        requested_sheet = (sheet_name or "").strip()
+        if requested_sheet and requested_sheet not in wb.sheetnames:
+            raise ValueError(f"找不到工作表：{requested_sheet}。可用工作表：{', '.join(wb.sheetnames)}")
+        found_sheet = requested_sheet or wb.sheetnames[0]
+        ws = wb[found_sheet]
+        rows_iter = ws.iter_rows(values_only=True)
+        headers_raw = next(rows_iter, None)
+        if not headers_raw:
+            return [], found_sheet
+        headers = [str(header).strip() if header is not None else "" for header in headers_raw]
+        records: list[DoiRecord] = []
+        for row_number, values in enumerate(rows_iter, start=2):
+            row = {headers[i]: values[i] if i < len(values) else "" for i in range(len(headers))}
+            doi = extract_doi_from_text(_row_text(row))
+            if doi:
+                records.append(_record_from_explicit_doi_row(row_number, row))
+        return records, found_sheet
+    finally:
+        wb.close()
+
+
+def _record_from_explicit_doi_row(row_number: int, row: dict[str, object]) -> DoiRecord:
+    raw_value = _row_text(row)
+    return DoiRecord(
+        row_number=row_number,
+        doi=extract_doi_from_text(raw_value),
+        title=row_value(row, "title"),
+        authors=row_value(row, "authors"),
+        journal=row_value(row, "journal"),
+        year=row_value(row, "year"),
+        date=row_value(row, "date"),
+        raw_value=raw_value,
+    )
+
+
+def _row_text(row: dict[str, object]) -> str:
+    return " | ".join(
+        str(value).strip()
+        for value in row.values()
+        if value is not None and str(value).strip()
     )
 
 

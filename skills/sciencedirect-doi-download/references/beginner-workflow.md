@@ -13,9 +13,13 @@ Use this reference when the user is new, gives copied AI recommendations, or pro
 2. Report these preflight files:
    - `doi_intake_preview.csv`
    - `merged_doi_input.csv` when generated
-   - `doi_batch_resolved.xlsx` when DOI/PII resolution was attempted
    - `doi_batch_failed.csv`
+   - `00_给研究生查看\README_先看我.txt`
+   - `00_给研究生查看\paper_index.csv`
+   - `00_给研究生查看\paper_index.xlsx`
+   - `00_给研究生查看\失败项_下一步处理.csv`
    - `run_summary.txt`
+   - `run_summary.json`
 
 3. Explain statuses:
    - `valid`: confirmed DOI candidate; can be downloaded in a second run.
@@ -24,7 +28,7 @@ Use this reference when the user is new, gives copied AI recommendations, or pro
    - `invalid` or `empty`: copied input should be corrected or ignored.
 
 4. Download only confirmed rows by rerunning without `--beginner` and `--preflight`.
-5. In the formal download report, include `pdf_download_report.csv` and `pdfs\`. Include `supplement_download_report.csv` and `supplements\` only when PDF downloading and supplement downloading were both active.
+5. In the formal download report, include `doi_batch_resolved.xlsx`, `pdf_download_report.csv`, `pdfs\`, `library_index.csv`, and `00_给研究生查看\paper_index.csv/xlsx`. Include `supplement_download_report.csv` and `supplements\` only when PDF downloading and supplement downloading were both active.
 
 ## When to use optional search
 
@@ -45,3 +49,5 @@ Keep the final report concrete:
 - whether institutional login or cookie cache was used
 
 Explain supplement status `not_found` as no detectable supplement links on the article page, not as a PDF failure.
+
+Explain that `00_给研究生查看\paper_index.csv/xlsx` and `library_index.csv` use relative paths into `pdfs\` and `supplements\`; they do not copy PDFs or supplements.

@@ -129,6 +129,7 @@ class SkillPackagingTests(unittest.TestCase):
         expected_snippets = [
             'call :copy_required "sd_scraper_en.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\\"',
+            'call :copy_required "student_handoff.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "LICENSE" "%PACKAGE_DIR%\\"',
             'call :copy_optional "如何导出机构Cookie.md" "%PACKAGE_DIR%\\"',
             'call :copy_required "README.md" "%PACKAGE_DIR%\\"',
@@ -224,6 +225,50 @@ class BrowserProfileSafetyTests(unittest.TestCase):
             "SharedStorage",
             "WebStorage",
         }))
+
+    def test_english_debug_profile_copy_allowlist_excludes_sensitive_browser_state(self) -> None:
+        import sd_scraper_en
+
+        copied_files = set(sd_scraper_en.BROWSER_PROFILE_COPY_FILES)
+        copied_dirs = set(sd_scraper_en.BROWSER_PROFILE_COPY_DIRS)
+
+        self.assertEqual(copied_files, {
+            "Cookies",
+            "Cookies-journal",
+            "Preferences",
+            "Secure Preferences",
+        })
+        self.assertEqual(copied_dirs, set())
+        self.assertTrue(copied_files.isdisjoint({
+            "History",
+            "Visited Links",
+            "Web Data",
+            "Login Data",
+        }))
+        self.assertTrue(copied_dirs.isdisjoint({
+            "Network",
+            "Local Storage",
+            "Session Storage",
+            "IndexedDB",
+            "SharedStorage",
+            "WebStorage",
+        }))
+
+    def test_missing_curl_cffi_error_is_delayed_until_network_use(self) -> None:
+        import sd_scraper
+        import sd_scraper_en
+
+        for module in (sd_scraper, sd_scraper_en):
+            original = module.HAS_CURL_CFFI
+            try:
+                module.HAS_CURL_CFFI = False
+                session = module._new_curl_session(impersonate="chrome124", allow_missing=True)
+                with self.assertRaisesRegex(RuntimeError, "curl_cffi"):
+                    session.get("https://example.com")
+                with self.assertRaisesRegex(RuntimeError, "curl_cffi"):
+                    module._new_curl_session(impersonate="chrome124")
+            finally:
+                module.HAS_CURL_CFFI = original
 
 
 if __name__ == "__main__":

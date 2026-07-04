@@ -22,7 +22,8 @@ On first launch, the script creates `.venv` and installs `requirements.txt`. If 
 4. In `2 权限与输出`, choose the output directory and the Cookie Editor export file in `Cookie JSON 文件`.
 5. Keep `检索后下载 PDF` checked. ScienceDirect supplementary materials are downloaded by default; uncheck `同时下载补充材料` if you only want article PDFs.
 6. Click `预览解析` and check the DOI count, detected column/method, and first 200 preview rows in `3 预览检查`.
-7. Click the fixed bottom `开始运行` button. The UI switches to `运行日志` while the task runs.
+7. For messy AI recommendations or title-only lists, click `生成新手预检报告` first. After reviewing `doi_intake_preview.csv`, use `使用预检合并表` to fill the confirmed `merged_doi_input.csv` back into the DOI input.
+8. Click the fixed bottom `开始运行` button. The UI switches to `运行日志` while the task runs.
 
 Do not enable local Chrome cookie reading when using an exported `cookies.json`.
 
@@ -36,7 +37,7 @@ For new users or messy AI-recommended ScienceDirect lists, run a local preflight
 .\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --beginner --preflight --auto-web-search
 ```
 
-Preflight writes recognition/review outputs such as `doi_intake_preview.csv`, `doi_batch_failed.csv`, and `run_summary.txt`; it does not download PDFs or create supplement outputs. Use `--dry-run` only when you want ScienceDirect DOI metadata/PII resolution without PDF download.
+Preflight writes recognition/review outputs such as `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, `run_summary.txt`, and `00_给研究生查看\`. It does not download PDFs or create supplement outputs. Use `--dry-run` only when you want ScienceDirect DOI metadata/PII resolution without PDF download.
 
 The UI remembers the recent output directory, Cookie file, window size, and common login options in `results/_ui_settings.json`.
 
@@ -55,7 +56,7 @@ Command-line equivalent:
 .\.venv\Scripts\python.exe sd_scraper.py -m doi_batch --input "papers.csv" --doi-column "doi" --cookies "cookies.json" --download-pdfs
 ```
 
-Formal download outputs are written to `results\doi_batch_timestamp\`, including `doi_batch_resolved.xlsx`, `doi_batch_failed.csv`, `pdf_download_report.csv`, `run_summary.txt`, and `pdfs\`. `supplement_download_report.csv` and `supplements\` are generated only when PDF download is active and supplement downloading is enabled. A supplement status of `not_found` means the article page had no detectable supplement links; it is not a PDF download failure.
+Formal download outputs are written to `results\doi_batch_timestamp\`, including `doi_batch_resolved.xlsx`, `doi_batch_failed.csv`, `pdf_download_report.csv`, `run_summary.txt`, `library_index.csv`, and `pdfs\`. `00_给研究生查看\` contains `README_先看我.txt`, `paper_index.csv`, `paper_index.xlsx`, and `失败项_下一步处理.csv`; these files point to PDFs and supplements by relative path and do not copy downloaded files. `supplement_download_report.csv` and `supplements\` are generated only when PDF download is active and supplement downloading is enabled. A supplement status of `not_found` means the article page had no detectable supplement links; it is not a PDF download failure.
 
 CLI PDF downloads also try supplements by default. To skip supplementary files:
 

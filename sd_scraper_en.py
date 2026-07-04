@@ -40,11 +40,24 @@ import argparse
 from datetime import datetime
 from urllib.parse import urlencode
 
-from curl_cffi import requests as curl_requests
+try:
+    from curl_cffi import requests as curl_requests
+    HAS_CURL_CFFI = True
+except ImportError as exc:
+    HAS_CURL_CFFI = False
+    CURL_CFFI_IMPORT_ERROR = exc
+
+    class _MissingCurlRequests:
+        @staticmethod
+        def Session(*_args, **_kwargs):
+            raise RuntimeError(_curl_cffi_missing_message())
+
+    curl_requests = _MissingCurlRequests()
 from doi_batch_utils import (
     DownloadRunResult,
     PdfDownloadRecord,
     SupplementDownloadRecord,
+    write_pdf_bytes_atomic,
     write_supplement_download_report,
 )
 from sd_supplements import download_supplements_for_article, make_article_stem, supplement_status_counts
@@ -54,6 +67,7 @@ try:
     import browser_cookie3
     HAS_BROWSER_COOKIE3 = True
 except ImportError:
+    browser_cookie3 = None
     HAS_BROWSER_COOKIE3 = False
 
 try:
@@ -61,6 +75,41 @@ try:
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
+
+
+BROWSER_PROFILE_COPY_FILES = (
+    "Cookies",
+    "Cookies-journal",
+    "Preferences",
+    "Secure Preferences",
+)
+BROWSER_PROFILE_COPY_DIRS = ()
+
+
+def _curl_cffi_missing_message() -> str:
+    return (
+        "Missing dependency curl_cffi; ScienceDirect network requests cannot run. "
+        "Run: python -m pip install -r requirements.txt or python -m pip install curl_cffi"
+    )
+
+
+class _MissingCurlSession:
+    def __getattr__(self, _name: str):
+        raise RuntimeError(_curl_cffi_missing_message())
+
+    def get(self, *_args, **_kwargs):
+        raise RuntimeError(_curl_cffi_missing_message())
+
+    def post(self, *_args, **_kwargs):
+        raise RuntimeError(_curl_cffi_missing_message())
+
+
+def _new_curl_session(*args, allow_missing: bool = False, **kwargs):
+    if HAS_CURL_CFFI:
+        return curl_requests.Session(*args, **kwargs)
+    if allow_missing:
+        return _MissingCurlSession()
+    raise RuntimeError(_curl_cffi_missing_message())
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -315,7 +364,7 @@ class ScienceDirectScraper:
     SEARCH_API = "https://www.sciencedirect.com/search/api"
 
     def __init__(self, cookies_file=None, use_browser_cookies=False, delay_range=(2, 5)):
-        self.session = curl_requests.Session(impersonate="chrome124")
+        self.session = _new_curl_session(impersonate="chrome124", allow_missing=True)
         self.delay_range = delay_range
         self._search_token = None
         self._cookie_dict = {}
@@ -1168,9 +1217,7 @@ class ScienceDirectScraper:
                             pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
                 if pdf_bytes and pdf_bytes[:4] == b"%PDF":
-                    with open(filepath, "wb") as f:
-                        f.write(pdf_bytes)
-                    size_kb = len(pdf_bytes) // 1024
+                    size_kb = write_pdf_bytes_atomic(filepath, pdf_bytes) // 1024
                     print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)")
                     success += 1
                     downloads_since_break += 1
@@ -1233,14 +1280,8 @@ class ScienceDirectScraper:
         tmp_default = os.path.join(self.CHROME_DBG_PROFILE, "Default")
         os.makedirs(tmp_default, exist_ok=True)
 
-        files_to_copy = (
-            "Cookies", "Cookies-journal", "Preferences", "Secure Preferences",
-            "History", "Visited Links", "Web Data", "Login Data",
-        )
-        dirs_to_copy = (
-            "Network", "Local Storage", "Session Storage",
-            "IndexedDB", "SharedStorage", "WebStorage",
-        )
+        files_to_copy = BROWSER_PROFILE_COPY_FILES
+        dirs_to_copy = BROWSER_PROFILE_COPY_DIRS
 
         for fname in files_to_copy:
             src = os.path.join(default_profile, fname)
@@ -1522,9 +1563,7 @@ class ScienceDirectScraper:
                         )
                         ct = resp.headers.get("content-type", "")
                         if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
-                            with open(filepath, "wb") as f:
-                                f.write(resp.content)
-                            size_kb = os.path.getsize(filepath) // 1024
+                            size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
                             print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)  [direct]")
                             success += 1
                             downloaded = True
@@ -1589,9 +1628,7 @@ class ScienceDirectScraper:
                     )
                     ct = resp.headers.get("content-type", "")
                     if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
-                        with open(filepath, "wb") as f:
-                            f.write(resp.content)
-                        size_kb = os.path.getsize(filepath) // 1024
+                        size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
                         print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)  [CDP+direct]")
                         success += 1
                     else:

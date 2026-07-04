@@ -33,6 +33,7 @@ from windows_paths import chrome_bin
 
 APP_DIR = Path(__file__).resolve().parent
 SD_SCRIPT = APP_DIR / "sd_scraper.py"
+SD_SKILL_SCRIPT = APP_DIR / "sd_institutional_skill.py"
 OA_SCRIPT = APP_DIR / "paper_skill.py"
 SETTINGS_FILE = APP_DIR / "results" / "_ui_settings.json"
 PREVIEW_LIMIT = 200
@@ -107,6 +108,10 @@ class PaperScraperUI:
         self.last_summary_json_path: Path | None = None
         self.last_events_path: Path | None = None
         self.last_retry_input_path: Path | None = None
+        self.last_student_handoff_dir: Path | None = None
+        self.last_paper_index_path: Path | None = None
+        self.last_failure_next_steps_path: Path | None = None
+        self.last_preflight_merged_input_path: Path | None = None
         self.last_event_count = 0
         self.auto_retry_after_run = False
         self.last_smart_wizard_summary = ""
@@ -408,6 +413,27 @@ class PaperScraperUI:
         self.open_summary_button.grid(row=1, column=3, sticky="ew", padx=(0, 6), pady=(8, 0))
         self.retry_failed_button = ttk.Button(result, text="生成重试输入 CSV", command=self.create_retry_input_from_reports, state="disabled")
         self.retry_failed_button.grid(row=1, column=4, sticky="ew", pady=(8, 0))
+        self.open_student_handoff_button = ttk.Button(
+            result,
+            text="打开研究生查看入口",
+            command=self.open_student_handoff,
+            state="disabled",
+        )
+        self.open_student_handoff_button.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(0, 6), pady=(8, 0))
+        self.open_failure_next_steps_button = ttk.Button(
+            result,
+            text="打开失败下一步表",
+            command=self.open_failure_next_steps,
+            state="disabled",
+        )
+        self.open_failure_next_steps_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=(0, 6), pady=(8, 0))
+        self.use_preflight_input_button = ttk.Button(
+            result,
+            text="使用预检合并表",
+            command=self.use_preflight_merged_input,
+            state="disabled",
+        )
+        self.use_preflight_input_button.grid(row=2, column=4, sticky="ew", pady=(8, 0))
 
         failure = ttk.LabelFrame(frame, text="失败项", padding=10)
         failure.grid(row=6, column=0, sticky="ew", pady=(0, 8))
@@ -545,12 +571,15 @@ class PaperScraperUI:
         self.preview_button.grid(row=6, column=0, sticky="ew", padx=(0, 8))
         ttk.Button(frame, text="清空粘贴", command=self.clear_paste_text).grid(row=6, column=1, sticky="ew", padx=(0, 8))
         ttk.Button(frame, text="生成 DOI 模板", command=self.create_doi_template).grid(row=6, column=2, sticky="ew")
+        self.beginner_preflight_button = ttk.Button(frame, text="生成新手预检报告", command=self.run_beginner_preflight)
+        self.beginner_preflight_button.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(8, 0))
 
         tips = (
-            "支持 .xlsx/.xlsm/.csv/.txt/.md/.markdown/.tsv。文件优先；未选择文件时使用粘贴内容。"
+            "三步式：先预检/预览，确认 DOI 后正式下载，结束后打开研究生查看入口。"
+            "支持 .xlsx/.xlsm/.csv/.txt/.md/.markdown/.tsv。"
         )
         ttk.Label(frame, text=tips, foreground="#555555", wraplength=520).grid(
-            row=7, column=0, columnspan=3, sticky="ew", pady=(10, 0)
+            row=8, column=0, columnspan=3, sticky="ew", pady=(10, 0)
         )
 
     def _build_common_options(self, frame: ttk.Frame, compact: bool) -> None:
@@ -1012,6 +1041,25 @@ class PaperScraperUI:
 
         return cmd
 
+    def _build_beginner_preflight_command(self, materialize_paste: bool = False) -> list[str]:
+        cmd = [sys.executable, "-u", str(SD_SKILL_SCRIPT)]
+        input_path = self.input_file_var.get().strip()
+        pasted_text = self._get_pasted_text()
+        if input_path:
+            self._append_value(cmd, "--input", input_path)
+            input_ext = Path(input_path).suffix.lower()
+            if input_ext in {".xlsx", ".xlsm"}:
+                self._append_value(cmd, "--sheet", self.sheet_var.get())
+        elif pasted_text:
+            if materialize_paste:
+                self._append_value(cmd, "--text", pasted_text)
+            else:
+                self._append_value(cmd, "--text", "<粘贴内容将在运行时传入>")
+        self._append_value(cmd, "--out", self.output_var.get())
+        self._append_value(cmd, "--doi-column", self.doi_column_var.get())
+        cmd.extend(["--beginner", "--preflight", "--auto-web-search"])
+        return cmd
+
     @staticmethod
     def _append_value(cmd: list[str], flag: str, value: str) -> None:
         value = value.strip()
@@ -1396,6 +1444,35 @@ class PaperScraperUI:
             return str(output_root / filename)
         return str(output_root / "doi_batch_时间戳")
 
+    def run_beginner_preflight(self) -> None:
+        if self.process is not None:
+            messagebox.showinfo("正在运行", "当前任务还没有结束。")
+            return
+        if self.workflow_var.get() == "legal_oa":
+            messagebox.showinfo("新手预检", "新手预检仅用于 ScienceDirect DOI 批量下载。")
+            return
+        if self.mode_var.get() != "doi_batch":
+            self.mode_var.set("doi_batch")
+        if not SD_SKILL_SCRIPT.exists():
+            messagebox.showerror("文件缺失", "找不到必要脚本：sd_institutional_skill.py")
+            return
+        input_path = self.input_file_var.get().strip()
+        pasted_text = self._get_pasted_text()
+        if not input_path and not pasted_text:
+            messagebox.showerror("新手预检", "请先选择 DOI 表格，或粘贴 DOI、题名或推荐文献列表。")
+            return
+        if input_path and not Path(input_path).exists():
+            messagebox.showerror("新手预检", f"输入文件不存在：\n{input_path}")
+            return
+        output_dir = Path(self.output_var.get().strip() or APP_DIR / "results")
+        output_ok, output_message = self._check_output_dir_for_wizard(output_dir)
+        if not output_ok:
+            messagebox.showerror("新手预检", output_message)
+            return
+        self.auto_retry_after_run = False
+        cmd = self._build_beginner_preflight_command(materialize_paste=True)
+        self._launch_command(cmd)
+
     def run_scraper(self, auto_retry_input: bool = False) -> None:
         if self.process is not None:
             messagebox.showinfo("正在运行", "当前任务还没有结束。")
@@ -1407,13 +1484,15 @@ class PaperScraperUI:
             auto_retry_input and self.workflow_var.get() == "sciencedirect" and self.mode_var.get() == "doi_batch"
         )
         cmd = self._build_command(materialize_paste=True, auto_retry_input=self.auto_retry_after_run)
+        self._launch_command(cmd)
+
+    def _launch_command(self, cmd: list[str]) -> None:
         self.command_var.set(self._format_command(cmd))
         self._refresh_task_summary()
         self._reset_result_summary()
         output_dir = self.output_var.get().strip()
         if output_dir:
             Path(output_dir).mkdir(parents=True, exist_ok=True)
-
         self.clear_log()
         self._log("启动任务：")
         self._log(self._format_command(cmd))
@@ -1445,6 +1524,8 @@ class PaperScraperUI:
         self.started_at = time.time()
         self.smart_run_button.configure(state="disabled")
         self.run_button.configure(state="disabled")
+        if hasattr(self, "beginner_preflight_button"):
+            self.beginner_preflight_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.continue_button.configure(state="normal")
         self.status_var.set("运行中")
@@ -1476,6 +1557,8 @@ class PaperScraperUI:
                     self.process = None
                     self.smart_run_button.configure(state="normal")
                     self.run_button.configure(state="normal")
+                    if hasattr(self, "beginner_preflight_button"):
+                        self.beginner_preflight_button.configure(state="normal")
                     self.stop_button.configure(state="disabled")
                     self.continue_button.configure(state="disabled")
                     self.status_var.set("已结束")
@@ -1498,6 +1581,10 @@ class PaperScraperUI:
         self.last_summary_json_path = None
         self.last_events_path = None
         self.last_retry_input_path = None
+        self.last_student_handoff_dir = None
+        self.last_paper_index_path = None
+        self.last_failure_next_steps_path = None
+        self.last_preflight_merged_input_path = None
         self.last_event_count = 0
         self.result_summary_var.set("任务运行中，结束后会在这里显示报告摘要。")
         self.progress_var.set("进度：运行中")
@@ -1516,16 +1603,30 @@ class PaperScraperUI:
             self.last_failed_report_path = self._extract_report_path_from_log(line)
         elif "PDF 下载明细已保存 ->" in line:
             self.last_pdf_report_path = self._extract_report_path_from_log(line)
+        elif "PDF 明细:" in line or "PDF report:" in line:
+            self.last_pdf_report_path = self._extract_colon_path_from_log(line)
         elif "任务摘要已保存 ->" in line:
             self.last_summary_path = self._extract_report_path_from_log(line)
+            if self.last_summary_path:
+                self.last_run_output_dir = self.last_summary_path.parent
+        elif "任务摘要:" in line or "Run summary:" in line:
+            self.last_summary_path = self._extract_colon_path_from_log(line)
             if self.last_summary_path:
                 self.last_run_output_dir = self.last_summary_path.parent
         elif "JSON 摘要已保存 ->" in line:
             self.last_summary_json_path = self._extract_report_path_from_log(line)
             if self.last_summary_json_path:
                 self.last_run_output_dir = self.last_summary_json_path.parent
+        elif "JSON 摘要:" in line or "Run summary JSON:" in line:
+            self.last_summary_json_path = self._extract_colon_path_from_log(line)
+            if self.last_summary_json_path:
+                self.last_run_output_dir = self.last_summary_json_path.parent
+        elif "DOI failure report:" in line:
+            self.last_failed_report_path = self._extract_colon_path_from_log(line)
         elif "重试输入已保存 ->" in line:
             self.last_retry_input_path = self._extract_report_path_from_log(line)
+        elif "研究生查看入口 ->" in line or "研究生查看入口:" in line:
+            self.last_student_handoff_dir = self._extract_report_path_from_log(line) or self._extract_colon_path_from_log(line)
         elif "Manifest CSV:" in line:
             manifest_path = self._extract_colon_path_from_log(line)
             if manifest_path:
@@ -1603,6 +1704,16 @@ class PaperScraperUI:
             self.last_pdf_report_path = Path(str(data["pdf_report_path"]))
         if data.get("event_path") and not self.last_events_path:
             self.last_events_path = Path(str(data["event_path"]))
+        if data.get("paper_index_path"):
+            self.last_paper_index_path = Path(str(data["paper_index_path"]))
+            self.last_student_handoff_dir = self.last_paper_index_path.parent
+        if data.get("student_readme_path") and not self.last_student_handoff_dir:
+            self.last_student_handoff_dir = Path(str(data["student_readme_path"])).parent
+        if data.get("failure_next_steps_path"):
+            self.last_failure_next_steps_path = Path(str(data["failure_next_steps_path"]))
+        input_path = str(data.get("input_path") or "")
+        if input_path and Path(input_path).name.lower() == "merged_doi_input.csv":
+            self.last_preflight_merged_input_path = Path(input_path)
         reasons = data.get("failure_reasons") or {}
         reason_text = []
         if isinstance(reasons, dict):
@@ -1633,6 +1744,12 @@ class PaperScraperUI:
                     excluded=data.get("retry_input_excluded_count", 0),
                 )
             )
+        student_handoff_dir = getattr(self, "last_student_handoff_dir", None)
+        preflight_merged_input = getattr(self, "last_preflight_merged_input_path", None)
+        if student_handoff_dir:
+            parts.append(f"研究生入口: {student_handoff_dir}")
+        if preflight_merged_input and preflight_merged_input.exists():
+            parts.append("可使用预检合并表进入正式下载")
         if reason_text:
             parts.append("主要失败原因: " + "；".join(reason_text))
         self.result_summary_var.set("；".join(parts))
@@ -1751,6 +1868,24 @@ class PaperScraperUI:
         if hasattr(self, "retry_selected_button"):
             has_selection = bool(getattr(self, "failure_tree", None) and self.failure_tree.get_children())
             self.retry_selected_button.configure(state="normal" if has_retry_source and has_selection else "disabled")
+        if hasattr(self, "open_student_handoff_button"):
+            self.open_student_handoff_button.configure(
+                state="normal"
+                if self.last_student_handoff_dir and self.last_student_handoff_dir.exists()
+                else "disabled"
+            )
+        if hasattr(self, "open_failure_next_steps_button"):
+            self.open_failure_next_steps_button.configure(
+                state="normal"
+                if self.last_failure_next_steps_path and self.last_failure_next_steps_path.exists()
+                else "disabled"
+            )
+        if hasattr(self, "use_preflight_input_button"):
+            self.use_preflight_input_button.configure(
+                state="normal"
+                if self.last_preflight_merged_input_path and self.last_preflight_merged_input_path.exists()
+                else "disabled"
+            )
 
     def _poll_run_events_once(self) -> None:
         if not self.last_events_path or not self.last_events_path.exists():
@@ -1903,6 +2038,28 @@ class PaperScraperUI:
 
     def open_run_summary(self) -> None:
         self._open_report_path(self.last_summary_path, "任务摘要")
+
+    def open_student_handoff(self) -> None:
+        path = self.last_student_handoff_dir
+        if not path or not path.exists():
+            messagebox.showinfo("研究生查看入口", "尚未找到研究生查看入口。")
+            return
+        self._open_path(path)
+
+    def open_failure_next_steps(self) -> None:
+        self._open_report_path(self.last_failure_next_steps_path, "失败下一步表")
+
+    def use_preflight_merged_input(self) -> None:
+        path = self.last_preflight_merged_input_path
+        if not path or not path.exists():
+            messagebox.showinfo("使用预检合并表", "尚未找到预检生成的 merged_doi_input.csv。")
+            return
+        self.input_file_var.set(str(path))
+        self.doi_column_var.set("doi")
+        self.preview_status_var.set("已填入预检合并表，建议点击预览解析后再正式下载")
+        self.notebook.select(self.doi_tab)
+        self._refresh_command_preview()
+        self._refresh_task_summary()
 
     def _open_report_path(self, path: Path | None, label: str) -> None:
         if not path or not path.exists():
