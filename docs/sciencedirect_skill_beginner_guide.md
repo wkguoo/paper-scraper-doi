@@ -28,16 +28,16 @@
 确认你满足这些条件：
 
 1. 当前机器是 Windows，且能打开 Codex。
-2. 项目仓库已经安装或可定位。推荐让维护者先运行 `install_codex_skills.ps1`，使 Codex 能通过 `PAPER_SCRAPER_DOI_ROOT` 找到仓库。本机默认路径通常是：
+2. 项目仓库已经安装或可定位。推荐让维护者先运行 `install_codex_skills.ps1`，使 Codex 能通过 `PAPER_SCRAPER_DOI_ROOT` 找到仓库。仓库路径通常类似：
 
 ```text
-E:\desktop\paper-scraper-doi
+D:\Tools\paper-scraper-doi
 ```
 
 3. 项目里已经有 Python 虚拟环境；如果没有，启动脚本或维护者可以创建：
 
 ```text
-E:\desktop\paper-scraper-doi\.venv
+<仓库路径>\.venv
 ```
 
 4. 你有学校或机构的 ScienceDirect 权限。
@@ -87,10 +87,16 @@ Codex 应该做这些事：
 
 如果你想不用自然语言，直接在 PowerShell 里运行，也可以照抄下面的命令。
 
-先进入项目目录。以下路径只是本机默认示例；如果安装脚本设置了 `PAPER_SCRAPER_DOI_ROOT`，优先使用该环境变量：
+先进入项目目录。如果安装脚本已经设置了 `PAPER_SCRAPER_DOI_ROOT`，优先使用该环境变量：
 
 ```powershell
 Set-Location $env:PAPER_SCRAPER_DOI_ROOT
+```
+
+如果环境变量还没有生效，也可以手动进入仓库：
+
+```powershell
+Set-Location "<仓库路径>"
 ```
 
 ### 4.1 先 preflight，不下载 PDF
