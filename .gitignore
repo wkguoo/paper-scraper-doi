@@ -40,6 +40,7 @@ pdfs/
 *.csv
 *.xlsx
 *.json
+repomix-output.*
 
 # Chrome debug temp files
 /tmp/chrome_debug.log

@@ -19,7 +19,7 @@ start_paper_scraper_ui.bat
 或在 PowerShell 中运行：
 
 ```powershell
-cd "C:\Users\wkguopro\Documents\New project 2\paper-scraper-main"
+cd "<仓库路径>"
 .\start_paper_scraper_ui.bat
 ```
 
