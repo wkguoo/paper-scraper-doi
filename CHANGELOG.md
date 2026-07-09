@@ -330,3 +330,31 @@
 - 注意事项或潜在风险：
   - 本次只修改测试隔离方式，不改变 ScienceDirect/CDP、Cookie、机构权限下载、OA 资源辅助获取或 UI 运行逻辑。
   - 真实机构登录、真实 PDF 下载和补充材料下载仍需要按 `MANUAL_QA.md` 人工检查。
+
+## 2026-07-09 17:15:14
+
+- 本次任务目标：
+  - 继续排查 GitHub README 中 `tests failing` 徽章对应的 CI 失败，并修复 GitHub Actions Windows runner 上的路径断言问题。
+- 新增、修改或删除的文件：
+  - 修改 `tests/test_sd_institutional_skill.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - 新增 `assert_same_existing_path()` 测试辅助函数，先检查 JSON 中记录的路径和期望路径都存在，再用 `Path.samefile()` 判断是否指向同一个文件。
+  - 将 `paper_index_path`、`failure_next_steps_path`、`paper_index_xlsx_path` 三处直接字符串相等断言改为同文件断言。
+- 修改原因：
+  - GitHub Actions 的 Windows runner 会在临时目录中混用短用户名路径 `C:\Users\RUNNER~1\...` 和长用户名路径 `C:\Users\runneradmin\...`。
+  - 这两种字符串不同，但实际指向同一个文件；原测试直接比较字符串会误判失败。
+- 如何运行：
+  - 定向测试：`.\.venv\Scripts\python.exe -m unittest tests.test_sd_institutional_skill.InstitutionalSkillIntakeTests.test_beginner_preflight_writes_review_hints_without_sciencedirect_resolution tests.test_sd_institutional_skill.InstitutionalSkillIntakeTests.test_main_writes_empty_reports_when_no_valid_doi -v`
+  - 完整测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - 格式检查：`git diff --check`
+- 生成的输出文件：
+  - 本次没有生成新的 PDF、下载结果目录、Windows UI 打包产物或 release 附件。
+  - 测试过程只会在系统临时目录生成临时测试文件。
+- 如何检查是否成功：
+  - 两个 GitHub Actions 失败用例应通过。
+  - 完整单元测试应显示 `Ran 135 tests ... OK`。
+  - GitHub Actions 的 `tests` badge 后续应从 failing 变为 passing。
+- 注意事项或潜在风险：
+  - 本次只修复测试在 Windows 短路径/长路径差异下的断言方式，不改变业务输出路径、不改变下载逻辑。
+  - 本地仍存在被 `.gitignore` 忽略的 `cookie.json`、`results/`、`dist/` 等文件；它们不应进入 Git、Issue 或 release 附件。

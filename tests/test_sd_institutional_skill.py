@@ -16,6 +16,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def assert_same_existing_path(testcase: unittest.TestCase, actual: str, expected: Path) -> None:
+    actual_path = Path(actual)
+    testcase.assertTrue(actual_path.exists(), actual)
+    testcase.assertTrue(expected.exists(), str(expected))
+    testcase.assertTrue(actual_path.samefile(expected), f"{actual_path!s} != {expected!s}")
+
+
 class InstitutionalSkillIntakeTests(unittest.TestCase):
     def test_main_writes_empty_reports_when_no_valid_doi(self) -> None:
         from sd_institutional_skill import main
@@ -54,8 +61,12 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             self.assertTrue((student_dir / "paper_index.xlsx").exists())
             self.assertTrue((student_dir / "失败项_下一步处理.csv").exists())
             summary_json = json.loads(summary_json_path.read_text(encoding="utf-8"))
-            self.assertEqual(summary_json["paper_index_path"], str(student_dir / "paper_index.csv"))
-            self.assertEqual(summary_json["failure_next_steps_path"], str(student_dir / "失败项_下一步处理.csv"))
+            assert_same_existing_path(self, summary_json["paper_index_path"], student_dir / "paper_index.csv")
+            assert_same_existing_path(
+                self,
+                summary_json["failure_next_steps_path"],
+                student_dir / "失败项_下一步处理.csv",
+            )
             with failed_path.open("r", encoding="utf-8-sig") as f:
                 failed_rows = list(csv.DictReader(f))
             self.assertEqual(len(failed_rows), 1)
@@ -109,6 +120,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             student_dir = run_dir / "00_给研究生查看"
             paper_index_exists = (student_dir / "paper_index.csv").exists()
             failure_next_steps_exists = (student_dir / "失败项_下一步处理.csv").exists()
+            assert_same_existing_path(self, summary_json["paper_index_xlsx_path"], student_dir / "paper_index.xlsx")
 
         self.assertEqual(exit_code, 0)
         self.assertIn("review_hint", preview_text)
@@ -117,7 +129,6 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertIn("preflight", pdf_report_text)
         self.assertTrue(paper_index_exists)
         self.assertTrue(failure_next_steps_exists)
-        self.assertEqual(summary_json["paper_index_xlsx_path"], str(student_dir / "paper_index.xlsx"))
 
     def test_build_intake_writes_preview_before_metadata_resolution(self) -> None:
         from sd_institutional_skill import build_intake
