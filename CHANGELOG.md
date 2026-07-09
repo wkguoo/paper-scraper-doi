@@ -302,3 +302,31 @@
   - 本次不改变 ScienceDirect/CDP、Cookie、机构权限下载、OA 资源辅助获取或 UI 实现逻辑。
   - 本次不重新打包 Windows UI，不发布 exe。
   - `cookie.json`、PDF、`results/`、`.venv/` 和 `dist/` 等本地产物仍不应进入 Git、Issue 或 release 附件。
+
+## 2026-07-09 17:02:55
+
+- 本次任务目标：
+  - 排查 GitHub README 中 `tests failing` 徽章对应的 CI 失败，并修复测试对可选依赖导入状态过于敏感的问题。
+- 新增、修改或删除的文件：
+  - 修改 `tests/test_sd_institutional_skill.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - `test_scraper_reads_edge_cookies_before_chrome_cookies` 改为直接注入假的 `browser_cookie3` 对象，避免在缺少 `browser-cookie3` 或该库导入失败的环境中因 `None.edge` 报错。
+  - `test_english_devtools_uses_legacy_existing_pdf_filename_for_supplements` 增加对 `sd_scraper_en.curl_requests.Session` 的 mock，避免测试补充材料文件名传递逻辑时误触发真实 `curl_cffi` 依赖。
+- 修改原因：
+  - 这两个测试验证的是 Cookie 读取优先级和补充材料使用既有 PDF 文件名的业务行为，不应依赖 CI 或本地环境是否真的可导入浏览器 Cookie 库和 `curl_cffi`。
+  - Codex 自带 Python 3.12 无项目依赖环境可复现两个错误：`browser_cookie3` 为 `None` 以及 `curl_cffi` 缺失时测试失败。
+- 如何运行：
+  - 定向测试：`.\.venv\Scripts\python.exe -m unittest tests.test_sd_institutional_skill -v`
+  - 完整测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - 格式检查：`git diff --check`
+- 生成的输出文件：
+  - 本次没有生成新的 PDF、下载结果目录、Windows UI 打包产物或 release 附件。
+  - 测试过程只会在系统临时目录生成临时测试文件。
+- 如何检查是否成功：
+  - 定向测试应不再出现 `None does not have the attribute 'edge'`。
+  - 定向测试应不再因 `Missing dependency curl_cffi` 阻断补充材料文件名测试。
+  - GitHub Actions 的 `tests` badge 后续应从 failing 变为 passing。
+- 注意事项或潜在风险：
+  - 本次只修改测试隔离方式，不改变 ScienceDirect/CDP、Cookie、机构权限下载、OA 资源辅助获取或 UI 运行逻辑。
+  - 真实机构登录、真实 PDF 下载和补充材料下载仍需要按 `MANUAL_QA.md` 人工检查。

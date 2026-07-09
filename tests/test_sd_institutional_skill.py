@@ -666,10 +666,14 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             pdf_dir = root / "pdfs"
             pdf_dir.mkdir()
             (pdf_dir / legacy_filename).write_bytes(b"%PDF legacy")
+            fake_supplement_session = object()
             with patch.dict(sys.modules, {"websocket": fake_websocket_module}), patch(
                 "urllib.request.urlopen",
                 side_effect=fake_urlopen,
             ), patch("sd_scraper_en.download_supplements_for_article", side_effect=fake_download_supplements), patch(
+                "sd_scraper_en.curl_requests.Session",
+                return_value=fake_supplement_session,
+            ), patch(
                 "sd_scraper_en._dt_capture_pdf",
                 side_effect=AssertionError("existing PDF skip must not fetch PDF"),
             ), patch("sd_scraper_en.time.sleep", return_value=None), patch(
@@ -1225,9 +1229,11 @@ class InstitutionalSkillCookieTests(unittest.TestCase):
             chrome_called = True
             return [Cookie("SDMSESSION", "chrome-secret")]
 
+        fake_browser_cookie3 = types.SimpleNamespace(edge=fake_edge, chrome=fake_chrome)
+        fake_session = types.SimpleNamespace(headers={})
         with patch.object(sd_scraper, "HAS_BROWSER_COOKIE3", True), \
-                patch.object(sd_scraper.browser_cookie3, "edge", fake_edge), \
-                patch.object(sd_scraper.browser_cookie3, "chrome", fake_chrome):
+                patch.object(sd_scraper, "browser_cookie3", fake_browser_cookie3), \
+                patch.object(sd_scraper, "_new_curl_session", return_value=fake_session):
             scraper = sd_scraper.ScienceDirectScraper(use_browser_cookies=True)
 
         self.assertFalse(chrome_called)
