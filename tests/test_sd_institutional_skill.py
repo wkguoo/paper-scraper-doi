@@ -75,9 +75,9 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
                 self.assertEqual(list(csv.DictReader(f)), [])
 
             summary_text = summary_path.read_text(encoding="utf-8")
-            self.assertIn(str(run_dir / "merged_doi_input.csv"), summary_text)
-            self.assertIn(str(failed_path), summary_text)
-            self.assertIn(str(pdf_report_path), summary_text)
+            self.assertIn("merged_doi_input.csv", summary_text)
+            self.assertIn("doi_batch_failed.csv", summary_text)
+            self.assertIn("pdf_download_report.csv", summary_text)
             self.assertIn("识别 DOI 数: 0", summary_text)
             self.assertIn("成功解析数: 0", summary_text)
             self.assertIn("解析失败数: 1", summary_text)

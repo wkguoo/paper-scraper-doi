@@ -27,6 +27,7 @@ PAYWALL_SIGNALS = (
     "get access",
     "subscription required",
 )
+IUCR_FETCH_PATTERNS = DEFAULT_FETCH_PATTERNS + ("*journals.iucr.org/*.pdf*", "*scripts.iucr.org/cgi-bin/paper*")
 
 
 @dataclass(frozen=True)
@@ -47,11 +48,13 @@ class IucrAdapter:
         base_url = landing.final_url or landing.requested_url
         candidates = list(extract_pdf_candidates(base_url, landing.html))
         if base_url:
+            candidates.extend(_article_code_pdf_candidates(base_url))
+            candidates.extend(_scripts_pdf_candidates(paper.doi))
             candidates.extend(
                 (
-                    PdfUrlCandidate("iucr_pdf_suffix", _join_suffix(base_url, "pdf"), DEFAULT_FETCH_PATTERNS),
-                    PdfUrlCandidate("iucr_download_pdf", _replace_query(base_url, {"download": "pdf"}), DEFAULT_FETCH_PATTERNS),
-                    PdfUrlCandidate("iucr_download_one", _replace_query(base_url, {"download": "1"}), DEFAULT_FETCH_PATTERNS),
+                    PdfUrlCandidate("iucr_pdf_suffix", _join_suffix(base_url, "pdf"), IUCR_FETCH_PATTERNS),
+                    PdfUrlCandidate("iucr_download_pdf", _add_query_params(base_url, {"download": "pdf"}), IUCR_FETCH_PATTERNS),
+                    PdfUrlCandidate("iucr_download_one", _add_query_params(base_url, {"download": "1"}), IUCR_FETCH_PATTERNS),
                 )
             )
         return unique_candidates(candidates)
@@ -61,9 +64,47 @@ class IucrAdapter:
 
 
 def _join_suffix(url: str, suffix: str) -> str:
-    return f"{url.rstrip('/')}/{suffix}"
-
-
-def _replace_query(url: str, params: dict[str, str]) -> str:
     parsed = urlsplit(url)
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(params), parsed.fragment))
+    path = f"{parsed.path.rstrip('/')}/{suffix}"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+
+def _add_query_params(url: str, params: dict[str, str]) -> str:
+    parsed = urlsplit(url)
+    extra = urlencode(params)
+    query = f"{parsed.query}&{extra}" if parsed.query else extra
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
+
+
+def _article_code_pdf_candidates(url: str) -> tuple[PdfUrlCandidate, ...]:
+    parsed = urlsplit(url)
+    if "journals.iucr.org" not in (parsed.netloc or "").lower():
+        return ()
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if not parts:
+        return ()
+    article_code = ""
+    base_parts = parts
+    if parts[-1].lower() == "index.html" and len(parts) >= 2:
+        article_code = parts[-2]
+        base_parts = parts[:-1]
+    elif "." not in parts[-1]:
+        article_code = parts[-1]
+    if not article_code:
+        return ()
+    pdf_path = "/" + "/".join(base_parts + [f"{article_code}.pdf"])
+    pdf_url = urlunsplit((parsed.scheme, parsed.netloc, pdf_path, "", ""))
+    return (PdfUrlCandidate("iucr_article_code_pdf", pdf_url, IUCR_FETCH_PATTERNS),)
+
+
+def _scripts_pdf_candidates(doi: str) -> tuple[PdfUrlCandidate, ...]:
+    suffix = (doi or "").rsplit("/", 1)[-1].upper()
+    if not suffix.startswith("S"):
+        return ()
+    return (
+        PdfUrlCandidate(
+            "iucr_scripts_doi_pdf",
+            f"https://scripts.iucr.org/cgi-bin/paper?{suffix}&download=pdf",
+            IUCR_FETCH_PATTERNS,
+        ),
+    )

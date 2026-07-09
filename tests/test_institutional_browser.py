@@ -65,34 +65,209 @@ class InstitutionalAdapterTests(unittest.TestCase):
         )
         self.assertIn(f"{paper.landing_url}/pdf", urls)
 
+    def test_iucr_candidates_include_article_code_pdf_route_without_meta(self) -> None:
+        from paper_automation.institutional.adapters.iucr import IucrAdapter
+        from paper_automation.institutional.models import InstitutionalPaper, PageSnapshot
+
+        adapter = IucrAdapter()
+        paper = InstitutionalPaper(
+            row_number=1,
+            input_doi="10.1107/s1600577522008232",
+            doi="10.1107/s1600577522008232",
+            title="IUCr MatFRAIA paper",
+            publisher="International Union of Crystallography",
+            landing_url="https://journals.iucr.org/j/issues/2022/05/00/gj5272/index.html",
+        )
+        snapshot = PageSnapshot(
+            requested_url=paper.landing_url,
+            final_url=paper.landing_url,
+            html="<html><body>Download PDF</body></html>",
+            text="Download PDF",
+        )
+
+        urls = [candidate.url for candidate in adapter.build_pdf_candidates(paper, snapshot)]
+
+        self.assertIn(
+            "https://journals.iucr.org/j/issues/2022/05/00/gj5272/gj5272.pdf",
+            urls,
+        )
+
+    def test_iucr_candidates_preserve_scripts_paper_query(self) -> None:
+        from paper_automation.institutional.adapters.iucr import IucrAdapter
+        from paper_automation.institutional.models import InstitutionalPaper, PageSnapshot
+
+        adapter = IucrAdapter()
+        paper = InstitutionalPaper(
+            row_number=1,
+            input_doi="10.1107/s0021889886089999",
+            doi="10.1107/s0021889886089999",
+            title="IUCr legacy paper",
+            publisher="International Union of Crystallography",
+            landing_url="https://scripts.iucr.org/cgi-bin/paper?S0021889886089999",
+        )
+        snapshot = PageSnapshot(
+            requested_url=paper.landing_url,
+            final_url=paper.landing_url,
+            html="<html><body>Download PDF</body></html>",
+            text="Download PDF",
+        )
+
+        urls = [candidate.url for candidate in adapter.build_pdf_candidates(paper, snapshot)]
+
+        self.assertIn(
+            "https://scripts.iucr.org/cgi-bin/paper?S0021889886089999&download=pdf",
+            urls,
+        )
+
+    def test_common_publisher_adapters_build_direct_pdf_routes(self) -> None:
+        from paper_automation.institutional.adapters.common_publishers import (
+            AaasAdapter,
+            AcsAdapter,
+            AipAdapter,
+            TaylorFrancisAdapter,
+        )
+        from paper_automation.institutional.models import InstitutionalPaper, PageSnapshot
+
+        cases = [
+            (
+                AaasAdapter(),
+                InstitutionalPaper(
+                    row_number=1,
+                    input_doi="10.1126/science.aaz0122",
+                    doi="10.1126/science.aaz0122",
+                    title="Science paper",
+                    publisher="AAAS",
+                    landing_url="https://www.science.org/doi/10.1126/science.aaz0122",
+                ),
+                "https://www.science.org/doi/pdf/10.1126/science.aaz0122",
+            ),
+            (
+                TaylorFrancisAdapter(),
+                InstitutionalPaper(
+                    row_number=2,
+                    input_doi="10.1080/21663831.2018.1553212",
+                    doi="10.1080/21663831.2018.1553212",
+                    title="Materials Research Letters paper",
+                    publisher="Taylor & Francis",
+                    landing_url="https://www.tandfonline.com/doi/full/10.1080/21663831.2018.1553212",
+                ),
+                "https://www.tandfonline.com/doi/pdf/10.1080/21663831.2018.1553212?download=true",
+            ),
+            (
+                AcsAdapter(),
+                InstitutionalPaper(
+                    row_number=3,
+                    input_doi="10.1021/jp106036v",
+                    doi="10.1021/jp106036v",
+                    title="ACS paper",
+                    publisher="American Chemical Society",
+                    landing_url="https://pubs.acs.org/doi/10.1021/jp106036v",
+                ),
+                "https://pubs.acs.org/doi/pdf/10.1021/jp106036v",
+            ),
+            (
+                AipAdapter(),
+                InstitutionalPaper(
+                    row_number=4,
+                    input_doi="10.1063/1.1569662",
+                    doi="10.1063/1.1569662",
+                    title="AIP paper",
+                    publisher="AIP Publishing",
+                    landing_url="https://pubs.aip.org/aip/jap/article/93/10/10000/1.1569662",
+                ),
+                "https://pubs.aip.org/aip/jap/article-pdf/doi/10.1063/1.1569662",
+            ),
+        ]
+
+        for adapter, paper, expected_url in cases:
+            with self.subTest(adapter=adapter.name):
+                snapshot = PageSnapshot(
+                    requested_url=paper.landing_url,
+                    final_url=paper.landing_url,
+                    html="<html><body>PDF</body></html>",
+                    text="PDF",
+                )
+
+                urls = [candidate.url for candidate in adapter.build_pdf_candidates(paper, snapshot)]
+
+                self.assertIn(expected_url, urls)
+
 
 class InstitutionalRegistryTests(unittest.TestCase):
-    def test_registry_routes_supported_and_known_unsupported_publishers(self) -> None:
+    def test_registry_routes_supported_publishers(self) -> None:
         from paper_automation.institutional.models import InstitutionalPaper
         from paper_automation.institutional.registry import select_adapter, unsupported_reason
 
-        supported = InstitutionalPaper(
-            row_number=1,
-            input_doi="10.1038/s41467-020-16791-8",
-            doi="10.1038/s41467-020-16791-8",
-            title="Nature paper",
-            publisher="Springer Nature",
-            landing_url="https://www.nature.com/articles/s41467-020-16791-8",
-        )
-        unsupported = InstitutionalPaper(
-            row_number=2,
-            input_doi="10.1126/science.aaz0122",
-            doi="10.1126/science.aaz0122",
-            title="Science paper",
-            publisher="AAAS",
-        )
+        cases = [
+            (
+                InstitutionalPaper(
+                    row_number=1,
+                    input_doi="10.1038/s41467-020-16791-8",
+                    doi="10.1038/s41467-020-16791-8",
+                    title="Nature paper",
+                    publisher="Springer Nature",
+                    landing_url="https://www.nature.com/articles/s41467-020-16791-8",
+                ),
+                "springer_nature",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=2,
+                    input_doi="10.1126/science.aaz0122",
+                    doi="10.1126/science.aaz0122",
+                    title="Science paper",
+                    publisher="AAAS",
+                ),
+                "aaas",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=3,
+                    input_doi="10.1080/21663831.2018.1553212",
+                    doi="10.1080/21663831.2018.1553212",
+                    title="Taylor paper",
+                    publisher="Taylor & Francis",
+                ),
+                "taylor_francis",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=4,
+                    input_doi="10.1021/jp106036v",
+                    doi="10.1021/jp106036v",
+                    title="ACS paper",
+                    publisher="American Chemical Society",
+                ),
+                "acs",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=5,
+                    input_doi="10.1063/1.1569662",
+                    doi="10.1063/1.1569662",
+                    title="AIP paper",
+                    publisher="AIP Publishing",
+                ),
+                "aip",
+            ),
+        ]
 
-        adapter = select_adapter(supported)
+        for paper, expected_adapter in cases:
+            with self.subTest(doi=paper.doi):
+                adapter = select_adapter(paper)
 
-        self.assertIsNotNone(adapter)
-        self.assertEqual(adapter.name, "springer_nature")
-        self.assertIsNone(select_adapter(unsupported))
-        self.assertEqual(unsupported_reason(unsupported), "AAAS")
+                self.assertIsNotNone(adapter)
+                self.assertEqual(adapter.name, expected_adapter)
+
+        unknown = InstitutionalPaper(
+            row_number=6,
+            input_doi="10.9999/example",
+            doi="10.9999/example",
+            title="Unknown paper",
+            publisher="Unknown",
+        )
+        self.assertIsNone(select_adapter(unknown))
+        self.assertEqual(unsupported_reason(unknown), "unknown_publisher")
 
 
 class PdfCheckTests(unittest.TestCase):
@@ -104,6 +279,7 @@ class PdfCheckTests(unittest.TestCase):
         )
 
         self.assertTrue(url_looks_like_pdf("https://example.org/content/pdf/10.1007/test.pdf"))
+        self.assertTrue(url_looks_like_pdf("https://pubs.aip.org/aip/jap/article-pdf/doi/10.1063/1.1569662"))
         self.assertTrue(content_type_looks_like_pdf("application/pdf; charset=binary"))
         self.assertTrue(bytes_look_like_pdf(b"%PDF-1.7\nbinary"))
         self.assertFalse(bytes_look_like_pdf(b"HTML"))

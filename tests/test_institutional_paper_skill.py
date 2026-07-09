@@ -153,22 +153,22 @@ class InstitutionalWorkflowTests(unittest.TestCase):
             self.assertTrue(report_path.exists())
             self.assertTrue(summary_path.exists())
             self.assertTrue(merged_manifest_path.exists())
-            self.assertEqual(len(list(pdf_dir.glob("*.pdf"))), 1)
+            self.assertEqual(len(list(pdf_dir.glob("*.pdf"))), 2)
 
             with report_path.open("r", encoding="utf-8-sig") as handle:
                 rows = list(csv.DictReader(handle))
             self.assertEqual(rows[0]["status"], "pdf_downloaded")
-            self.assertEqual(rows[1]["status"], "unsupported_publisher")
+            self.assertEqual(rows[1]["status"], "pdf_downloaded")
 
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            self.assertEqual(summary["downloaded_count"], 1)
-            self.assertEqual(summary["status_counts"]["unsupported_publisher"], 1)
+            self.assertEqual(summary["downloaded_count"], 2)
+            self.assertEqual(summary["status_counts"]["pdf_downloaded"], 2)
 
             with merged_manifest_path.open("r", encoding="utf-8-sig") as handle:
                 merged_rows = list(csv.DictReader(handle))
             self.assertEqual(merged_rows[0]["institutional_status"], "pdf_downloaded")
-            self.assertEqual(merged_rows[1]["institutional_status"], "unsupported_publisher")
-            self.assertIn("Downloaded PDFs: 1", stdout.getvalue())
+            self.assertEqual(merged_rows[1]["institutional_status"], "pdf_downloaded")
+            self.assertIn("Downloaded PDFs: 2", stdout.getvalue())
 
     def test_workflow_reports_auth_required(self) -> None:
         from paper_automation.institutional.workflow import run_institutional_workflow

@@ -1,17 +1,20 @@
 from __future__ import annotations
 
-from .adapters import IucrAdapter, SpringerNatureAdapter
+from .adapters import AaasAdapter, AcsAdapter, AipAdapter, IucrAdapter, SpringerNatureAdapter, TaylorFrancisAdapter
 from .models import InstitutionalPaper
 
 
 UNSUPPORTED_PREFIXES = {
-    "10.1126/": "AAAS",
-    "10.1080/": "Taylor & Francis",
-    "10.1021/": "ACS",
-    "10.1063/": "AIP",
 }
 
-ADAPTERS = (SpringerNatureAdapter(), IucrAdapter())
+ADAPTERS = (
+    SpringerNatureAdapter(),
+    IucrAdapter(),
+    AaasAdapter(),
+    TaylorFrancisAdapter(),
+    AcsAdapter(),
+    AipAdapter(),
+)
 
 
 def select_adapter(paper: InstitutionalPaper):

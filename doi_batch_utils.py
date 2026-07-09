@@ -8,10 +8,11 @@ import os
 import re
 import tempfile
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
+from urllib.parse import urlparse
 
 
 PREVIEW_LIMIT = 200
@@ -84,6 +85,9 @@ class PdfDownloadRecord:
     status: str
     file: str = ""
     reason: str = ""
+    manual_pdf_url: str = ""
+    manual_status: str = ""
+    manual_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -346,8 +350,19 @@ def check_cookie_json(path: str | Path) -> CookieCheck:
 def write_pdf_download_report(records: list[PdfDownloadRecord], output_dir: str | Path) -> Path:
     path = Path(output_dir) / "pdf_download_report.csv"
     path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "doi",
+        "pii",
+        "title",
+        "status",
+        "file",
+        "reason",
+        "manual_pdf_url",
+        "manual_status",
+        "manual_reason",
+    ]
     with path.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for record in records:
             writer.writerow({
@@ -357,6 +372,9 @@ def write_pdf_download_report(records: list[PdfDownloadRecord], output_dir: str 
                 "status": record.status,
                 "file": record.file,
                 "reason": record.reason,
+                "manual_pdf_url": record.manual_pdf_url,
+                "manual_status": record.manual_status,
+                "manual_reason": record.manual_reason,
             })
     return path
 
@@ -424,6 +442,128 @@ def write_pdf_bytes_atomic(target_path: str | Path, pdf_bytes: bytes) -> int:
         except FileNotFoundError:
             pass
         raise
+
+
+def apply_manual_pdf_url_fallback(
+    records: list[PdfDownloadRecord],
+    manual_pdf_url: str,
+    target_path_for_record: Callable[[PdfDownloadRecord], str | Path],
+    http_bytes: Callable[[str, dict[str, str] | None, int], object] | None = None,
+    timeout: int = 30,
+    overwrite: bool = False,
+) -> tuple[list[PdfDownloadRecord], int, int]:
+    """Use one user-provided PDF link only when exactly one PDF record failed."""
+    url = str(manual_pdf_url or "").strip()
+    if not url:
+        return records, 0, 0
+
+    failed_indexes = [index for index, record in enumerate(records) if record.status == "failed"]
+    if not failed_indexes:
+        return records, 0, 0
+
+    if len(failed_indexes) > 1:
+        updated = list(records)
+        for index in failed_indexes:
+            updated[index] = _with_manual_fallback_result(
+                updated[index],
+                url,
+                "manual_url_ambiguous_multiple_failures",
+                "一个保底 PDF 链接无法可靠对应多篇失败文章，已跳过保底下载",
+            )
+        return updated, 0, 0
+
+    validation_status, validation_reason = _validate_manual_pdf_url(url)
+    index = failed_indexes[0]
+    record = records[index]
+    if validation_status:
+        updated = list(records)
+        updated[index] = _with_manual_fallback_result(record, url, validation_status, validation_reason)
+        return updated, 0, 0
+
+    try:
+        target = Path(target_path_for_record(record))
+    except Exception as exc:
+        updated = list(records)
+        updated[index] = _with_manual_fallback_result(
+            record,
+            url,
+            "manual_target_error",
+            f"无法确定保底 PDF 保存路径: {exc}",
+        )
+        return updated, 0, 0
+
+    if target.exists() and not overwrite:
+        updated = list(records)
+        updated[index] = _with_manual_fallback_result(
+            record,
+            url,
+            "manual_target_exists",
+            f"目标文件已存在，未覆盖: {target}",
+        )
+        return updated, 0, 0
+
+    try:
+        from paper_automation.downloader import BROWSER_HEADERS, get_bytes
+
+        getter = http_bytes or get_bytes
+        response = getter(url, dict(BROWSER_HEADERS), timeout)
+        content = bytes(getattr(response, "content", b""))
+        content_type = str(getattr(response, "content_type", "") or "").lower()
+        if "pdf" not in content_type and not content.startswith(b"%PDF"):
+            updated = list(records)
+            updated[index] = _with_manual_fallback_result(
+                record,
+                url,
+                "manual_response_not_pdf",
+                "保底链接返回内容不是 PDF，可能是网页、登录页或下载被拦截",
+            )
+            return updated, 0, 0
+
+        write_pdf_bytes_atomic(target, content)
+    except ValueError as exc:
+        updated = list(records)
+        updated[index] = _with_manual_fallback_result(record, url, "manual_response_not_pdf", str(exc))
+        return updated, 0, 0
+    except Exception as exc:
+        updated = list(records)
+        updated[index] = _with_manual_fallback_result(record, url, "manual_download_error", str(exc))
+        return updated, 0, 0
+
+    updated = list(records)
+    updated[index] = _with_manual_fallback_result(
+        record,
+        url,
+        "manual_pdf_downloaded",
+        "",
+        status="manual_pdf_downloaded",
+        file=record.file or target.name,
+    )
+    return updated, 1, -1
+
+
+def _with_manual_fallback_result(
+    record: PdfDownloadRecord,
+    manual_pdf_url: str,
+    manual_status: str,
+    manual_reason: str,
+    status: str | None = None,
+    file: str | None = None,
+) -> PdfDownloadRecord:
+    return replace(
+        record,
+        status=status or record.status,
+        file=record.file if file is None else file,
+        manual_pdf_url=manual_pdf_url,
+        manual_status=manual_status,
+        manual_reason=manual_reason,
+    )
+
+
+def _validate_manual_pdf_url(url: str) -> tuple[str, str]:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return "manual_url_not_http", "保底 PDF 链接必须是 http/https URL"
+    return "", ""
 
 
 def collect_retry_input_rows(

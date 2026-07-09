@@ -6,6 +6,8 @@ def url_looks_like_pdf(url: str) -> bool:
     return (
         ".pdf" in lowered
         or "/pdf" in lowered
+        or "/epdf" in lowered
+        or "article-pdf" in lowered
         or "pdf=" in lowered
         or "download=pdf" in lowered
         or "content/pdf" in lowered
