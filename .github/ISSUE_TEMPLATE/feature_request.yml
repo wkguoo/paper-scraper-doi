@@ -1,0 +1,59 @@
+name: Feature request
+description: Suggest an improvement for DOI intake, reports, UI, or documentation.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please keep requests within authorized access, public metadata, open-access candidate discovery, local organization, documentation, and reproducible research workflows.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: This request does not ask the project to bypass access controls, CAPTCHA, 403/rate-limit responses, Sci-Hub, LibGen, or publisher restrictions.
+          required: true
+        - label: I will not upload cookies, passwords, PDFs, private result files, or institution/internal page screenshots.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow need
+      description: What research workflow would this improve?
+      placeholder: I often need to...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior, output file, UI control, or documentation change you want.
+      placeholder: Add an option to...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - DOI intake and preflight
+        - ScienceDirect authorized-access workflow
+        - OA PDF candidate discovery workflow
+        - Windows GUI
+        - Codex Skills
+        - Reports and student handoff
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Describe any manual workaround or existing tool you have tried.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Optional. Do not include private credentials, PDFs, or institution screenshots.

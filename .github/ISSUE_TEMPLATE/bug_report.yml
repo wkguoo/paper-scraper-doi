@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible problem without sharing private credentials or PDFs.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not upload cookies, account passwords, downloaded PDFs, private result tables, or institution/internal page screenshots.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety confirmation
+      options:
+        - label: I have not uploaded cookies, account passwords, PDFs, school/institution internal page screenshots, or private result files.
+          required: true
+        - label: This issue does not involve bypassing access permissions, Sci-Hub, LibGen, CAPTCHA, or 403 restrictions.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem and what you expected instead.
+      placeholder: The command/UI action failed when...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a small public DOI or synthetic example. Remove cookies, private paths, and institution-specific details.
+      placeholder: |
+        1. Run ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: Workflow
+      options:
+        - Windows GUI
+        - ScienceDirect authorized-access workflow
+        - OA PDF candidate discovery workflow
+        - Codex Skills
+        - Packaging or installation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: v0.1.0 or commit hash
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: Python 3.11.x
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 10 or Windows 11
+  - type: textarea
+    id: logs
+    attributes:
+      label: Safe logs or error text
+      description: Paste only sanitized logs. Remove cookies, tokens, PDF names if private, account names, institution URLs, and local private paths.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Add anything else that helps reproduce the issue without exposing private data.

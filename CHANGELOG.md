@@ -258,3 +258,47 @@
   - 本次不改变 ScienceDirect/CDP、Cookie、机构权限下载或 OA 下载实现逻辑。
   - 本次不重命名 `legal-oa-paper-download` skill，避免破坏已有 Codex 调用。
   - 本次没有重新打包 Windows UI。
+
+## 2026-07-09 16:37:55
+
+- 本次任务目标：
+  - 完善 GitHub 公开首页的“门面信息”，让仓库更像可使用的公开项目，而不是个人脚本目录。
+  - 增加 README 顶部展示、安全政策和 Issue 模板，并准备发布首个 `v0.1.0` 源码 release。
+- 新增、修改或删除的文件：
+  - 修改 `README.md`
+  - 修改 `README_zh.md`
+  - 新增 `SECURITY.md`
+  - 新增 `.github/ISSUE_TEMPLATE/bug_report.yml`
+  - 新增 `.github/ISSUE_TEMPLATE/feature_request.yml`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - `README.md` 改为英文公开首页，顶部加入 Python、Windows、License、Tests 和 Release badge，并加入 `English | 中文说明` 语言入口。
+  - `README.md` 聚焦项目用途、合规边界、快速开始、常用工作流、输出文件、安全提醒、开发检查和来源声明。
+  - `README_zh.md` 改为完整中文说明，保留原新手安装、Codex Skills、ScienceDirect 机构权限、OA 资源辅助获取、输出文件、安全和发布说明。
+  - `SECURITY.md` 明确不要在公开 Issue/PR 上传 cookies、账号密码、PDF、机构内部页面截图或私有结果文件，并说明安全问题应私下报告。
+  - 新增 Bug report 和 Feature request 两个 GitHub Issue form，加入敏感信息和访问权限绕过相关确认项。
+- 修改原因：
+  - GitHub 公开项目首页需要清晰的英文门面、可点击徽章、语言入口和安全边界说明，方便新用户快速判断项目用途。
+  - 该项目会接触机构 Cookie、浏览器登录状态、下载目录和论文 PDF，因此需要比普通工具更明确的安全提交规则。
+  - Issue 模板可减少无效问题报告，并降低用户误传敏感凭证、PDF 或机构页面截图的风险。
+- 如何运行：
+  - 格式检查：`git diff --check`
+  - 完整单元测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - 文案扫描：`rg -n "Sci-Hub|LibGen|CAPTCHA|403|cookie|cookies" README.md README_zh.md SECURITY.md .github`
+  - 敏感产物跟踪检查：`git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist"`
+- 生成的输出文件：
+  - 新增 `SECURITY.md`
+  - 新增 `.github/ISSUE_TEMPLATE/bug_report.yml`
+  - 新增 `.github/ISSUE_TEMPLATE/feature_request.yml`
+  - 本次没有重新打包 Windows UI，没有生成 exe、zip、PDF、下载结果目录或其他发布附件。
+- 如何检查是否成功：
+  - GitHub README 顶部应显示 badge 和 `English | 中文说明` 语言入口。
+  - GitHub Issues 新建页面应出现 Bug report 和 Feature request 两个模板。
+  - `SECURITY.md` 应提醒不要公开上传 cookies、密码、PDF、机构内部页面截图或私有结果文件。
+  - 本地测试和 `git diff --check` 应通过。
+  - GitHub About 区域后续应显示项目 description 和 topics，Website 保持为空。
+  - Release 页面后续应显示 `v0.1.0 - Initial public release`，且不包含二进制 exe 或敏感附件。
+- 注意事项或潜在风险：
+  - 本次不改变 ScienceDirect/CDP、Cookie、机构权限下载、OA 资源辅助获取或 UI 实现逻辑。
+  - 本次不重新打包 Windows UI，不发布 exe。
+  - `cookie.json`、PDF、`results/`、`.venv/` 和 `dist/` 等本地产物仍不应进入 Git、Issue 或 release 附件。
