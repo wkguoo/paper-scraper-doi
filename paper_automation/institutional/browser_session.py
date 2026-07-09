@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from sd_scraper import BROWSER_PROFILE_COPY_DIRS, BROWSER_PROFILE_COPY_FILES, _STEALTH_JS, _dt_capture_pdf
+from sd_scraper import BROWSER_PROFILE_COPY_DIRS, BROWSER_PROFILE_COPY_FILES, _BROWSER_COMPAT_JS, _dt_capture_pdf
 from windows_paths import browser_bin, browser_default_profile, browser_display_name, chrome_debug_log, chrome_debug_profile
 
 from .models import PageSnapshot, PdfCaptureResult
@@ -49,7 +49,7 @@ class DebugBrowserSession:
         ws = self._open_websocket(tab["webSocketDebuggerUrl"], timeout=30)
         try:
             self._send(ws, 1, "Page.enable")
-            self._send(ws, 2, "Page.addScriptToEvaluateOnNewDocument", {"source": _STEALTH_JS})
+            self._send(ws, 2, "Page.addScriptToEvaluateOnNewDocument", {"source": _BROWSER_COMPAT_JS})
             self._send(ws, 3, "Page.navigate", {"url": url})
             deadline = time.time() + wait_seconds + 10
             while time.time() < deadline:
