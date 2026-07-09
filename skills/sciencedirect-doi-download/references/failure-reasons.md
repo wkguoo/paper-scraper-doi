@@ -12,7 +12,7 @@ Use this reference when explaining `doi_intake_preview.csv`, `doi_batch_failed.c
 
 ## ScienceDirect resolution
 
-- Non-`10.1016/...` DOI values are often not ScienceDirect/Elsevier and may need the legal OA workflow instead.
+- Non-`10.1016/...` DOI values are often not ScienceDirect/Elsevier and may need the OA resource assistance workflow instead.
 - DOI resolution failure means the DOI did not lead to a ScienceDirect article page or the network request failed.
 
 ## PDF download

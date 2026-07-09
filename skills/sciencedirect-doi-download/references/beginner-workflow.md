@@ -7,7 +7,7 @@ Use this reference when the user is new, gives copied AI recommendations, or pro
 1. Run preflight first:
 
 ```powershell
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --beginner --preflight --auto-web-search
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --beginner --preflight
 ```
 
 2. Report these preflight files:
@@ -32,7 +32,7 @@ Use this reference when the user is new, gives copied AI recommendations, or pro
 
 ## When to use optional search
 
-Use `--auto-web-search` only for title-only or short citation inputs. It uses Semantic Scholar-style academic search as a fallback, then verifies candidate DOI values through Crossref before they can become `valid`.
+For title-only or short citation inputs, preflight marks uncertain rows for review first. Use `--resolve-title-only --auto-web-search` later only when the user explicitly wants public metadata search to help fill DOI values.
 
 Do not use optional search as a license to guess DOI values. If evidence is weak, leave the row in `needs_review`.
 

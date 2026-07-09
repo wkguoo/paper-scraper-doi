@@ -212,7 +212,7 @@ class PaperScraperUI:
         self.run_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(self.doi_tab, text="DOI 批量下载")
         self.notebook.add(self.search_tab, text="文献检索")
-        self.notebook.add(self.oa_tab, text="合法 OA 下载")
+        self.notebook.add(self.oa_tab, text="OA 资源辅助获取")
         self.notebook.add(self.run_tab, text="运行日志")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -317,7 +317,7 @@ class PaperScraperUI:
         frame.columnconfigure(1, weight=2)
         frame.rowconfigure(0, weight=1)
 
-        source = ttk.LabelFrame(frame, text="1 合法 OA 数据来源", padding=10)
+        source = ttk.LabelFrame(frame, text="1 OA 资源数据来源", padding=10)
         source.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         source.columnconfigure(0, weight=1)
         source.columnconfigure(1, weight=1)
@@ -341,7 +341,7 @@ class PaperScraperUI:
         ttk.Button(source, text="清空粘贴", command=self.clear_oa_text).grid(row=4, column=0, sticky="ew", padx=(0, 8))
         ttk.Label(
             source,
-            text="支持 .txt/.md/.markdown/.csv。该模式只查找明确合法开放获取 PDF，不使用机构 Cookie。",
+            text="支持 .txt/.md/.markdown/.csv。该模式仅辅助查找公开开放获取 PDF 候选资源，不使用机构 Cookie。",
             foreground="#555555",
             wraplength=620,
         ).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 0))
@@ -373,7 +373,7 @@ class PaperScraperUI:
         )
         ttk.Label(
             options,
-            text="合法 OA 模式不会读取 Cookie JSON、不会打开机构登录浏览器，也不会使用 Sci-Hub/LibGen。",
+            text="OA 资源辅助获取不会读取 Cookie JSON、不会打开机构登录浏览器，也不会使用 Sci-Hub/LibGen。",
             foreground="#555555",
             wraplength=420,
         ).grid(row=8, column=0, columnspan=3, sticky="ew", pady=(12, 0))
@@ -710,9 +710,9 @@ class PaperScraperUI:
         if self.workflow_var.get() == "legal_oa":
             output_dir = self.output_var.get().strip() or "(默认 results)"
             input_text = self.oa_input_file_var.get().strip() or ("粘贴内容" if self._get_oa_text() else "未选择")
-            action = "仅解析" if self.oa_dry_run_var.get() else "下载合法 OA PDF"
+            action = "仅解析" if self.oa_dry_run_var.get() else "尝试下载公开开放获取 PDF"
             limit = self.oa_limit_var.get().strip() or "不限制"
-            summary = f"合法 OA 下载：输入={input_text}；输出={output_dir}；任务={action}；限制数量={limit}；不使用 Cookie/机构登录。"
+            summary = f"OA 资源辅助获取：输入={input_text}；输出={output_dir}；任务={action}；限制数量={limit}；不使用 Cookie/机构登录。"
             self.summary_var.set(summary)
             preflight_items = self._get_preflight_items()
             warnings = [message for level, message in preflight_items if level != "ok"]
@@ -774,7 +774,7 @@ class PaperScraperUI:
             elif pasted_text:
                 items.append(("ok", "已填写 OA 粘贴内容"))
             else:
-                items.append(("error", "合法 OA 模式需要选择输入文件或粘贴论文列表"))
+                items.append(("error", "OA 资源辅助获取需要选择输入文件或粘贴论文列表"))
 
             output_dir = Path(self.output_var.get().strip() or APP_DIR / "results")
             if output_dir.exists():
@@ -786,7 +786,7 @@ class PaperScraperUI:
                 items.append(("warn", f"输出目录不存在，运行时会尝试创建: {output_dir}"))
             else:
                 items.append(("error", f"输出目录父目录不可写或不存在: {output_dir.parent}"))
-            items.append(("ok", "合法 OA 模式不使用 Cookie、机构登录或付费墙绕过"))
+            items.append(("ok", "OA 资源辅助获取不使用 Cookie、机构登录或付费墙绕过"))
             return items
 
         items = [("warn", warning) for warning in self.startup_warnings]
@@ -854,7 +854,7 @@ class PaperScraperUI:
         if self.workflow_var.get() == "legal_oa":
             input_path = self.oa_input_file_var.get().strip()
             if not input_path and not self._get_oa_text():
-                messagebox.showerror("参数错误", "合法 OA 下载模式需要选择输入文件，或粘贴论文列表。")
+                messagebox.showerror("参数错误", "OA 资源辅助获取需要选择输入文件，或粘贴论文列表。")
                 return False
             if input_path and not Path(input_path).exists():
                 messagebox.showerror("参数错误", f"输入文件不存在：\n{input_path}")
@@ -1057,7 +1057,7 @@ class PaperScraperUI:
                 self._append_value(cmd, "--text", "<粘贴内容将在运行时传入>")
         self._append_value(cmd, "--out", self.output_var.get())
         self._append_value(cmd, "--doi-column", self.doi_column_var.get())
-        cmd.extend(["--beginner", "--preflight", "--auto-web-search"])
+        cmd.extend(["--beginner", "--preflight"])
         return cmd
 
     @staticmethod
@@ -1108,7 +1108,7 @@ class PaperScraperUI:
         selected = filedialog.askopenfilename(
             initialdir=str(APP_DIR),
             filetypes=[
-                ("合法 OA 输入文件", "*.txt *.md *.markdown *.csv"),
+                ("OA 资源输入文件", "*.txt *.md *.markdown *.csv"),
                 ("纯文本/Markdown", "*.txt *.md *.markdown"),
                 ("CSV 文件", "*.csv"),
                 ("所有文件", "*.*"),
@@ -1196,7 +1196,7 @@ class PaperScraperUI:
     def _write_pasted_oa_text(self) -> Path:
         text = self._get_oa_text()
         if not text:
-            raise ValueError("合法 OA 粘贴内容为空")
+            raise ValueError("OA 资源粘贴内容为空")
         out_dir = APP_DIR / "results" / "_ui_inputs"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"pasted_oa_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
@@ -1313,7 +1313,7 @@ class PaperScraperUI:
             messagebox.showinfo("正在运行", "当前任务还没有结束。")
             return
         if self.workflow_var.get() == "legal_oa":
-            messagebox.showinfo("智能准备并运行", "智能准备并运行仅用于 ScienceDirect DOI 批量下载。合法 OA 模式请直接点击“开始运行”。")
+            messagebox.showinfo("智能准备并运行", "智能准备并运行仅用于 ScienceDirect DOI 批量下载。OA 资源辅助获取请直接点击“开始运行”。")
             return
         try:
             can_run, summary = self._prepare_smart_doi_wizard()
@@ -1665,7 +1665,7 @@ class PaperScraperUI:
         if not self.last_summary_path or not self.last_summary_path.exists():
             if self.workflow_var.get() == "legal_oa" and self.last_run_output_dir:
                 self.result_summary_var.set(
-                    f"合法 OA 任务已结束；请查看输出目录中的 metadata\\manifest.csv 和 failed\\duplicates.csv：{self.last_run_output_dir}"
+                    f"OA 资源辅助获取任务已结束；请查看输出目录中的 metadata\\manifest.csv 和 failed\\duplicates.csv：{self.last_run_output_dir}"
                 )
                 self._update_result_buttons()
                 return

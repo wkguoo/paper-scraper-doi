@@ -145,3 +145,116 @@
 - 注意事项或潜在风险：
   - 新规则更保守，部分只有标题的真实文献不会自动补 DOI，需要补充作者、期刊或年份后再匹配。
   - 本次不改变 ScienceDirect PDF 下载、Cookie、CDP/DevTools 或 UI 打包流程。
+
+## 2026-07-09 15:44:09
+
+- 本次任务目标：
+  - 对项目做公开发布前的稳妥硬化：降低合规误读风险，补充来源声明、License/NOTICE、CI 和发布安全说明，并修复大批量任务前期长时间无反馈的问题。
+- 新增、修改或删除的文件：
+  - 新增 `NOTICE`
+  - 新增 `.github/workflows/tests.yml`
+  - 修改 `LICENSE`
+  - 修改 `README.md`
+  - 修改 `WINDOWS_UI_README.md`
+  - 修改 `docs/sciencedirect_skill_beginner_guide.md`
+  - 修改 `docs/superpowers/plans/2026-06-17-paper-skill.md`
+  - 修改 `make_windows_ui_package.bat`
+  - 修改 `paper_scraper_ui.py`
+  - 修改 `sd_institutional_skill.py`
+  - 修改 `sd_scraper.py`
+  - 修改 `sd_scraper_en.py`
+  - 修改 `skills/paper-download/SKILL.md`
+  - 修改 `skills/sciencedirect-doi-download/SKILL.md`
+  - 修改 `skills/sciencedirect-doi-download/references/beginner-workflow.md`
+  - 修改 `tests/test_doi_batch_utils.py`
+  - 修改 `tests/test_sd_institutional_skill.py`
+  - 修改 `tests/test_skills_packaging.py`
+  - 修改 `windows_paths.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - 将公开文档、帮助文本和源码注释中的高风险访问措辞改为中性表述，强调使用用户已授权的真实浏览器会话、Cookie 和 CDP 捕获有权限访问的 PDF。
+  - 保留并强化合规边界：不绕过权限、不自动完成 CAPTCHA、不使用 Sci-Hub/LibGen，不下载无合法访问权限的 PDF。
+  - 新增 `NOTICE`，声明本项目基于 `GAO-pooh/paper-scraper` 修改，原项目为 MIT License，并列出本项目的主要新增能力。
+  - 在 `LICENSE` 中补充 `Modifications Copyright (c) 2026 wkguoo`。
+  - 在 README 和 Windows UI 文档中补充公开发布/打包注意事项，提醒不要发布 `cookie.json`、`results/`、PDF、虚拟环境、浏览器缓存和本地构建产物。
+  - 新增 Windows + Python 3.11 的 GitHub Actions 测试工作流，执行语法编译和完整单元测试。
+  - 调整 `sd_institutional_skill.py` 的输入整理流程：先本地识别 DOI/题名、去重并写出 `doi_intake_preview.csv` 和 `merged_doi_input.csv`，再进入联网元数据增强；关键日志全部及时刷新。
+  - 调整 `--beginner --preflight` 行为：只做本地识别、去重和复核报告，不默认联网补 DOI 元数据。
+  - 修复 Windows 浏览器 profile 探测时部分 Edge 路径权限异常导致测试或运行中断的问题。
+  - 更新 skill 文档和 UI 智能预检命令，避免 beginner preflight 默认触发公开元数据搜索。
+  - 增加回归测试，覆盖 preflight 不调用 `MetadataResolver.resolve_one`、预览文件先于联网元数据解析写出、公开风险短语扫描、CI 文件存在和打包脚本包含 `NOTICE`。
+- 修改原因：
+  - 项目准备公开发布，需要让 README、skill、源码注释和打包说明更清楚地表达合法使用边界，避免被误解为规避访问控制或破解验证。
+  - 大批量文献输入时，如果先联网解析再写预览，会让用户长时间看不到输出，难以判断程序是否卡住。
+  - 公开仓库需要基本的 License/NOTICE、CI 和敏感文件发布提醒，便于其他用户安全安装和复现。
+- 如何运行：
+  - 语法和编译检查：`.\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`
+  - 完整单元测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - 文案安全扫描：运行 `tests/test_skills_packaging.py` 中的公开风险措辞检查，或按该测试中的拆分关键词规则执行 `rg` 扫描。
+  - 敏感产物跟踪检查：`git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist"`
+  - Skill 安装预检查：`powershell -ExecutionPolicy Bypass -File install_codex_skills.ps1 -DryRun`
+- 生成的输出文件：
+  - 新增仓库文件 `NOTICE`
+  - 新增 CI 文件 `.github/workflows/tests.yml`
+  - 测试过程中仅在系统临时目录生成测试日志和临时测试文件，没有生成新的论文 PDF、下载结果目录或 Windows UI 打包产物。
+- 如何检查是否成功：
+  - `python -m compileall ...` 应返回退出码 0。
+  - `python -m unittest discover -s tests -v` 应显示全部测试通过。
+  - 文案安全扫描不应命中把工具能力描述为规避检测的短语；只允许出现禁止性、安全边界类表述。
+  - `git ls-files` 敏感产物扫描不应出现真实 `cookie.json`、PDF、`results/`、`.venv/`、`dist/` 等运行产物。
+  - 运行 `--beginner --preflight` 时，应能先看到本地预览和去重报告，不默认进行联网元数据补全。
+- 注意事项或潜在风险：
+  - 本次不改变 ScienceDirect/CDP/机构权限下载核心流程，也不改变 Cookie、浏览器登录或 PDF 下载策略。
+  - 本次没有重新打包 Windows UI；如需发布压缩包，应后续显式运行打包脚本，并再次检查包内是否包含敏感文件。
+  - 本地未跟踪的 `cookie.json`、`results/`、PDF 和虚拟环境不应删除，但也不应进入 Git 或发布包。
+
+## 2026-07-09 16:02:36
+
+- 本次任务目标：
+  - 根据当前项目与原项目的实际关系，完善公开来源声明和 MIT 修改版权表述。
+  - 将用户可见的“合法 OA 下载”改为更审慎的“OA 资源辅助获取”，避免公开发布时被理解为法律保证。
+- 新增、修改或删除的文件：
+  - 修改 `LICENSE`
+  - 修改 `NOTICE`
+  - 修改 `README.md`
+  - 修改 `README_zh.md`
+  - 修改 `WINDOWS_UI_README.md`
+  - 修改 `paper_scraper_ui.py`
+  - 修改 `paper_skill.py`
+  - 修改 `skills/paper-download/SKILL.md`
+  - 修改 `skills/legal-oa-paper-download/SKILL.md`
+  - 修改 `skills/sciencedirect-doi-download/SKILL.md`
+  - 修改 `skills/sciencedirect-doi-download/references/failure-reasons.md`
+  - 修改 `docs/superpowers/plans/2026-06-17-paper-skill.md`
+  - 修改 `tests/test_doi_batch_utils.py`
+  - 修改 `tests/test_skills_packaging.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - `LICENSE` 中维护者声明改为 `Copyright (c) 2026 wkguoo (modifications)`，同时保留原作者 `Copyright (c) 2026 GAO-pooh`。
+  - `NOTICE` 改为说明本项目基于并扩展 `GAO-pooh/paper-scraper`，并把 OA 相关描述改为 `open-access resource discovery and download-assistance workflow`。
+  - README 来源声明改为“基于开源项目修改并扩展”，并说明本仓库保留原项目版权声明和许可声明，后续修改、扩展与新增模块由 `wkguoo` 维护并声明修改部分版权。
+  - README、Windows UI 文档和 UI 标签将“合法 OA 下载”统一改为“OA 资源辅助获取”，把“只下载公开合法 OA PDF”等绝对表述改为“仅尝试识别并下载公开开放获取的 PDF 候选资源”。
+  - `paper_skill.py` 的命令行描述改为识别公开开放获取 PDF 候选资源并下载可访问文件。
+  - Skill 文档改为“open-access PDF candidates / download assistance”等审慎表述；保留 `legal-oa-paper-download` 目录名和 skill name 作为兼容入口。
+  - 更新测试，检查新版权声明、新来源声明、新 UI 摘要名称，并增加公开文案禁用短语检查。
+- 修改原因：
+  - 项目确实复用了原项目的实质性代码、结构或实现逻辑，因此公开声明应采用“基于并扩展”而不是“仅受启发”。
+  - “合法 OA”容易被误解为工具对下载行为作出法律保证；公开发布时更适合使用“OA 资源辅助获取”和“公开开放获取 PDF 候选资源”。
+- 如何运行：
+  - 语法检查：`.\.venv\Scripts\python.exe -m py_compile paper_scraper_ui.py paper_skill.py`
+  - 定向测试：`.\.venv\Scripts\python.exe -m unittest tests.test_doi_batch_utils tests.test_skills_packaging -v`
+  - 完整测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - 文案检查：`rg -n "合法 OA 下载|公开合法 OA|only legal open-access PDFs|legal open-access workflow" README.md README_zh.md WINDOWS_UI_README.md NOTICE paper_scraper_ui.py paper_skill.py skills docs`
+  - Git 检查：`git diff --check`
+- 生成的输出文件：
+  - 本次没有生成新的 PDF、下载结果目录或 Windows UI 打包产物。
+  - 测试过程中仅在系统临时目录生成临时测试文件和日志。
+- 如何检查是否成功：
+  - UI 中第三个入口应显示为“OA 资源辅助获取”。
+  - README 和 Windows UI 文档不应再把 OA 流程表述成法律保证。
+  - `LICENSE` 和 `NOTICE` 应同时保留原项目来源和本项目修改版权声明。
+  - 定向测试和完整测试应全部通过。
+- 注意事项或潜在风险：
+  - 本次不改变 ScienceDirect/CDP、Cookie、机构权限下载或 OA 下载实现逻辑。
+  - 本次不重命名 `legal-oa-paper-download` skill，避免破坏已有 Codex 调用。
+  - 本次没有重新打包 Windows UI。

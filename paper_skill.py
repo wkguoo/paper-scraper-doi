@@ -11,7 +11,7 @@ from paper_automation.workflow import run_workflow
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Identify messy paper text, resolve metadata, and download only legal open-access PDFs.",
+        description="Identify messy paper text, resolve metadata, and download accessible open-access PDF candidates.",
     )
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--input", help="Text/CSV/Markdown file containing copied paper information")
@@ -39,7 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"- Duplicates: {result.duplicate_count}")
     print(f"- Resolved metadata: {result.resolved_count}")
     print(f"- Downloaded PDFs: {result.downloaded_count}")
-    print(f"- Failed / no legal PDF: {result.failed_count}")
+    print(f"- Failed / no accessible open-access PDF: {result.failed_count}")
     print(f"- Manifest CSV: {result.manifest_csv}")
     print(f"- Manifest JSON: {result.manifest_json}")
     print(f"- Duplicates CSV: {result.duplicates_csv}")

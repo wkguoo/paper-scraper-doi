@@ -47,4 +47,4 @@ Use $paper-download to preflight these paper recommendations with --beginner --p
 <在这里粘贴 DOI、题名或论文推荐列表>
 ```
 
-ScienceDirect 机构权限下载、合法 OA 下载、图形界面和命令行示例都以 [README.md](README.md) 为准。
+ScienceDirect 机构权限下载、OA 资源辅助获取、图形界面和命令行示例都以 [README.md](README.md) 为准。

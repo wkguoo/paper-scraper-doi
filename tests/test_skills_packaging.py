@@ -29,7 +29,7 @@ class SkillPackagingTests(unittest.TestCase):
             ],
             "legal-oa-paper-download": [
                 "open-access",
-                "legal",
+                "download assistance",
                 "without institutional cookies",
             ],
         }
@@ -57,6 +57,88 @@ class SkillPackagingTests(unittest.TestCase):
         self.assertIn("Resolve-FullPath", text)
         self.assertIn("Test-PathOverlap", text)
         self.assertIn("Refusing to install because target skills root overlaps", text)
+
+    def test_notice_and_license_document_public_origin(self) -> None:
+        notice = (PROJECT_ROOT / "NOTICE").read_text(encoding="utf-8")
+        license_text = (PROJECT_ROOT / "LICENSE").read_text(encoding="utf-8")
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("GAO-pooh/paper-scraper", notice)
+        self.assertIn("based on and extends", notice)
+        self.assertIn("Copyright (c) 2026 wkguoo (modifications)", notice)
+        self.assertIn("Copyright (c) 2026 wkguoo (modifications)", license_text)
+        self.assertIn("基于开源项目", readme)
+        self.assertIn("修改并扩展", readme)
+        self.assertIn("NOTICE", readme)
+        self.assertIn("不提供任何数据库、学校或出版社访问权限", readme)
+
+    def test_github_actions_windows_tests_workflow_exists(self) -> None:
+        workflow = PROJECT_ROOT / ".github" / "workflows" / "tests.yml"
+        text = workflow.read_text(encoding="utf-8")
+
+        self.assertIn("windows-latest", text)
+        self.assertIn('python-version: "3.11"', text)
+        self.assertIn("python -m pip install -r requirements.txt", text)
+        self.assertIn("python -m compileall", text)
+        self.assertIn("python -m unittest discover -s tests -v", text)
+
+    def test_public_copy_avoids_high_risk_access_wording(self) -> None:
+        scanned_paths = [
+            PROJECT_ROOT / "README.md",
+            PROJECT_ROOT / "WINDOWS_UI_README.md",
+            PROJECT_ROOT / "MANUAL_QA.md",
+            PROJECT_ROOT / "sd_scraper.py",
+            PROJECT_ROOT / "sd_scraper_en.py",
+            PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
+            PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md",
+            PROJECT_ROOT / "skills" / "legal-oa-paper-download" / "SKILL.md",
+            PROJECT_ROOT / "docs" / "sciencedirect_skill_beginner_guide.md",
+        ]
+        disallowed = [
+            "bypass " + "Cloudflare",
+            "绕过" + "反爬",
+            "ste" + "alth",
+            "_STE" + "ALTH",
+            "不触发" + "机器人验证",
+            "破解 " + "CAPTCHA",
+            "Cloudflare " + "不拦截",
+        ]
+
+        for path in scanned_paths:
+            text = path.read_text(encoding="utf-8")
+            for phrase in disallowed:
+                with self.subTest(path=path.relative_to(PROJECT_ROOT), phrase=phrase):
+                    self.assertNotIn(phrase, text)
+
+    def test_public_copy_uses_cautious_oa_wording(self) -> None:
+        scanned_paths = [
+            PROJECT_ROOT / "README.md",
+            PROJECT_ROOT / "README_zh.md",
+            PROJECT_ROOT / "WINDOWS_UI_README.md",
+            PROJECT_ROOT / "NOTICE",
+            PROJECT_ROOT / "paper_scraper_ui.py",
+            PROJECT_ROOT / "paper_skill.py",
+            PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
+            PROJECT_ROOT / "skills" / "legal-oa-paper-download" / "SKILL.md",
+            PROJECT_ROOT / "docs" / "superpowers" / "plans" / "2026-06-17-paper-skill.md",
+        ]
+        disallowed = [
+            "合法 " + "OA " + "下载",
+            "公开" + "合法 " + "OA",
+            "公开" + "合法" + "开放获取",
+            "合法" + "开放获取",
+            "only legal " + "open-access PDFs",
+            "legal open-access " + "workflow",
+            "legal " + "OA " + "PDF",
+            "legal open-access " + "PDF",
+            "legal open-access " + "downloads",
+        ]
+
+        for path in scanned_paths:
+            text = path.read_text(encoding="utf-8")
+            for phrase in disallowed:
+                with self.subTest(path=path.relative_to(PROJECT_ROOT), phrase=phrase):
+                    self.assertNotIn(phrase, text)
 
     def test_sciencedirect_skills_document_supplement_outputs(self) -> None:
         for skill_name in ("paper-download", "sciencedirect-doi-download"):
@@ -131,6 +213,7 @@ class SkillPackagingTests(unittest.TestCase):
             'call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "student_handoff.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "LICENSE" "%PACKAGE_DIR%\\"',
+            'call :copy_required "NOTICE" "%PACKAGE_DIR%\\"',
             'call :copy_optional "如何导出机构Cookie.md" "%PACKAGE_DIR%\\"',
             'call :copy_required "README.md" "%PACKAGE_DIR%\\"',
             'call :copy_required "README_zh.md" "%PACKAGE_DIR%\\"',

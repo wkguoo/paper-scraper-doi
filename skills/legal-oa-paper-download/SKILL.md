@@ -1,11 +1,11 @@
 ---
 name: legal-oa-paper-download
-description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and download only clearly legal open-access PDFs. Use when the user asks Codex to find or download open-access papers without institutional cookies, ScienceDirect login, Sci-Hub, LibGen, or paywall bypasses.
+description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and provide open-access PDF candidate download assistance. Use when the user asks Codex to find or download open-access papers without institutional cookies, ScienceDirect login, Sci-Hub, LibGen, or paywall bypasses.
 ---
 
-# Legal OA Paper Download
+# OA Resource Assistance Paper Download
 
-Use `paper_skill.py` for public-source paper identification and legal open-access PDF downloads. Keep this separate from `sciencedirect-doi-download`; this workflow does not use institutional cookies, browser profile state, or ScienceDirect login.
+Use `paper_skill.py` for public-source paper identification and open-access PDF candidate download assistance. Keep this separate from `sciencedirect-doi-download`; this workflow does not use institutional cookies, browser profile state, or ScienceDirect login.
 
 ## Repository
 
@@ -27,7 +27,7 @@ Use `.venv\Scripts\python.exe` when it exists; otherwise create the venv and ins
 2. Run `paper_skill.py` with an explicit `--out` directory.
 3. Prefer `--dry-run` first when the input is noisy, title-only, or copied from an AI recommendation.
 4. Use `--email` when available for polite Crossref/Unpaywall API use.
-5. Report `metadata/manifest.csv`, `metadata/manifest.json`, `failed/duplicates.csv`, counts for resolved rows, downloaded PDFs, duplicates, and failed/no-legal-PDF rows.
+5. Report `metadata/manifest.csv`, `metadata/manifest.json`, `failed/duplicates.csv`, counts for resolved rows, downloaded PDFs, duplicates, and unresolved rows without accessible open-access PDFs.
 
 ## Commands
 
@@ -38,7 +38,7 @@ Set-Location "<resolved repository root>"
 .\.venv\Scripts\python.exe paper_skill.py --text "<copied paper list>" --out "D:\Literature\OA" --email "you@example.com" --dry-run
 ```
 
-Download legal OA PDFs from a file:
+Download accessible open-access PDF candidates from a file:
 
 ```powershell
 Set-Location "<resolved repository root>"

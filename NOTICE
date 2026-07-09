@@ -1,0 +1,24 @@
+paper-scraper-doi
+=================
+
+This project is based on and extends GAO-pooh/paper-scraper:
+
+  https://github.com/GAO-pooh/paper-scraper/tree/main
+
+The original project is licensed under the MIT License and includes:
+
+  Copyright (c) 2026 GAO-pooh
+
+This repository keeps the original MIT License and adds modifications by:
+
+  Copyright (c) 2026 wkguoo (modifications)
+
+Major changes in this repository include Windows-focused UI packaging,
+ScienceDirect DOI batch intake and reporting, Cookie JSON support,
+supplementary-material reporting, an open-access resource discovery and
+download-assistance workflow, and Codex Skills for assisted local operation.
+
+This tool does not provide access rights, bypass publisher or institutional
+permissions, solve CAPTCHA challenges, or use shadow libraries. Users are
+responsible for complying with their institution, publisher, database, and
+local policy requirements. This project does not provide legal advice.

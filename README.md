@@ -1,13 +1,13 @@
-# 论文下载助手：ScienceDirect 机构权限 + 合法 OA
+# 论文下载助手：ScienceDirect 机构权限 + OA 资源辅助获取
 
-这是一个面向 Windows 的论文下载辅助工具。它可以配合 Codex Skills、图形界面或命令行，把 DOI 表格、AI 推荐文献列表、复制来的论文文本整理成可检查的报告，并在合规前提下下载 PDF。
+这是一个面向 Windows 的论文下载辅助工具。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。它可以配合 Codex Skills、图形界面或命令行，把 DOI 表格、AI 推荐文献列表、复制来的论文文本整理成可检查的报告，并在合规前提下下载 PDF。Codex Skill 是可选增强入口；不使用 Codex 时，也可以直接运行图形界面或命令行。
 
 本项目主要包含两条流程：
 
 | 使用场景 | 推荐入口 | 说明 |
 | --- | --- | --- |
 | 你有学校/机构的 ScienceDirect 或 Elsevier 权限，要下载 `10.1016/...` 这类论文 | `paper-download` 或 `sciencedirect-doi-download` | 使用你的机构登录状态或 Cookie 下载有权限访问的 ScienceDirect PDF。 |
-| 你有混合出版社论文列表，只想找公开合法开放获取 PDF | `paper-download` 或 `legal-oa-paper-download` | 不使用机构 Cookie，不绕过付费墙，只下载公开合法 OA PDF。 |
+| 你有混合出版社论文列表，只想查找公开开放获取 PDF 候选资源 | `paper-download` 或 `legal-oa-paper-download` | 不使用机构 Cookie，不绕过付费墙，仅尝试识别并下载公开开放获取的 PDF 候选资源。 |
 | 你不想写命令，只想点按钮 | `start_paper_scraper_ui.bat` | 打开 Windows Tkinter 图形界面。 |
 
 ## 这个工具能做什么
@@ -16,14 +16,14 @@
 - 对混乱的 AI 推荐列表先做 preflight，标出有效 DOI、重复项和需要人工复核的记录。
 - 通过你的机构权限下载 ScienceDirect PDF，并生成下载报告。
 - 默认尝试下载 ScienceDirect 补充材料，并把附件状态写入报告。
-- 对非 ScienceDirect 或混合来源列表，使用公开元数据服务查找合法 OA PDF。
+- 对非 ScienceDirect 或混合来源列表，使用公开元数据服务查找公开开放获取 PDF 候选资源。
 - 给 Codex 安装 `paper-download` 等 Skills，让你可以直接用自然语言发任务。
 
 ## 这个工具不能做什么
 
 - 不能替你输入学校账号密码。
 - 不能绕过学校、出版社或 ScienceDirect 的访问权限。
-- 不能破解 CAPTCHA、人机验证、403 或限速。
+- 不能自动完成 CAPTCHA、人机验证、403 或限速。
 - 不能使用 Sci-Hub、LibGen 或其他侵权来源。
 - 不能保证题名-only 的模糊匹配 100% 正确；不确定的记录会进入 `needs_review`。
 
@@ -94,13 +94,13 @@ powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1
 
 ## 推荐用法：直接让 Codex 调用 Skill
 
-安装 Skills 后，在 Codex 里优先使用统一入口 `paper-download`。它会根据你的请求自动选择 ScienceDirect 机构权限流程或合法 OA 流程。
+安装 Skills 后，在 Codex 里优先使用统一入口 `paper-download`。它会根据你的请求自动选择 ScienceDirect 机构权限流程或 OA 资源辅助获取流程。
 
 可用入口：
 
 - `paper-download`：推荐入口，自动判断走哪条下载流程。
 - `sciencedirect-doi-download`：明确用于 ScienceDirect/Elsevier 机构权限下载。
-- `legal-oa-paper-download`：明确用于公开合法 OA PDF 下载。
+- `legal-oa-paper-download`：兼容入口，用于公开开放获取 PDF 候选资源的辅助获取。
 
 ### 示例 1：ScienceDirect 机构权限下载
 
@@ -132,12 +132,12 @@ Save results to D:\Literature\ScienceDirect.
 
 preflight 只做输入识别、去重和复核提示，不下载 PDF，也不会生成补充材料目录。它会重点生成 `doi_intake_preview.csv`、`merged_doi_input.csv`、`doi_batch_failed.csv`、`run_summary.txt` 和 `00_给研究生查看\`，检查确认后再把 `merged_doi_input.csv` 交给 Codex 正式下载。
 
-### 示例 3：只下载合法开放获取 PDF
+### 示例 3：查找公开开放获取 PDF 候选资源
 
-如果你的论文来源混杂，或者没有机构权限，只想下载公开合法 OA PDF：
+如果你的论文来源混杂，或者没有机构权限，只想查找公开开放获取 PDF 候选资源：
 
 ```text
-Use $paper-download to find legal open-access PDFs for this list.
+Use $paper-download to find open-access PDF candidates for this list.
 Save results to D:\Literature\OA.
 Use you@example.com for polite metadata API access.
 
@@ -158,7 +158,7 @@ start_paper_scraper_ui.bat
 首次启动会自动创建 `.venv` 并安装依赖。界面里常用两个入口：
 
 - `DOI 批量下载`：用于 ScienceDirect/Elsevier DOI 表格或 DOI 文本。
-- `合法 OA 下载`：用于混合来源论文列表，只找公开合法 OA PDF。
+- `OA 资源辅助获取`：用于混合来源论文列表，仅尝试查找公开开放获取 PDF 候选资源。
 
 ScienceDirect PDF 下载推荐使用 Cookie Editor 导出的 `cookies.json`。在界面中选择 `Cookie JSON 文件` 后，不需要再勾选“从本机 Chrome 读取 Cookie”。
 
@@ -187,10 +187,12 @@ ScienceDirect PDF 下载推荐使用 Cookie Editor 导出的 `cookies.json`。�
 ### ScienceDirect 新手 preflight
 
 ```powershell
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<论文列表>" --out results --beginner --preflight --auto-web-search
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<论文列表>" --out results --beginner --preflight
 ```
 
-### 合法 OA 下载
+preflight 只做本地识别、去重和复核提示，不联网补 DOI、不解析 ScienceDirect PII，也不下载 PDF。
+
+### OA 资源辅助获取
 
 建议先 dry-run 看识别结果：
 
@@ -198,7 +200,7 @@ ScienceDirect PDF 下载推荐使用 Cookie Editor 导出的 `cookies.json`。�
 .\.venv\Scripts\python.exe paper_skill.py --input "papers.txt" --out "D:\Literature\OA" --email "you@example.com" --dry-run
 ```
 
-确认无误后下载合法 OA PDF：
+确认无误后尝试下载可访问的公开开放获取 PDF：
 
 ```powershell
 .\.venv\Scripts\python.exe paper_skill.py --input "papers.txt" --out "D:\Literature\OA" --email "you@example.com"
@@ -273,7 +275,7 @@ results\doi_batch_20260616_120000\
 
 `00_给研究生查看\paper_index.csv/xlsx` 和 `library_index.csv` 用相对路径指向正文 PDF 与补充材料，不复制下载文件。补充材料状态 `not_found` 表示页面没有检测到可下载 supplement 链接，不代表正文 PDF 失败。
 
-合法 OA 流程会生成类似：
+OA 资源辅助获取流程会生成类似：
 
 ```text
 D:\Literature\OA\
@@ -299,7 +301,7 @@ D:\Literature\OA\
 | `needs_review` 很多 | 输入信息太少。给每篇论文补 DOI、完整题名、期刊、年份、卷期页后重跑。 |
 | 补充材料状态是 `not_found` | 页面没有检测到可下载 supplement 链接，不代表正文 PDF 失败。 |
 | `run_summary.txt` 中文乱码 | 用支持 UTF-8 的编辑器打开，或优先看 CSV/XLSX 报告。 |
-| 非 ScienceDirect DOI 下载不了 | 改用 `paper-download` 的合法 OA 流程，或手工通过图书馆/出版社处理。 |
+| 非 ScienceDirect DOI 下载不了 | 改用 `paper-download` 的 OA 资源辅助获取流程，或手工通过图书馆/出版社处理。 |
 
 ## Cookie 使用和安全
 
@@ -320,6 +322,21 @@ Remove-Item -Recurse -Force (Join-Path $env:TEMP "chrome_dbg_profile")
 Remove-Item -Force ".\results\_auth\sciencedirect_cookies.json"
 ```
 
+## 公开发布和打包注意事项
+
+如果你 fork 或二次发布本项目，请只发布 Git 仓库中被跟踪的源码，或使用 `make_windows_ui_package.bat` 生成的源码包。不要直接压缩自己的整个工作区，因为本地目录里可能包含机构 Cookie、PDF、运行报告、虚拟环境或浏览器缓存。
+
+发布前建议检查：
+
+```powershell
+git status --short
+git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist"
+```
+
+正常情况下，`cookie.json`、`cookies.json`、`results\`、`pdfs\`、下载的 PDF、CSV/XLSX 结果表、`.venv\` 和 `dist\` 都不应该被 Git 跟踪。
+
+本项目不提供任何数据库、学校或出版社访问权限。使用者必须遵守所在机构、出版社、数据库平台和当地法规的使用条款；即使技术上能够批量下载，也不代表所有机构政策都允许这样做。
+
 ## 开发和测试
 
 修改 Python 代码前，至少运行：
@@ -333,4 +350,6 @@ Remove-Item -Force ".\results\_auth\sciencedirect_cookies.json"
 
 ## 来源声明
 
-本工具是在开源项目 [GAO-pooh/paper-scraper](https://github.com/GAO-pooh/paper-scraper/tree/main) 的基础上修改完成。当前版本保留并增强 ScienceDirect 工作流，增加 Windows 图形界面、DOI 批量解析、Cookie JSON 支持、补充材料下载、合法 OA 工作流和 Codex Skills。
+本项目基于开源项目 [GAO-pooh/paper-scraper](https://github.com/GAO-pooh/paper-scraper/tree/main) 修改并扩展。原项目采用 MIT License，本仓库保留原项目版权声明和许可声明。当前版本保留并增强 ScienceDirect 工作流，增加 Windows 图形界面、DOI 批量解析、Cookie JSON 支持、补充材料下载、OA 资源辅助获取流程和 Codex Skills。
+
+授权和修改声明见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。本仓库后续修改、扩展与新增模块由 `wkguoo` 维护并声明修改部分版权：`Copyright (c) 2026 wkguoo (modifications)`。

@@ -5,7 +5,7 @@ description: Download ScienceDirect PDFs through the user's institutional access
 
 # ScienceDirect DOI Download
 
-Use the repository CLI instead of the Tkinter UI. Keep the legal OA `paper_skill.py` workflow separate; this skill is specifically for ScienceDirect institutional access on the user's local machine.
+Use the repository CLI instead of the Tkinter UI. Keep the OA resource assistance `paper_skill.py` workflow separate; this skill is specifically for ScienceDirect institutional access on the user's local machine.
 
 Default to a two-stage beginner-safe workflow for noisy pasted lists: preflight first, then download only confirmed DOI rows. Read `references/beginner-workflow.md` when the user is new, asks "how to use", gives an AI-recommended list, or provides title-only/short citation text. Read `references/failure-reasons.md` when explaining reports or failures.
 
@@ -24,8 +24,8 @@ For student-facing beginner instructions, refer to `docs/sciencedirect_skill_beg
    - `--text "<pasted DOI or literature text>"`
    - `--input "<file>"`
    - `--folder "<folder>"`
-4. Let the script resolve mixed text first: DOI rows are normalized directly; title-only rows are resolved through public metadata and low-confidence matches go to review instead of download.
-5. For noisy or beginner input, run `--beginner --preflight` first. Add `--auto-web-search` only when title-only or short citation rows need optional Semantic Scholar fallback.
+4. Let the script normalize mixed text first: DOI rows are recognized directly; title-only rows stay in review unless the user explicitly enables title-only resolution for a formal run.
+5. For noisy or beginner input, run `--beginner --preflight` first. Preflight is local intake review only; use `--resolve-title-only --auto-web-search` later only when the user explicitly wants title-only or short citation rows resolved by public metadata search.
 6. Inspect `doi_intake_preview.csv`. Treat `needs_review` rows as unresolved; do not invent DOI values.
 7. For direct download requests with clear DOI rows, run without `--beginner`/`--preflight`.
 8. Let the script manage Edge-first browser login. If institutional access is missing, it opens a debug browser window and polls until the user finishes login. Default browser order on Windows is Edge Stable, Edge Beta, Edge Dev/Canary, Chrome, then Playwright Chromium.
@@ -45,7 +45,7 @@ For pasted AI paper recommendations:
 
 ```powershell
 Set-Location "<resolved repository root>"
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<copied AI paper list with DOI or titles>" --out results --beginner --preflight --auto-web-search
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<copied AI paper list with DOI or titles>" --out results --beginner --preflight
 ```
 
 After reviewing `doi_intake_preview.csv`, run confirmed rows without preflight:

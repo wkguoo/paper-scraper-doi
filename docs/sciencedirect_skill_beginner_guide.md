@@ -19,7 +19,7 @@
 
 1. 不能替你输入学校账号和密码。
 2. 不能绕过学校或出版社权限。
-3. 不能自动破解 CAPTCHA 或人机验证。
+3. 不能自动完成 CAPTCHA 或人机验证。
 4. 不能使用 Sci-Hub、LibGen 等非合规来源。
 5. 不能保证题名-only 的模糊匹配 100% 正确；低置信度结果会进入复核表。
 
@@ -110,10 +110,10 @@ DOI: 10.1016/j.actamat.2016.08.081
 unclear recommendation without enough bibliographic information
 '@
 
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text $papers --out results --run-name beginner_preflight --beginner --preflight --auto-web-search
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text $papers --out results --run-name beginner_preflight --beginner --preflight
 ```
 
-这个命令会生成识别和复核报告，但不会下载 PDF。`--auto-web-search` 是可选项，适合题名-only 或短引用较多的列表；如果列表里已经都是 DOI，可以去掉。
+这个命令会生成本地识别和复核报告，但不会联网补 DOI，也不会下载 PDF。题名-only 或短引用较多的列表应先看 `needs_review`，确认需要公开元数据搜索时，再在正式解析阶段显式使用 `--resolve-title-only --auto-web-search`。
 
 如果你明确只想对已有 DOI 做 ScienceDirect 元数据/PII 解析、且不下载 PDF，可以使用 `--dry-run`。不要把它当作新手混乱输入的第一步。
 
@@ -306,7 +306,7 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 
 ## 8. 建议的课题组使用习惯
 
-1. 第一次拿到 AI 推荐列表，先跑 `--beginner --preflight`，题名-only 或短引用很多时可加 `--auto-web-search`。
+1. 第一次拿到 AI 推荐列表，先跑 `--beginner --preflight`；题名-only 或短引用很多时，先人工检查 `needs_review`，确认后再在正式解析阶段加 `--resolve-title-only --auto-web-search`。
 2. 先检查 `doi_intake_preview.csv`，确认识别结果。
 3. 对 `needs_review` 的论文，人工补 DOI。
 4. 正式下载时指定清楚输出目录，例如：

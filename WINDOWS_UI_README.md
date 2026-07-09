@@ -1,10 +1,11 @@
 # ScienceDirect Paper Scraper Windows UI
 
-这个界面使用 Python 标准库 `tkinter` 编写，不需要额外安装 GUI 框架。当前版本提供 ScienceDirect 机构权限下载和合法 OA 下载两个入口。
+这个界面使用 Python 标准库 `tkinter` 编写，不需要额外安装 GUI 框架。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。当前版本提供 ScienceDirect 机构权限下载和 OA 资源辅助获取两个入口；Codex Skill 是可选增强，不影响图形界面单独使用。
 
 ## 来源声明
 
-本工具是在开源项目 [GAO-pooh/paper-scraper](https://github.com/GAO-pooh/paper-scraper/tree/main) 的基础上修改完成。
+本项目基于开源项目 [GAO-pooh/paper-scraper](https://github.com/GAO-pooh/paper-scraper/tree/main) 修改并扩展。
+授权和修改声明见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
 
 ## 启动方式
 
@@ -26,7 +27,7 @@ cd "<仓库路径>"
 ## UI 中的两个入口
 
 - `DOI 批量下载` / `文献检索`：用于 ScienceDirect/Elsevier，依赖你的机构权限、Cookie JSON 或浏览器登录状态，PDF 下载仍使用原有 CDP/DevTools 流程。
-- `合法 OA 下载`：用于非 ScienceDirect 或混合来源论文列表，只查找公开、合法开放获取的 PDF，不读取 Cookie、不打开机构登录浏览器。
+- `OA 资源辅助获取`：用于非 ScienceDirect 或混合来源论文列表，仅尝试识别并下载公开开放获取的 PDF 候选资源，不读取 Cookie、不打开机构登录浏览器。
 
 ## 当前推荐操作流程：ScienceDirect DOI 批量下载 PDF
 
@@ -46,15 +47,15 @@ cd "<仓库路径>"
 
 “生成新手预检报告”和“运行前体检（本地）”都不会下载 PDF，也不会生成 `supplement_download_report.csv` 或 `supplements\`。预检完成后结果区会出现“打开研究生查看入口”和“使用预检合并表”。
 
-## 合法 OA 下载流程
+## OA 资源辅助获取流程
 
-1. 打开“合法 OA 下载”页。
+1. 打开“OA 资源辅助获取”页。
 2. 选择 `.txt/.md/.markdown/.csv` 文件，或直接粘贴 DOI、标题、推荐文献列表。
 3. 选择输出目录；邮箱可选，用于 Unpaywall/Crossref 礼貌访问。
 4. 如需先检查识别结果，勾选 `Dry-run：只解析，不下载 PDF`。
 5. 点击“开始运行”，日志页会显示 `manifest.csv`、`manifest.json` 和重复项报告位置。
 
-该模式不会使用 Cookie JSON，也不会使用 Sci-Hub、LibGen 或其它绕过权限的来源。
+该模式不会使用 Cookie JSON，也不会使用 Sci-Hub、LibGen 或其它绕过权限的来源；用户仍需自行确认使用方式符合出版商条款、机构访问政策和适用法规。
 
 ## 输入表要求
 
@@ -113,3 +114,5 @@ results\doi_batch_时间戳\
 ```text
 dist\paper-scraper-ui-windows
 ```
+
+不要直接压缩自己的整个项目工作区发布，因为工作区可能包含 `cookie.json`、`results\`、下载的 PDF、`.venv\`、`dist\` 或浏览器缓存。公开分享时优先使用 GitHub 源码包，或使用上面的打包脚本生成干净目录。

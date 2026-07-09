@@ -1,10 +1,10 @@
-# Legal OA Paper Skill Implementation Plan
+# OA Resource Assistance Paper Skill Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a legal, public-source paper identification and OA PDF workflow that accepts messy pasted text, deduplicates entries, resolves metadata, downloads only allowed open PDFs, and writes manifest files.
+**Goal:** Add a public-source paper identification and OA PDF candidate workflow that accepts messy pasted text, deduplicates entries, resolves metadata, downloads accessible open PDFs, and writes manifest files.
 
-**Architecture:** Keep the existing ScienceDirect DOI batch workflow intact. Add a separate `paper_automation` package plus a `paper_skill.py` CLI wrapper so the legal OA workflow does not reuse institutional cookies, anti-bot bypasses, or restricted publisher download code.
+**Architecture:** Keep the existing ScienceDirect DOI batch workflow intact. Add a separate `paper_automation` package plus a `paper_skill.py` CLI wrapper so the OA resource assistance workflow does not reuse institutional cookies, authorized browser session code, or restricted publisher download code.
 
 **Tech Stack:** Python standard library, existing `doi_batch_utils.clean_doi`, `doi_batch_utils.extract_doi_from_text`, `unittest`.
 
@@ -64,7 +64,7 @@
 - Modify: `README_zh.md`
 - Modify: `README.md`
 
-- [x] Add legal OA workflow examples without suggesting paywall bypass.
+- [x] Add OA resource assistance workflow examples without suggesting paywall bypass.
 - [x] Document that Unpaywall email is recommended and can be passed with `--email`.
 - [x] Document output files and failure reasons.
 - [x] Run `python -m py_compile paper_skill.py paper_automation/*.py paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py`.

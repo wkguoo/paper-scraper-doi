@@ -124,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir.mkdir(parents=True, exist_ok=True)
     auth_dir = output_root / "_auth"
     auth_dir.mkdir(parents=True, exist_ok=True)
+    preflight_only = args.preflight or args.beginner
 
     try:
         intake = build_intake(
@@ -133,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=run_dir,
             doi_column=args.doi_column,
             sheet_name=args.sheet,
-            resolve_metadata=True,
+            resolve_metadata=not preflight_only,
             resolve_title_only_files=args.resolve_title_only,
             email=args.email,
             min_confidence=args.min_confidence,
@@ -141,16 +142,14 @@ def main(argv: list[str] | None = None) -> int:
             max_search_candidates=args.max_search_candidates,
         )
     except Exception as exc:
-        print(f"[错误] DOI 输入整理失败: {exc}")
+        print(f"[错误] DOI 输入整理失败: {exc}", flush=True)
         return 2
 
-    print("[输入整理] 完成")
-    print(f"- 预览表: {intake.preview_path}")
-    print(f"- 合并输入表: {intake.merged_input_path}")
-    print(f"- 有效唯一 DOI: {intake.valid_count}")
-    print(f"- 状态统计: {dict(intake.status_counts)}")
-
-    preflight_only = args.preflight or args.beginner
+    print("[输入整理] 完成", flush=True)
+    print(f"- 预览表: {intake.preview_path}", flush=True)
+    print(f"- 合并输入表: {intake.merged_input_path}", flush=True)
+    print(f"- 有效唯一 DOI: {intake.valid_count}", flush=True)
+    print(f"- 状态统计: {dict(intake.status_counts)}", flush=True)
 
     if intake.valid_count == 0:
         failed_path = write_intake_failed_report(intake.all_rows, run_dir / "doi_batch_failed.csv")
@@ -185,12 +184,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary)
-        print("[结束] 没有可处理的有效 DOI。")
-        print(f"- DOI failure report: {failed_path}")
-        print(f"- PDF report: {pdf_report_path}")
-        print(f"- 研究生查看入口: {handoff_paths.student_dir}")
-        print(f"- Run summary: {summary_path}")
-        print(f"- Run summary JSON: {summary_json_path}")
+        print("[结束] 没有可处理的有效 DOI。", flush=True)
+        print(f"- DOI failure report: {failed_path}", flush=True)
+        print(f"- PDF report: {pdf_report_path}", flush=True)
+        print(f"- 研究生查看入口: {handoff_paths.student_dir}", flush=True)
+        print(f"- Run summary: {summary_path}", flush=True)
+        print(f"- Run summary JSON: {summary_json_path}", flush=True)
         return 1
 
     if preflight_only:
@@ -241,14 +240,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary)
-        print("[预检] 完成；未解析 ScienceDirect PII，未下载 PDF。")
-        print(f"- 输出目录: {run_dir}")
-        print(f"- 可进入后续解析的 DOI: {intake.valid_count}")
-        print(f"- 需复核/排除: {sum(intake_failure_reasons(intake.all_rows).values())}")
-        print(f"- PDF 明细: {pdf_report_path}")
-        print(f"- 研究生查看入口: {handoff_paths.student_dir}")
-        print(f"- 任务摘要: {summary_path}")
-        print(f"- JSON 摘要: {summary_json_path}")
+        print("[预检] 完成；未联网解析元数据、未解析 ScienceDirect PII，未下载 PDF。", flush=True)
+        print(f"- 输出目录: {run_dir}", flush=True)
+        print(f"- 可进入后续解析的 DOI: {intake.valid_count}", flush=True)
+        print(f"- 需复核/排除: {sum(intake_failure_reasons(intake.all_rows).values())}", flush=True)
+        print(f"- PDF 明细: {pdf_report_path}", flush=True)
+        print(f"- 研究生查看入口: {handoff_paths.student_dir}", flush=True)
+        print(f"- 任务摘要: {summary_path}", flush=True)
+        print(f"- JSON 摘要: {summary_json_path}", flush=True)
         return 0
 
     download_pdfs = not args.dry_run and not args.no_download_pdfs
@@ -266,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     if results:
         resolved_path = scraper.save_to_xlsx(results, "doi_batch_resolved.xlsx", str(run_dir))
     else:
-        print("[提示] 未解析到任何 ScienceDirect DOI。")
+        print("[提示] 未解析到任何 ScienceDirect DOI。", flush=True)
     failed_path = scraper.save_failed_doi_report(failures, "doi_batch_failed.csv", str(run_dir))
 
     pdf_success = pdf_failed = pdf_skipped = 0
@@ -307,7 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         cache_devtools_cookies(scraper, cookie_cache_path)
         cookie_message = cookie_status_message(cookie_cache_path)
     elif download_pdfs:
-        print("[提示] 没有可下载的解析结果，跳过 PDF 下载。")
+        print("[提示] 没有可下载的解析结果，跳过 PDF 下载。", flush=True)
     else:
         reason = "dry_run" if args.dry_run else "no_download_pdfs"
         pdf_records = [
@@ -374,21 +373,22 @@ def main(argv: list[str] | None = None) -> int:
     summary_path = write_run_summary(summary)
     summary_json_path = write_run_summary_json(summary)
 
-    print("[报告] 完成")
-    print(f"- 输出目录: {run_dir}")
-    print(f"- 解析成功: {len(results)}")
-    print(f"- PDF 成功/失败/跳过: {pdf_success}/{pdf_failed}/{pdf_skipped}")
+    print("[报告] 完成", flush=True)
+    print(f"- 输出目录: {run_dir}", flush=True)
+    print(f"- 解析成功: {len(results)}", flush=True)
+    print(f"- PDF 成功/失败/跳过: {pdf_success}/{pdf_failed}/{pdf_skipped}", flush=True)
     if download_supplements:
         print(
             f"- 补充材料 成功/失败/跳过/未发现: "
-            f"{supplement_success}/{supplement_failed}/{supplement_skipped}/{supplement_not_found}"
+            f"{supplement_success}/{supplement_failed}/{supplement_skipped}/{supplement_not_found}",
+            flush=True,
         )
-    print(f"- PDF 明细: {pdf_report_path}")
+    print(f"- PDF 明细: {pdf_report_path}", flush=True)
     if supplement_report_path:
-        print(f"- 补充材料明细: {supplement_report_path}")
-    print(f"- 研究生查看入口: {handoff_paths.student_dir}")
-    print(f"- 任务摘要: {summary_path}")
-    print(f"- JSON 摘要: {summary_json_path}")
+        print(f"- 补充材料明细: {supplement_report_path}", flush=True)
+    print(f"- 研究生查看入口: {handoff_paths.student_dir}", flush=True)
+    print(f"- 任务摘要: {summary_path}", flush=True)
+    print(f"- JSON 摘要: {summary_json_path}", flush=True)
     return 0
 
 
@@ -473,9 +473,10 @@ def build_intake(
             )
             entries.extend(new_entries)
 
+    print("[输入整理] 本地识别 DOI/题名，先写入预览表...", flush=True)
     all_rows, unique_rows, counts = classify_entries(
         entries,
-        resolve_metadata=resolve_metadata,
+        resolve_metadata=False,
         email=email,
         min_confidence=min_confidence,
         http_json=http_json,
@@ -486,12 +487,39 @@ def build_intake(
     merged_path = output_dir / "merged_doi_input.csv"
     write_intake_preview(all_rows, preview_path)
     write_merged_input(unique_rows, merged_path)
+    print(f"[输入整理] 本地预览已写出: {preview_path}", flush=True)
+    print(f"[输入整理] 本地合并表已写出: {merged_path}", flush=True)
+
+    if resolve_metadata and has_title_only_metadata_candidates(entries):
+        print("[输入整理] 检测到题名-only/短引用候选，开始联网元数据增强...", flush=True)
+        all_rows, unique_rows, counts = classify_entries(
+            entries,
+            resolve_metadata=True,
+            email=email,
+            min_confidence=min_confidence,
+            http_json=http_json,
+            search_provider=search_provider,
+            max_search_candidates=max_search_candidates,
+        )
+        write_intake_preview(all_rows, preview_path)
+        write_merged_input(unique_rows, merged_path)
+        print("[输入整理] 联网元数据增强完成，预览表已更新。", flush=True)
+    elif resolve_metadata:
+        print("[输入整理] 未发现需要题名匹配的候选，跳过联网元数据增强。", flush=True)
+
     return IntakeResult(
         all_rows=all_rows,
         unique_rows=unique_rows,
         preview_path=preview_path,
         merged_input_path=merged_path,
         status_counts=dict(counts),
+    )
+
+
+def has_title_only_metadata_candidates(entries: Iterable[SourceEntry]) -> bool:
+    return any(
+        entry.initial_status == "recognized" and not entry.doi and bool(entry.title)
+        for entry in entries
     )
 
 
@@ -914,6 +942,8 @@ def classify_entries(
     all_rows: list[IntakeRow] = []
     unique_rows: list[IntakeRow] = []
     resolved_doi_owner: dict[str, int] = {}
+    metadata_total = sum(1 for item in deduped.unique if not item.doi and item.title) if resolver else 0
+    metadata_index = 0
 
     for entry in entries:
         if entry.initial_status in {"empty", "invalid", "needs_review"}:
@@ -939,6 +969,13 @@ def classify_entries(
                 reason=f"{duplicate_label}: duplicate_of={duplicate.duplicate_of}; score={duplicate.score:.3f}",
             )
         elif entry.entry_id in unique_ids:
+            if resolver is not None and not entry.doi and entry.title:
+                metadata_index += 1
+                print(
+                    f"[元数据增强] [{metadata_index}/{metadata_total}] "
+                    f"按题名匹配 DOI: {entry.title[:80]}",
+                    flush=True,
+                )
             metadata = resolve_entry_metadata(entry, resolver, min_confidence)
             row = row_from_metadata(entry, metadata, min_confidence)
         else:
@@ -1054,12 +1091,13 @@ def row_from_entry(
         metadata_source = metadata.source
         match_basis = metadata.match_basis
         confidence = f"{metadata.confidence:.3f}"
-    review_hint = intake_review_hint(status, reason, doi)
+    normalized_doi = clean_doi(doi).lower() if doi else ""
+    review_hint = intake_review_hint(status, reason, normalized_doi)
     return IntakeRow(
         source=entry.source,
         row_number=entry.row_number,
         input_doi=entry.doi,
-        doi=doi,
+        doi=normalized_doi,
         input_title=entry.title,
         title=title,
         authors=authors,
@@ -1211,8 +1249,8 @@ def build_beginner_recommendations(
         recommendations.append(f"发现 {duplicate_count} 条重复输入；程序只保留首次识别记录。")
     if non_sciencedirect_count:
         recommendations.append(f"有 {non_sciencedirect_count} 条 DOI 疑似不是 ScienceDirect/Elsevier，必要时改用合法 OA 流程。")
-    if not auto_web_search and review_count:
-        recommendations.append("若题名或短引用较多，可重跑时加 --auto-web-search 尝试公开学术搜索补 DOI。")
+    if not auto_web_search and review_count and not preflight_only:
+        recommendations.append("若题名或短引用较多，可重跑正式解析时加 --resolve-title-only --auto-web-search 尝试公开学术搜索补 DOI。")
     if pdf_failed:
         recommendations.append("PDF 失败时先看 pdf_download_report.csv；常见原因是 cookie 过期、无机构权限、验证码或限速。")
     if failure_reasons:

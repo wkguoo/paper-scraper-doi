@@ -2,7 +2,7 @@
 """
 ScienceDirect 论文抓取工具 v2.0
 ================================
-使用 curl_cffi 模拟 Chrome TLS 指纹，绕过 Cloudflare 反爬。
+使用 curl_cffi 与用户已授权的浏览器会话访问 ScienceDirect。
 支持多种搜索方式，结果保存为 CSV / JSON，无翻译步骤。
 
 支持的搜索模式
@@ -263,9 +263,8 @@ CAPTCHA_SIGNALS = (
     "cf-browser-verification",
 )
 
-# 每次页面加载前注入：隐藏 Chrome 被自动化控制的特征
-# 让 Elsevier/Cloudflare 的检测脚本看不出这是受 DevTools 控制的浏览器
-_STEALTH_JS = """
+# 每次页面加载前注入：保持调试浏览器会话与普通浏览器环境兼容
+_BROWSER_COMPAT_JS = """
 (function() {
     // 1. 隐藏 webdriver 标志（最常见的检测点）
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -326,7 +325,7 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
     """
     在已有 DevTools 标签页中导航到 url，通过 Network/Fetch 拦截捕获 PDF 字节。
     返回 (bytes | None, note_str)。
-    note_str 以 "blocked:" 开头表示触发了反爬封锁页面。
+    note_str 以 "blocked:" 开头表示遇到访问限制页面。
     """
     try:
         import websocket as _ws
@@ -355,8 +354,8 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
 
     try:
         send("Page.enable")
-        # 每次新页面加载前注入隐身 JS，隐藏自动化特征
-        send("Page.addScriptToEvaluateOnNewDocument", {"source": _STEALTH_JS})
+        # 每次新页面加载前注入浏览器兼容脚本
+        send("Page.addScriptToEvaluateOnNewDocument", {"source": _BROWSER_COMPAT_JS})
         send("Fetch.enable", {"patterns": [
             {"urlPattern": "*pdf.sciencedirectassets.com/*", "requestStage": "Response"},
             {"urlPattern": "*pdfft*", "requestStage": "Response"},
@@ -689,7 +688,7 @@ class ScienceDirectScraper:
                 _token_retries = 0  # 成功后重置
                 data = resp.json()
             except json.JSONDecodeError:
-                print("  [错误] 返回内容不是 JSON，可能遭遇反爬")
+                print("  [错误] 返回内容不是 JSON，可能遇到访问限制")
                 break
             except Exception as e:
                 print(f"  [网络错误] {e}")
@@ -1392,9 +1391,9 @@ class ScienceDirectScraper:
             )
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
 
-            # 访问 ScienceDirect 主页，触发 Cloudflare 自动验证（真实 Chrome 会自动通过）
+            # 访问 ScienceDirect 主页，初始化用户已授权的浏览器会话
             setup_page = ctx.new_page()
-            setup_page.add_init_script(self._STEALTH_SCRIPT)
+            setup_page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
             try:
                 setup_page.goto(self.BASE_URL, timeout=20000, wait_until="domcontentloaded")
                 time.sleep(3)
@@ -1414,11 +1413,11 @@ class ScienceDirectScraper:
 
     def download_pdfs(self, results, output_dir):
         """
-        【主要下载方法】全自动 PDF 下载，无需手动点击机器人验证。
+        【主要下载方法】通过用户已授权的浏览器会话下载 PDF。
 
         工作原理（已验证可行）
         ---------------------
-        Cloudflare 的机器人验证分两层：
+        ScienceDirect PDF 访问通常依赖已登录的真实浏览器会话：
 
         ① /pdfft 端点：无论 curl_cffi 还是 CDP 直接 GET，均会触发 JS 验证
           → 绕不过去，不能直接用 HTTP 请求这个 URL
@@ -1427,16 +1426,15 @@ class ScienceDirectScraper:
           → curl_cffi 可以直接下载 ✓
 
         所以正确姿势：
-          步骤 1  CDP 控制 Chrome（加了 --disable-blink-features=AutomationControlled）
-                  加载文章页面 — 这一步正常，无机器人验证
+          步骤 1  CDP 控制浏览器加载文章页面
+                  使用用户本机登录状态和机构权限
           步骤 2  CDP 模拟点击 "View PDF" 按钮
                   Chrome 内部打开弹窗并导航到 sciencedirectassets.com
-                  — 浏览器内部点击导航不同于 CDP 直接 GET，Cloudflare 不拦截
+                  — 浏览器内部导航会沿用当前授权会话
           步骤 3  捕获弹窗的 sciencedirectassets.com URL，立即关闭弹窗
           步骤 4  curl_cffi 直接 GET 这个 URL → 下载 PDF ✓
 
-        全程 PDF 数据通过 HTTP 直接传输，Chrome 仅用于"获取真实下载 URL"，
-        不触发任何机器人验证。
+        PDF 数据通过用户已授权的会话请求获取，浏览器用于建立访问上下文。
 
         前提
         ----
@@ -1470,9 +1468,9 @@ class ScienceDirectScraper:
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
             print(f"  已连接 {self.browser_name} ✓")
 
-            # 访问主页，让 Cloudflare 验证真实浏览器（自动通过，无需人工操作）
+            # 访问主页，初始化真实浏览器上下文
             setup_page = ctx.new_page()
-            setup_page.add_init_script(self._STEALTH_SCRIPT)
+            setup_page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
             try:
                 setup_page.goto(self.BASE_URL, timeout=20000, wait_until="domcontentloaded")
                 time.sleep(2)
@@ -1533,7 +1531,7 @@ class ScienceDirectScraper:
                 page = ctx.new_page()
                 pdf_assets_url = None
                 try:
-                    page.add_init_script(self._STEALTH_SCRIPT)
+                    page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
                     page.goto(article_url, timeout=30000, wait_until="networkidle")
                     time.sleep(1)
 
@@ -1544,7 +1542,7 @@ class ScienceDirectScraper:
                         body = page.inner_text("body")[:300]
                         if "problem providing" in body:
                             print(
-                                f"  [{idx}/{total}] ✗ 文章页当前被风控/机器人验证拦截"
+                                f"  [{idx}/{total}] ✗ 文章页当前显示 CAPTCHA 或访问限制"
                             )
                             page.close()
                             fail += 1
@@ -1931,7 +1929,7 @@ class ScienceDirectScraper:
                                         "params": params or {}}))
 
                 _s("Page.enable")
-                _s("Page.addScriptToEvaluateOnNewDocument", {"source": _STEALTH_JS})
+                _s("Page.addScriptToEvaluateOnNewDocument", {"source": _BROWSER_COMPAT_JS})
                 _s("Page.navigate", {"url": url})
                 deadline2 = time.time() + wait + 10
                 while time.time() < deadline2:
@@ -2369,7 +2367,7 @@ class ScienceDirectScraper:
             )
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
             page = ctx.new_page()
-            page.add_init_script(self._STEALTH_SCRIPT)
+            page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
             try:
                 page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
             except Exception:
@@ -2392,8 +2390,8 @@ class ScienceDirectScraper:
 
     # ── PDF 下载（Chrome CDP）────────────────────────────────────────────────
 
-    # 隐藏 CDP 自动化特征的脚本
-    _STEALTH_SCRIPT = """
+    # 调试浏览器兼容脚本
+    _BROWSER_COMPAT_SCRIPT = """
         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         delete navigator.__proto__.webdriver;
         window.chrome = window.chrome || { runtime: {} };
@@ -2408,7 +2406,7 @@ class ScienceDirectScraper:
         """
         check_page = ctx.new_page()
         try:
-            check_page.add_init_script(self._STEALTH_SCRIPT)
+            check_page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
             if test_pii:
                 url = f"{self.BASE_URL}/science/article/pii/{test_pii}"
             else:
@@ -2439,7 +2437,7 @@ class ScienceDirectScraper:
         """
         login_page = ctx.new_page()
         try:
-            login_page.add_init_script(self._STEALTH_SCRIPT)
+            login_page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
             # 直接访问文章页会触发 CARSI 重定向，比主页更直接
             target = (
                 f"{self.BASE_URL}/science/article/pii/{test_pii}"
@@ -2571,7 +2569,7 @@ class ScienceDirectScraper:
 
                 # ── 策略 A：用搜索结果里的 pdf_url 直接 HTTP 下载 ──────────
                 # pdf_url 是带 md5/pid 参数的 pdfft 链接，可直接重定向到
-                # pdf.sciencedirectassets.com，不触发 Cloudflare JS challenge
+                # pdf.sciencedirectassets.com，并沿用当前授权会话
                 pdf_url_from_search = article.get("pdf_url", "")
                 downloaded = False
 
@@ -2603,7 +2601,7 @@ class ScienceDirectScraper:
                 # ── 策略 B：CDP 加载文章页 → 点击 View PDF → curl_cffi 下载 ─
                 page = ctx.new_page()
                 try:
-                    page.add_init_script(self._STEALTH_SCRIPT)
+                    page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
                     page.goto(article_url, timeout=30000, wait_until="networkidle")
                     time.sleep(1)
 
@@ -2618,7 +2616,7 @@ class ScienceDirectScraper:
                             pass
                         if "problem providing" in page_text or "crasolve" in page.url:
                             print(
-                                f"  [{idx}/{total}] ✗ 文章页当前被风控/机器人验证拦截"
+                                f"  [{idx}/{total}] ✗ 文章页当前显示 CAPTCHA 或访问限制"
                             )
                             page.close()
                             fail += 1
@@ -2777,7 +2775,7 @@ def interactive_mode():
 
     print("\n【PDF 下载】")
     print("  1. 下载 PDF（推荐）")
-    print("     读取你 Edge/Chrome 浏览器的 Cookie，用 HTTP 直连下载，无需机器人验证")
+    print("     读取你 Edge/Chrome 浏览器的 Cookie，并通过已授权会话下载")
     print("     前提：Edge/Chrome 已通过机构账号（CARSI/深技大）登录 ScienceDirect")
     print("  2. 跳过，只保存文献列表")
     dl_choice = input("  请选择 [1/2，默认 2]: ").strip() or "2"

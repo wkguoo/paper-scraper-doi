@@ -12,6 +12,13 @@ from pathlib import Path
 BROWSER_EXE_ENV = "PAPER_SCRAPER_BROWSER_EXE"
 
 
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _windows_edge_profile_candidates(base: str | None) -> list[Path]:
     if not base:
         return []
@@ -94,7 +101,7 @@ def browser_bin(browser_exe: str | None = None) -> str:
 
     candidates = browser_candidate_paths()
     for candidate in candidates:
-        if Path(candidate).exists():
+        if _path_exists(Path(candidate)):
             return candidate
 
     return candidates[0] if candidates else "google-chrome"
@@ -126,7 +133,7 @@ def browser_default_profile(browser_exe: str | None = None) -> str:
                 ordered = edge_profiles + _windows_chrome_profile_candidates(base)
             candidates = tuple(ordered)
             for candidate in candidates:
-                if candidate.exists():
+                if _path_exists(candidate):
                     return str(candidate)
             return str(candidates[0])
     if sys.platform == "darwin":

@@ -1,6 +1,6 @@
 ---
 name: paper-download
-description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or legal open-access PDF downloads. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Edge/Chrome login and cookies for ScienceDirect, or find legal OA PDFs without institutional cookies, Sci-Hub, LibGen, or paywall bypasses.
+description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or open-access resource discovery and download assistance. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Edge/Chrome login and cookies for ScienceDirect, or find open-access PDF candidates without institutional cookies, Sci-Hub, LibGen, or paywall bypasses.
 ---
 
 # Paper Download
@@ -23,14 +23,14 @@ Use `.venv\Scripts\python.exe` when it exists; otherwise create the venv and ins
 
 Use `sd_institutional_skill.py` for ScienceDirect institutional access when the user mentions ScienceDirect, Elsevier, institution/school access, cookies, Edge/Chrome login, DOI batch download, or when the input is clearly dominated by Elsevier DOI values such as `10.1016/...`.
 
-Use `paper_skill.py` for legal open-access downloads when the user asks for OA/open-access PDFs, public-source PDFs, no login, no cookies, or mixed publisher lists where institutional access is not requested.
+Use `paper_skill.py` for open-access resource discovery and download assistance when the user asks for OA/open-access PDFs, public-source PDFs, no login, no cookies, or mixed publisher lists where institutional access is not requested.
 
 When intent is unclear, infer from wording and input. Ask only if the choice changes safety or expected access path.
 
 For noisy AI recommendations, title-only lists, short citations, or beginner users, route ScienceDirect requests through preflight first:
 
 ```powershell
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --beginner --preflight --auto-web-search
+.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --beginner --preflight
 ```
 
 Download only after reporting `doi_intake_preview.csv`, `merged_doi_input.csv`, `00_给研究生查看\paper_index.csv`, and excluding `needs_review` rows.
@@ -69,9 +69,9 @@ Every ScienceDirect institutional run writes a student handoff folder:
 
 Explain that this folder indexes PDFs and supplements by relative path and does not copy downloaded files. Use `失败项_下一步处理.csv` before retrying failed DOI values.
 
-## Legal OA Workflow
+## OA Resource Assistance Workflow
 
-Run `paper_skill.py` for public metadata and legal OA PDF candidates only:
+Run `paper_skill.py` for public metadata and open-access PDF candidates only:
 
 ```powershell
 Set-Location "<resolved repository root>"
@@ -84,13 +84,13 @@ For noisy copied recommendations, prefer dry-run first:
 .\.venv\Scripts\python.exe paper_skill.py --text "<copied paper list>" --out "D:\Literature\OA" --email "you@example.com" --dry-run
 ```
 
-Report `metadata\manifest.csv`, `metadata\manifest.json`, `failed\duplicates.csv`, downloaded PDFs, duplicates, and failed/no-legal-PDF rows.
+Report `metadata\manifest.csv`, `metadata\manifest.json`, `failed\duplicates.csv`, downloaded PDFs, duplicates, and unresolved rows without accessible open-access PDFs.
 
 ## Safety
 
 - Do not print, paste, summarize, or expose cookie values.
 - Do not ask for passwords; browser login is the only login surface.
 - Do not use Sci-Hub, LibGen, shadow libraries, or paywall-bypass sources.
-- Do not use institutional cookies or browser sessions in the legal OA workflow.
+- Do not use institutional cookies or browser sessions in the OA resource assistance workflow.
 - Treat `needs_review`, `no_legal_open_pdf`, `response_not_pdf`, 403, CAPTCHA, and no-entitlement rows as real unresolved outcomes.
 - If downloads fail, inspect reports before retrying; do not repeatedly hammer ScienceDirect.

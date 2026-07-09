@@ -2,7 +2,7 @@
 """
 ScienceDirect Paper Scraper v2.0
 =================================
-Uses curl_cffi to mimic Chrome TLS fingerprint and bypass Cloudflare bot detection.
+Uses curl_cffi with the user's authorized browser session for ScienceDirect access.
 Supports multiple search modes; results saved as CSV / JSON / XLSX.
 
 Supported Search Modes
@@ -167,8 +167,8 @@ CAPTCHA_SIGNALS = (
     "cf-browser-verification",
 )
 
-# Injected before each page load to hide Chrome automation fingerprints
-_STEALTH_JS = """
+# Injected before each page load to keep the debug browser session compatible
+_BROWSER_COMPAT_JS = """
 (function() {
     // 1. Hide webdriver flag (most common detection point)
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -256,7 +256,7 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
 
     try:
         send("Page.enable")
-        send("Page.addScriptToEvaluateOnNewDocument", {"source": _STEALTH_JS})
+        send("Page.addScriptToEvaluateOnNewDocument", {"source": _BROWSER_COMPAT_JS})
         send("Fetch.enable", {"patterns": [
             {"urlPattern": "*pdf.sciencedirectassets.com/*", "requestStage": "Response"},
             {"urlPattern": "*pdfft*", "requestStage": "Response"},
@@ -1003,7 +1003,7 @@ class ScienceDirectScraper:
                                         "params": params or {}}))
 
                 _s("Page.enable")
-                _s("Page.addScriptToEvaluateOnNewDocument", {"source": _STEALTH_JS})
+                _s("Page.addScriptToEvaluateOnNewDocument", {"source": _BROWSER_COMPAT_JS})
                 _s("Page.navigate", {"url": url})
                 deadline2 = time.time() + wait + 10
                 while time.time() < deadline2:
@@ -1362,7 +1362,7 @@ class ScienceDirectScraper:
             )
             ctx = browser.contexts[0] if browser.contexts else browser.new_context()
             page = ctx.new_page()
-            page.add_init_script(self._STEALTH_SCRIPT)
+            page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
             try:
                 page.goto(target_url, timeout=30000, wait_until="domcontentloaded")
             except Exception:
@@ -1385,7 +1385,7 @@ class ScienceDirectScraper:
 
     # ── Playwright-based PDF download (alternative method) ───────────────────
 
-    _STEALTH_SCRIPT = """
+    _BROWSER_COMPAT_SCRIPT = """
         Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
         delete navigator.__proto__.webdriver;
         window.chrome = window.chrome || { runtime: {} };
@@ -1400,7 +1400,7 @@ class ScienceDirectScraper:
         """
         check_page = ctx.new_page()
         try:
-            check_page.add_init_script(self._STEALTH_SCRIPT)
+            check_page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
             if test_pii:
                 url = f"{self.BASE_URL}/science/article/pii/{test_pii}"
             else:
@@ -1425,7 +1425,7 @@ class ScienceDirectScraper:
         """Prompt the user to complete institutional login in the Chrome window."""
         login_page = ctx.new_page()
         try:
-            login_page.add_init_script(self._STEALTH_SCRIPT)
+            login_page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
             target = (
                 f"{self.BASE_URL}/science/article/pii/{test_pii}"
                 if test_pii else self.BASE_URL
@@ -1578,7 +1578,7 @@ class ScienceDirectScraper:
                 # Strategy B: CDP navigate + click View PDF → curl_cffi download
                 page = ctx.new_page()
                 try:
-                    page.add_init_script(self._STEALTH_SCRIPT)
+                    page.add_init_script(self._BROWSER_COMPAT_SCRIPT)
                     page.goto(article_url, timeout=30000, wait_until="networkidle")
                     time.sleep(1)
 

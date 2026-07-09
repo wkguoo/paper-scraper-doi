@@ -77,7 +77,6 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
     def test_beginner_preflight_writes_review_hints_without_sciencedirect_resolution(self) -> None:
         from sd_institutional_skill import main
         from sd_scraper import ScienceDirectScraper
-        from paper_automation.models import MetadataResult
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -87,18 +86,8 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
                 side_effect=AssertionError("preflight must not resolve ScienceDirect DOI"),
             ), patch(
                 "sd_institutional_skill.MetadataResolver.resolve_one",
-                return_value=MetadataResult(
-                    source_index=1,
-                    query_title="",
-                    doi="10.1016/j.actamat.2024.119999",
-                    title="Resolved DOI paper",
-                    journal="Acta Materialia",
-                    year="2024",
-                    confidence=1.0,
-                    source="crossref",
-                    match_basis="input_doi",
-                ),
-            ):
+                side_effect=AssertionError("preflight must not resolve Crossref/OpenAlex metadata"),
+            ) as resolve_one:
                 exit_code = main([
                     "--text",
                     "DOI: 10.1016/j.actamat.2024.119999\n"
@@ -110,6 +99,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
                     "--beginner",
                     "--preflight",
                 ])
+                self.assertEqual(resolve_one.call_count, 0)
 
             run_dir = root / "beginner_preflight"
             preview_text = (run_dir / "doi_intake_preview.csv").read_text(encoding="utf-8-sig")
@@ -128,6 +118,51 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertTrue(paper_index_exists)
         self.assertTrue(failure_next_steps_exists)
         self.assertEqual(summary_json["paper_index_xlsx_path"], str(student_dir / "paper_index.xlsx"))
+
+    def test_build_intake_writes_preview_before_metadata_resolution(self) -> None:
+        from sd_institutional_skill import build_intake
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+
+            def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+                preview_path = output_dir / "doi_intake_preview.csv"
+                merged_path = output_dir / "merged_doi_input.csv"
+                self.assertTrue(preview_path.exists())
+                self.assertTrue(merged_path.exists())
+                preview_text = preview_path.read_text(encoding="utf-8-sig")
+                self.assertIn("Microstructure evolution in titanium alloys", preview_text)
+                if "api.crossref.org/works?" in url:
+                    return {
+                        "message": {
+                            "items": [
+                                {
+                                    "DOI": "10.1016/j.actamat.2024.119998",
+                                    "title": ["Microstructure evolution in titanium alloys"],
+                                    "container-title": ["Acta Materialia"],
+                                    "published-print": {"date-parts": [[2024]]},
+                                    "publisher": "Elsevier",
+                                    "URL": "https://doi.org/10.1016/j.actamat.2024.119998",
+                                }
+                            ]
+                        }
+                    }
+                return {}
+
+            result = build_intake(
+                texts=["Microstructure evolution in titanium alloys. Acta Materialia, 2024"],
+                input_paths=[],
+                folder_paths=[],
+                output_dir=output_dir,
+                resolve_metadata=True,
+                http_json=fake_json,
+            )
+
+            merged_text = result.merged_input_path.read_text(encoding="utf-8-sig")
+
+        self.assertEqual(result.valid_count, 1)
+        self.assertIn("10.1016/j.actamat.2024.119998", merged_text)
 
     def test_main_downloads_supplements_by_default_and_can_disable_them(self) -> None:
         from doi_batch_utils import DownloadRunResult, PdfDownloadRecord, SupplementDownloadRecord

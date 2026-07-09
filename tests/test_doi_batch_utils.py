@@ -868,7 +868,7 @@ class UiBehaviorTests(unittest.TestCase):
         self.assertEqual(cmd[2], str(SD_SKILL_SCRIPT))
         self.assertIn("--beginner", cmd)
         self.assertIn("--preflight", cmd)
-        self.assertIn("--auto-web-search", cmd)
+        self.assertNotIn("--auto-web-search", cmd)
         self.assertIn("--input", cmd)
         self.assertNotIn("--download-pdfs", cmd)
         self.assertNotIn("--cookies", cmd)
@@ -1096,7 +1096,7 @@ class UiBehaviorTests(unittest.TestCase):
         self.assertIn("--dry-run", cmd)
         self.assertNotIn("--cookies", cmd)
         self.assertNotIn("--browser-cookies", cmd)
-        self.assertIn("合法 OA 下载", summary)
+        self.assertIn("OA 资源辅助获取", summary)
 
     def test_ui_reads_structured_events_summary_and_resume_command(self) -> None:
         try:
