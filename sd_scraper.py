@@ -321,7 +321,7 @@ _BROWSER_COMPAT_JS = """
 """
 
 
-def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
+def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35, fetch_patterns=None):
     """
     在已有 DevTools 标签页中导航到 url，通过 Network/Fetch 拦截捕获 PDF 字节。
     返回 (bytes | None, note_str)。
@@ -356,7 +356,7 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
         send("Page.enable")
         # 每次新页面加载前注入浏览器兼容脚本
         send("Page.addScriptToEvaluateOnNewDocument", {"source": _BROWSER_COMPAT_JS})
-        send("Fetch.enable", {"patterns": [
+        send("Fetch.enable", {"patterns": fetch_patterns or [
             {"urlPattern": "*pdf.sciencedirectassets.com/*", "requestStage": "Response"},
             {"urlPattern": "*pdfft*", "requestStage": "Response"},
         ]})
