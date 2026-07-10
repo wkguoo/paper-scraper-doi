@@ -703,3 +703,21 @@
 - 生成的输出文件：实际批次生成 `working/normalized_input.csv`、`working/batch_state.json`、`working/manual_retry.csv`、`working/zotero_fallback.csv`、`pdfs/*.pdf` 与最小 `reports/batch_status.csv`/`batch_status.json`；测试临时文件仅位于忽略的 `.codex-test-tmp`。
 - 如何检查是否成功：聚焦测试覆盖 OA 优先路由、多 DOI 展开、重复项排除、绝对 PDF 安全复制、配置恢复、原子领取、未知任务拒绝和原文件不变；全套测试、编译和差异检查结果见 Task 4 report。
 - 注意事项或潜在风险：PDF 有效性沿用 Task 2 的最小大小与 `%PDF-` 文件头检查，不做完整 PDF 结构解析；未在离线测试中访问真实机构权限、浏览器登录或 Cookie 内容；Task 4 仅生成最小状态报告，未提前实现 Task 5 Zotero 对账。
+
+## 2026-07-10 23:17:41 +08:00
+
+- 本次任务目标：继续 Task 4 复审修复，补齐多格式表格多 DOI 展开、严格 metadata 状态路由、规范成功状态、锁内预检后原子领取、配置安全校验，以及网关阶段的行级隔离和断点持久化。
+- 新增、修改或删除的文件：修改 `paper_automation/batch_workflow.py`、`tests/test_batch_workflow.py`、`CHANGELOG.md`；追加 Git 忽略的 `.superpowers/sdd/task-4-report.md`。未修改 `batch_stages.py`，未实现 Task 5，也未修改、覆盖或移动任何原始文献输入与既有 PDF。
+- 具体修改内容：
+  - `normalize_input()` 使用 `paper_automation.parser.extract_dois()` 从 intake 的 `raw_value`、`input_doi` 和 `doi` 重新提取完整 DOI 集；CSV/XLSX/XLSM/TXT/MD 单记录多 DOI 全部展开、全局规范去重后再生成固定 `paper-0001...`。
+  - 只有 `intake.status=valid` 且有 DOI 的行进入 `pending`；其他行保留为 `metadata_uncertain` 并保留原因。默认网关只处理 `pending`，不再把低置信或空 DOI 行送入 OA/机构阶段。
+  - 成功 PDF 统一写为 `oa_downloaded` 或 `institutional_downloaded`，并与 Task 5 约定的成功状态集合兼容；未知来源的 generic `downloaded` 转为 `invalid_download_source`。
+  - 无效、缺失、symlink 或非 PDF 成功文件转为行级 `not_pdf_response`，不会中断其他任务。空/漏网关更新转为 `missing_stage_update`；start/resume 网关异常转为 `gateway_exception_<Type>` 并继续生成 pending 与报告。
+  - `DefaultStageGateway` 新增可选 `on_updates` 回调，OA、ScienceDirect、非 Elsevier 各阶段结果到达即逐行保存；使用 `inspect.signature()` 保持既有三参数 FakeGateway 兼容，回调与最终返回重复时不回退终态。
+  - `claim_manual_retry()` 新增向后兼容的 `validate_before_claim`；resume 在同一状态锁内完成 state/options/manual CSV 字段、task_id 子集和实际人工状态校验，通过后才写 `manual_retry_used=True`，网络阶段不持锁。
+  - Cookie 配置只允许空值或 `.json` 路径形式，拒绝 Header、键值、分号、JSON 文本、CR/LF 与 URL；等待时间、端口和节流值执行严格类型、范围与有限性检查。JSON 状态写入启用 `allow_nan=False`。
+- 修改原因：复审确认旧实现会截断表格多 DOI、误下载不确定元数据、把 generic `downloaded` 当终态、在预检失败前消耗唯一重试，并让单行 PDF/网关故障中断整批。
+- 如何运行：在隔离工作树将 `TEMP`/`TMP` 指向 `.codex-test-tmp`，运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchRunTests -v`、`..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`、`..\\..\\.venv\\Scripts\\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation` 和 `git diff --check`。
+- 生成的输出文件：测试只在忽略的 `.codex-test-tmp` 生成临时输入、批次状态、pending CSV、报告和 PDF 副本；正式运行仍生成 `working/normalized_input.csv`、`batch_state.json`、`manual_retry.csv`、`zotero_fallback.csv`、`reports/batch_status.*` 与 `pdfs/*.pdf`。
+- 如何检查是否成功：聚焦测试覆盖真实 CSV/XLSX/XLSM/TXT/MD 多 DOI及原文件字节不变、低置信路由、成功状态、invalid PDF、空/漏更新、异常与 OA 断点、preclaim 失败不消耗、并发单领取、Cookie/数值安全和状态拒绝 NaN；最终测试计数见 Task 4 report。
+- 注意事项或潜在风险：PDF 有效性仍沿用 Task 2 的最小大小与 `%PDF-` 文件头校验，不是完整 PDF 结构解析；真实机构登录、Cookie 文件读取、网络下载和 Zotero 对账均未在本轮离线测试中执行；Cookie 路径要求 `.json` 后缀但不要求文件当前已存在。

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import errno
 import csv
+import errno
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -12,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 if os.name == "nt":
     import msvcrt
@@ -69,6 +70,15 @@ NORMALIZED_FIELDS = [
     "file",
     "reason",
 ]
+
+SUCCESS_STATUSES = {
+    "oa_downloaded",
+    "institutional_downloaded",
+    "zotero_existing_pdf",
+    "zotero_downloaded",
+}
+_STAGE_SUCCESS_STATUSES = {"downloaded", "oa_downloaded", "institutional_downloaded"}
+_INSTITUTIONAL_SOURCES = {"sciencedirect", "non_elsevier", "institutional"}
 
 
 @dataclass(frozen=True)
@@ -170,7 +180,7 @@ def _replace_state_file(temporary: Path, destination: Path) -> None:
 
 
 def _write_batch_state_file(path: Path, payload: dict) -> Path:
-    serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=f"{path.name}.",
@@ -294,6 +304,7 @@ def claim_manual_retry(
     run_dir: str | Path,
     *,
     timeout: float = 10.0,
+    validate_before_claim: Callable[[dict], None] | None = None,
 ) -> tuple[bool, dict]:
     """Atomically claim a run's one allowed manual retry and return its state."""
 
@@ -301,6 +312,8 @@ def claim_manual_retry(
         state = load_batch_state(run_dir)
         if state.get("manual_retry_used"):
             return False, state
+        if validate_before_claim is not None:
+            validate_before_claim(state)
         state["manual_retry_used"] = True
         _write_batch_state_file(_state_path(run_dir), state)
         return True, state
@@ -529,6 +542,7 @@ def normalize_input(
 
     if (input_text is None) == (input_path is None):
         raise ValueError("exactly_one_input_required")
+    from paper_automation.parser import extract_dois
     from sd_institutional_skill import build_intake
 
     path_values = [] if input_path is None else [Path(input_path).expanduser().resolve()]
@@ -548,38 +562,46 @@ def normalize_input(
     seen_titles: set[str] = set()
     for intake_row in intake.all_rows:
         raw = asdict(intake_row)
-        doi = _normalise_doi(raw.get("doi", ""))
         title = str(raw.get("title", "") or "").strip()
-        status = str(raw.get("status", "") or "")
-        if status == "duplicate":
+        intake_status = str(raw.get("status", "") or "").strip().lower()
+        if intake_status == "duplicate":
             continue
-        if doi:
-            if doi in seen_dois:
-                continue
-            seen_dois.add(doi)
-        elif title:
-            title_key = " ".join(title.lower().split())
-            if title_key in seen_titles:
-                continue
-            seen_titles.add(title_key)
-        else:
-            continue
+        extracted_dois: list[str] = []
+        for field in ("raw_value", "input_doi", "doi"):
+            for doi in extract_dois(raw.get(field, "")):
+                normalized_doi = _normalise_doi(doi)
+                if normalized_doi and normalized_doi not in extracted_dois:
+                    extracted_dois.append(normalized_doi)
 
-        row = _empty_normalized_row()
-        row.update({
-            "source_index": str(raw.get("row_number", "") or ""),
-            "input_doi": str(raw.get("input_doi", "") or ""),
-            "input_title": str(raw.get("input_title", "") or ""),
-            "doi": doi,
-            "title": title,
-            "authors": str(raw.get("authors", "") or ""),
-            "journal": str(raw.get("journal", "") or ""),
-            "year": str(raw.get("year", "") or ""),
-            "status": "pending" if doi else "metadata_uncertain",
-            "source": str(raw.get("source", "") or "input"),
-            "reason": "" if doi else str(raw.get("reason", "") or "metadata_uncertain"),
-        })
-        rows.append(row)
+        if not extracted_dois:
+            title_key = " ".join(title.lower().split())
+            if title_key and title_key in seen_titles:
+                continue
+            if title_key:
+                seen_titles.add(title_key)
+            extracted_dois = [""]
+
+        for doi in extracted_dois:
+            if doi:
+                if doi in seen_dois:
+                    continue
+                seen_dois.add(doi)
+            is_pending = intake_status == "valid" and bool(doi)
+            row = _empty_normalized_row()
+            row.update({
+                "source_index": str(raw.get("row_number", "") or ""),
+                "input_doi": str(raw.get("input_doi", "") or ""),
+                "input_title": str(raw.get("input_title", "") or ""),
+                "doi": doi,
+                "title": title,
+                "authors": str(raw.get("authors", "") or ""),
+                "journal": str(raw.get("journal", "") or ""),
+                "year": str(raw.get("year", "") or ""),
+                "status": "pending" if is_pending else "metadata_uncertain",
+                "source": str(raw.get("source", "") or "input"),
+                "reason": "" if is_pending else str(raw.get("reason", "") or "metadata_uncertain"),
+            })
+            rows.append(row)
 
     if not rows:
         raise ValueError("empty_input")
@@ -591,7 +613,7 @@ def normalize_input(
 
 def _is_successful_status(status: object) -> bool:
     value = str(status or "").strip().lower()
-    return value == "downloaded" or value.endswith("_downloaded")
+    return value in SUCCESS_STATUSES
 
 
 def _is_terminal_status(status: object) -> bool:
@@ -626,15 +648,48 @@ def _validate_stage_updates(rows: list[dict], updates: object) -> list[dict]:
 
 
 def _copy_successful_pdf(row: dict, paths: BatchPaths) -> dict:
-    status = row.get("status", "")
-    if not _is_successful_status(status):
+    status = str(row.get("status", "") or "").strip().lower()
+    if status not in _STAGE_SUCCESS_STATUSES:
         return row
-    source_file = str(row.get("file", "") or "").strip()
-    if not source_file or not is_valid_pdf(source_file):
-        raise ValueError("invalid_pdf")
-    copied = copy_pdf_safely(source_file, paths.pdfs, f"{row['task_id']}.pdf")
     result = dict(row)
-    result["status"] = "downloaded"
+    if status == "downloaded":
+        source = str(row.get("source", "") or "").strip().lower()
+        if source == "oa":
+            canonical_status = "oa_downloaded"
+        elif source in _INSTITUTIONAL_SOURCES:
+            canonical_status = "institutional_downloaded"
+        else:
+            result.update(
+                status="invalid_download_source",
+                file="",
+                reason=f"invalid_download_source:{source or 'missing'}",
+            )
+            return result
+    else:
+        canonical_status = status
+    source_file = str(row.get("file", "") or "").strip()
+    source_path = Path(source_file).expanduser() if source_file else None
+    try:
+        valid_source = bool(
+            source_path is not None
+            and not source_path.is_symlink()
+            and is_valid_pdf(source_path)
+        )
+    except OSError:
+        valid_source = False
+    if not valid_source:
+        result.update(status="not_pdf_response", file="", reason="not_pdf_response")
+        return result
+    try:
+        copied = copy_pdf_safely(source_path, paths.pdfs, f"{row['task_id']}.pdf")
+    except (OSError, ValueError) as exc:
+        result.update(
+            status="not_pdf_response",
+            file="",
+            reason=f"not_pdf_response:{type(exc).__name__}",
+        )
+        return result
+    result["status"] = canonical_status
     result["file"] = str(copied)
     result["reason"] = ""
     return result
@@ -647,7 +702,7 @@ def _merge_stage_rows(rows: list[dict], updates: object, paths: BatchPaths) -> l
     for existing in rows:
         task_id = str(existing.get("task_id", ""))
         update = updates_by_id.get(task_id)
-        if update is None:
+        if update is None or _is_terminal_status(existing.get("status", "")):
             merged_rows.append(dict(existing))
             continue
         merged = dict(existing)
@@ -662,6 +717,89 @@ def _apply_stage_updates(state: dict, updates: object, paths: BatchPaths) -> Non
     for update in normalized_updates:
         state["rows"] = _merge_stage_rows(state["rows"], [update], paths)
         save_batch_state(paths, state)
+
+
+def _required_task_ids(rows: list[dict]) -> list[str]:
+    return [
+        str(row.get("task_id", ""))
+        for row in rows
+        if str(row.get("status", "")).strip().lower() not in {"metadata_uncertain", "duplicate"}
+        and not _is_successful_status(row.get("status", ""))
+    ]
+
+
+def _mark_required_failures(
+    state: dict,
+    paths: BatchPaths,
+    task_ids: set[str],
+    status: str,
+    reason: str,
+) -> None:
+    updates = []
+    for row in state["rows"]:
+        task_id = str(row.get("task_id", ""))
+        if task_id not in task_ids or _is_terminal_status(row.get("status", "")):
+            continue
+        updates.append({**row, "status": status, "file": "", "reason": reason})
+    _apply_stage_updates(state, updates, paths)
+
+
+def _accepts_on_updates(method: Callable[..., object]) -> bool:
+    parameters = inspect.signature(method).parameters.values()
+    return any(
+        parameter.name == "on_updates" or parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _run_gateway_with_state(
+    *,
+    runner: object,
+    method_name: str,
+    rows: list[dict],
+    paths: BatchPaths,
+    options: Any,
+    state: dict,
+    required_ids: set[str],
+) -> None:
+    method = getattr(runner, method_name)
+    callback_error: Exception | None = None
+
+    def persist_updates(updates: list[dict]) -> None:
+        nonlocal callback_error
+        try:
+            _apply_stage_updates(state, updates, paths)
+        except Exception as exc:
+            callback_error = exc
+            raise
+
+    try:
+        if _accepts_on_updates(method):
+            returned_updates = method(rows, paths, options, on_updates=persist_updates)
+        else:
+            returned_updates = method(rows, paths, options)
+    except Exception as exc:
+        if callback_error is exc or (
+            isinstance(exc, ValueError)
+            and str(exc).startswith(("gateway_task_id", "invalid_gateway_updates"))
+        ):
+            raise
+        failure = f"gateway_exception_{type(exc).__name__}"
+        _mark_required_failures(state, paths, required_ids, failure, failure)
+        return
+
+    normalized_updates = _validate_stage_updates(state["rows"], returned_updates)
+    _apply_stage_updates(state, normalized_updates, paths)
+    returned_ids = {update["task_id"] for update in normalized_updates}
+    missing_ids = required_ids - returned_ids
+    if missing_ids:
+        _mark_required_failures(
+            state,
+            paths,
+            missing_ids,
+            "missing_stage_update",
+            "missing_stage_update",
+        )
 
 
 def _pending_rows(rows: list[dict], *, manual_retry_used: bool) -> tuple[list[dict], list[dict]]:
@@ -686,25 +824,66 @@ def _write_pending_files(paths: BatchPaths, rows: list[dict], *, manual_retry_us
 def _serialize_options(options: Any) -> dict[str, object]:
     if not is_dataclass(options):
         raise ValueError("invalid_batch_options")
-    data = asdict(options)
-    cookie_path = str(data.get("cookies", "") or "").strip()
-    if cookie_path.lstrip().startswith(("{", "[")) or "\n" in cookie_path or "\r" in cookie_path:
+    return _validate_options_data(asdict(options))
+
+
+def _validate_options_data(data: object) -> dict[str, object]:
+    expected_fields = {
+        "email",
+        "cookies",
+        "browser_exe",
+        "login_wait_seconds",
+        "debug_port",
+        "throttle_seconds",
+    }
+    if not isinstance(data, dict) or set(data) != expected_fields:
+        raise ValueError("invalid_batch_options")
+    if not isinstance(data["email"], str) or not isinstance(data["browser_exe"], str):
+        raise ValueError("invalid_batch_options")
+    if not isinstance(data["cookies"], str):
         raise ValueError("cookies_must_be_path")
+    cookie_path = data["cookies"].strip()
+    lowered_cookie = cookie_path.lower()
+    if cookie_path and (
+        any(character in cookie_path for character in ("\r", "\n", "=", ";"))
+        or "cookie:" in lowered_cookie
+        or "://" in cookie_path
+        or cookie_path.lstrip().startswith(("{", "["))
+        or Path(cookie_path).suffix.lower() != ".json"
+    ):
+        raise ValueError("cookies_must_be_path")
+
+    login_wait_seconds = data["login_wait_seconds"]
+    if type(login_wait_seconds) is not int or login_wait_seconds < 0:
+        raise ValueError("invalid_login_wait_seconds")
+    debug_port = data["debug_port"]
+    if type(debug_port) is not int or not 1 <= debug_port <= 65535:
+        raise ValueError("invalid_debug_port")
+    throttle_seconds = data["throttle_seconds"]
+    if (
+        isinstance(throttle_seconds, bool)
+        or not isinstance(throttle_seconds, (int, float))
+        or not math.isfinite(float(throttle_seconds))
+        or float(throttle_seconds) < 0
+    ):
+        raise ValueError("invalid_throttle_seconds")
     return {
-        "email": str(data.get("email", "") or ""),
+        "email": data["email"],
         "cookies": cookie_path,
-        "browser_exe": str(data.get("browser_exe", "") or ""),
-        "login_wait_seconds": int(data.get("login_wait_seconds", 0) or 0),
-        "debug_port": int(data.get("debug_port", 9333) or 9333),
-        "throttle_seconds": float(data.get("throttle_seconds", 1.0) or 0.0),
+        "browser_exe": data["browser_exe"],
+        "login_wait_seconds": login_wait_seconds,
+        "debug_port": debug_port,
+        "throttle_seconds": float(throttle_seconds),
     }
 
 
 def _options_from_state(state: dict):
     saved = state.get("options")
-    if not isinstance(saved, dict):
-        raise ValueError("invalid_batch_state_options")
-    return _batch_options_type()(**_serialize_options(_batch_options_type()(**saved)))
+    try:
+        validated = _validate_options_data(saved)
+    except ValueError as exc:
+        raise ValueError("invalid_batch_state_options") from exc
+    return _batch_options_type()(**validated)
 
 
 def _validate_state(state: object) -> dict:
@@ -715,8 +894,7 @@ def _validate_state(state: object) -> dict:
     if not isinstance(state.get("manual_retry_used"), bool) or not isinstance(state.get("rows"), list):
         raise ValueError("invalid_batch_state")
     _validate_stage_updates([_normalise_row_mapping(row) for row in state["rows"]], [])
-    if not isinstance(state.get("options"), dict):
-        raise ValueError("invalid_batch_state_options")
+    _options_from_state(state)
     return state
 
 
@@ -741,6 +919,34 @@ def _read_csv_rows(path: Path) -> list[dict]:
         raise ValueError("pending_file_missing")
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         return [{key: str(value or "") for key, value in row.items()} for row in csv.DictReader(handle)]
+
+
+def _validate_manual_retry_preclaim(state: dict, paths: BatchPaths) -> list[dict]:
+    _validate_state(state)
+    if not paths.manual_retry.is_file():
+        raise ValueError("manual_retry_file_missing")
+    with paths.manual_retry.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames or []
+        if not set(NORMALIZED_FIELDS).issubset(fieldnames):
+            raise ValueError("manual_retry_fields_invalid")
+        rows = [{key: str(value or "") for key, value in row.items()} for row in reader]
+
+    state_by_id = {str(row.get("task_id", "")): row for row in state["rows"]}
+    seen_ids: set[str] = set()
+    for row in rows:
+        task_id = row.get("task_id", "")
+        if not task_id or task_id in seen_ids:
+            raise ValueError("manual_retry_task_id_invalid")
+        seen_ids.add(task_id)
+        state_row = state_by_id.get(task_id)
+        if state_row is None:
+            raise ValueError("manual_retry_unknown_task_id")
+        if not _needs_manual_retry(row.get("status", ""), row.get("reason", "")):
+            raise ValueError("manual_retry_status_invalid")
+        if not _needs_manual_retry(state_row.get("status", ""), state_row.get("reason", "")):
+            raise ValueError("manual_retry_state_not_pending")
+    return rows
 
 
 def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
@@ -775,11 +981,27 @@ def _result_from_state(paths: BatchPaths, state: dict) -> BatchRunResult:
 
 
 class DefaultStageGateway:
-    def run_initial(self, rows: list[dict], paths: BatchPaths, options: Any) -> list[dict]:
-        runnable = [dict(row) for row in rows if str(row.get("status", "")).lower() != "duplicate"]
+    def run_initial(
+        self,
+        rows: list[dict],
+        paths: BatchPaths,
+        options: Any,
+        *,
+        on_updates: Callable[[list[dict]], None] | None = None,
+    ) -> list[dict]:
+        runnable = [dict(row) for row in rows if str(row.get("status", "")).lower() == "pending"]
+        if not runnable:
+            return []
         oa_updates = [_update_as_mapping(row) for row in run_oa_stage(runnable, paths.reports, options)]
+        if on_updates is not None:
+            on_updates(oa_updates)
         after_oa = _merge_stage_rows(rows, oa_updates, paths)
-        unresolved = [row for row in after_oa if not _is_terminal_status(row.get("status", ""))]
+        runnable_ids = {str(row.get("task_id", "")) for row in runnable}
+        unresolved = [
+            row for row in after_oa
+            if str(row.get("task_id", "")) in runnable_ids
+            and not _is_terminal_status(row.get("status", ""))
+        ]
         science_direct, other = _split_institutional_rows(unresolved)
         unresolved_ids = {str(row.get("task_id", "")) for row in unresolved}
         updates = [
@@ -788,13 +1010,26 @@ class DefaultStageGateway:
         ]
         if science_direct:
             stage_input = _stage_input_writer(science_direct, paths.working / "sciencedirect_input.csv")
-            updates.extend(_update_as_mapping(row) for row in run_sciencedirect_stage(stage_input, paths.reports, options))
+            stage_updates = [_update_as_mapping(row) for row in run_sciencedirect_stage(stage_input, paths.reports, options)]
+            if on_updates is not None:
+                on_updates(stage_updates)
+            updates.extend(stage_updates)
         if other:
             stage_input = _stage_input_writer(other, paths.working / "non_elsevier_input.csv")
-            updates.extend(_update_as_mapping(row) for row in run_non_elsevier_stage(stage_input, paths.reports, options))
+            stage_updates = [_update_as_mapping(row) for row in run_non_elsevier_stage(stage_input, paths.reports, options)]
+            if on_updates is not None:
+                on_updates(stage_updates)
+            updates.extend(stage_updates)
         return updates
 
-    def run_retry(self, rows: list[dict], paths: BatchPaths, options: Any) -> list[dict]:
+    def run_retry(
+        self,
+        rows: list[dict],
+        paths: BatchPaths,
+        options: Any,
+        *,
+        on_updates: Callable[[list[dict]], None] | None = None,
+    ) -> list[dict]:
         manual_rows = [
             row for row in rows
             if _needs_manual_retry(row.get("status", ""), row.get("reason", ""))
@@ -803,10 +1038,16 @@ class DefaultStageGateway:
         updates: list[dict] = []
         if science_direct:
             stage_input = _stage_input_writer(science_direct, paths.working / "sciencedirect_retry_input.csv")
-            updates.extend(_update_as_mapping(row) for row in run_sciencedirect_stage(stage_input, paths.reports, options))
+            stage_updates = [_update_as_mapping(row) for row in run_sciencedirect_stage(stage_input, paths.reports, options)]
+            if on_updates is not None:
+                on_updates(stage_updates)
+            updates.extend(stage_updates)
         if other:
             stage_input = _stage_input_writer(other, paths.working / "non_elsevier_retry_input.csv")
-            updates.extend(_update_as_mapping(row) for row in run_non_elsevier_stage(stage_input, paths.reports, options))
+            stage_updates = [_update_as_mapping(row) for row in run_non_elsevier_stage(stage_input, paths.reports, options)]
+            if on_updates is not None:
+                on_updates(stage_updates)
+            updates.extend(stage_updates)
         return updates
 
 
@@ -824,6 +1065,7 @@ def start_batch(
     if (input_text is None) == (input_path is None):
         raise ValueError("exactly_one_input_required")
     selected_options = options or _batch_options_type()()
+    serialized_options = _serialize_options(selected_options)
     paths = create_batch_paths(output_root, run_name=run_name, now=now)
     normalize = normalizer or normalize_input
     rows = [_normalise_row_mapping(row) for row in normalize(
@@ -838,13 +1080,20 @@ def start_batch(
         "version": 1,
         "run_dir": str(paths.root),
         "manual_retry_used": False,
-        "options": _serialize_options(selected_options),
+        "options": serialized_options,
         "rows": rows,
     }
     save_batch_state(paths, state)
     runner = gateway or DefaultStageGateway()
-    updates = runner.run_initial(rows, paths, selected_options)
-    _apply_stage_updates(state, updates, paths)
+    _run_gateway_with_state(
+        runner=runner,
+        method_name="run_initial",
+        rows=rows,
+        paths=paths,
+        options=selected_options,
+        state=state,
+        required_ids=set(_required_task_ids(rows)),
+    )
     _write_pending_files(paths, state["rows"])
     write_final_reports(paths, state["rows"])
     return _result_from_state(paths, state)
@@ -857,20 +1106,33 @@ def resume_batch(
     options: Any | None = None,
 ) -> BatchRunResult:
     paths = _paths_from_run_dir(run_dir)
-    claimed, state = claim_manual_retry(run_dir)
-    _validate_state(state)
+    retry_csv_rows: list[dict] = []
+
+    def validate_before_claim(state: dict) -> None:
+        retry_csv_rows.extend(_validate_manual_retry_preclaim(state, paths))
+        if options is not None:
+            _serialize_options(options)
+
+    claimed, state = claim_manual_retry(
+        run_dir,
+        validate_before_claim=validate_before_claim,
+    )
     if not claimed:
         return _result_from_state(paths, state)
     selected_options = options or _options_from_state(state)
-    retry_ids = {row.get("task_id", "") for row in _read_csv_rows(paths.manual_retry)}
-    state_ids = {str(row.get("task_id", "")) for row in state["rows"]}
-    if not retry_ids.issubset(state_ids):
-        raise ValueError("manual_retry_unknown_task_id")
+    retry_ids = {row.get("task_id", "") for row in retry_csv_rows}
     retry_rows = [row for row in state["rows"] if str(row.get("task_id", "")) in retry_ids]
     if retry_rows:
         runner = gateway or DefaultStageGateway()
-        updates = runner.run_retry(retry_rows, paths, selected_options)
-        _apply_stage_updates(state, updates, paths)
+        _run_gateway_with_state(
+            runner=runner,
+            method_name="run_retry",
+            rows=retry_rows,
+            paths=paths,
+            options=selected_options,
+            state=state,
+            required_ids=set(retry_ids),
+        )
     _write_pending_files(paths, state["rows"], manual_retry_used=True)
     write_final_reports(paths, state["rows"])
     return _result_from_state(paths, state)

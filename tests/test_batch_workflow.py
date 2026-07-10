@@ -1911,6 +1911,188 @@ class BatchRunTests(unittest.TestCase):
             self.assertTrue(state["manual_retry_used"])
             self.assertEqual(state["options"]["cookies"], str(root / "cookies.json"))
 
+    def test_second_resume_returns_without_revalidating_deleted_pending_file(self) -> None:
+        from paper_automation.batch_workflow import resume_batch, start_batch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gateway = FakeBatchGateway(initial_updates=lambda rows: [
+                {**rows[0], "status": "captcha_required", "source": "institutional", "file": "", "reason": "captcha_required"},
+            ])
+            started = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=Path(tmp),
+                gateway=gateway,
+                normalizer=lambda **_kwargs: [
+                    {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                ],
+            )
+            first = resume_batch(started.paths.root, gateway=gateway)
+            started.paths.manual_retry.unlink()
+            second = resume_batch(started.paths.root, gateway=gateway)
+
+        self.assertEqual(len(gateway.retry_rows), 1)
+        self.assertEqual(second.total_count, first.total_count)
+
+    def test_resume_preclaim_failures_do_not_consume_manual_retry(self) -> None:
+        import csv
+
+        from paper_automation.batch_workflow import load_batch_state, resume_batch, save_batch_state, start_batch
+
+        def start_manual(root: Path):
+            return start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=root,
+                gateway=FakeBatchGateway(initial_updates=lambda rows: [
+                    {**rows[0], "status": "captcha_required", "source": "institutional", "file": "", "reason": "captcha_required"},
+                ]),
+                normalizer=lambda **_kwargs: [
+                    {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                ],
+            )
+
+        for case in ("missing_file", "invalid_fields", "unknown_task", "stale_manual_status", "damaged_options"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                started = start_manual(Path(tmp))
+                state = load_batch_state(started.paths.root)
+                if case == "missing_file":
+                    started.paths.manual_retry.unlink()
+                elif case == "invalid_fields":
+                    started.paths.manual_retry.write_text(
+                        "task_id,status\npaper-0001,captcha_required\n",
+                        encoding="utf-8-sig",
+                    )
+                elif case == "unknown_task":
+                    with started.paths.manual_retry.open("r", newline="", encoding="utf-8-sig") as handle:
+                        reader = csv.DictReader(handle)
+                        rows = list(reader)
+                        fieldnames = reader.fieldnames
+                    rows[0]["task_id"] = "paper-9999"
+                    with started.paths.manual_retry.open("w", newline="", encoding="utf-8-sig") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+                elif case == "stale_manual_status":
+                    state["rows"][0].update(status="no_open_pdf", reason="no_open_pdf")
+                    save_batch_state(started.paths, state)
+                else:
+                    state["options"]["debug_port"] = 70000
+                    save_batch_state(started.paths, state)
+
+                gateway = FakeBatchGateway()
+                with self.assertRaises((ValueError, FileNotFoundError)):
+                    resume_batch(started.paths.root, gateway=gateway)
+
+                self.assertFalse(load_batch_state(started.paths.root)["manual_retry_used"])
+                self.assertEqual(gateway.retry_rows, [])
+
+    def test_options_reject_cookie_secrets_and_invalid_numeric_values_before_state_write(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
+        from paper_automation.batch_workflow import start_batch
+
+        invalid_options = [
+            BatchOptions(cookies="Cookie: session=topsecret"),
+            BatchOptions(cookies="session=topsecret; token=abc"),
+            BatchOptions(cookies='{"session":"topsecret"}'),
+            BatchOptions(cookies="https://example.test/cookies.json"),
+            BatchOptions(cookies="cookies.json\r\nCookie: secret=abc"),
+            BatchOptions(login_wait_seconds=True),
+            BatchOptions(login_wait_seconds=-1),
+            BatchOptions(login_wait_seconds=1.5),
+            BatchOptions(login_wait_seconds=float("nan")),
+            BatchOptions(login_wait_seconds=float("inf")),
+            BatchOptions(debug_port=False),
+            BatchOptions(debug_port=-1),
+            BatchOptions(debug_port=0),
+            BatchOptions(debug_port=65536),
+            BatchOptions(debug_port=float("nan")),
+            BatchOptions(debug_port=float("inf")),
+            BatchOptions(throttle_seconds=True),
+            BatchOptions(throttle_seconds=-0.1),
+            BatchOptions(throttle_seconds=float("nan")),
+            BatchOptions(throttle_seconds=float("inf")),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, options in enumerate(invalid_options, start=1):
+                with self.subTest(index=index, options=options):
+                    output = root / str(index)
+                    with self.assertRaises(ValueError):
+                        start_batch(
+                            input_text="fixture",
+                            input_path=None,
+                            output_root=output,
+                            options=options,
+                            gateway=FakeBatchGateway(),
+                            normalizer=lambda **_kwargs: [
+                                {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                            ],
+                        )
+                    state_files = list(output.rglob("batch_state.json")) if output.exists() else []
+                    self.assertTrue(all(b"topsecret" not in path.read_bytes() for path in state_files))
+
+    def test_options_allow_nonexistent_windows_and_relative_cookie_json_paths(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
+        from paper_automation.batch_workflow import load_batch_state, start_batch
+
+        for cookie_path in (r"C:\research\cookies.json", r"exports\cookies.json", "cookies.json", ""):
+            with self.subTest(cookie_path=cookie_path), tempfile.TemporaryDirectory() as tmp:
+                result = start_batch(
+                    input_text="fixture",
+                    input_path=None,
+                    output_root=Path(tmp),
+                    options=BatchOptions(
+                        cookies=cookie_path,
+                        login_wait_seconds=0,
+                        debug_port=65535,
+                        throttle_seconds=0.0,
+                    ),
+                    gateway=FakeBatchGateway(initial_updates=lambda rows: [
+                        {**rows[0], "status": "duplicate", "source": "oa", "file": "", "reason": "duplicate_input"},
+                    ]),
+                    normalizer=lambda **_kwargs: [
+                        {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                    ],
+                )
+                self.assertEqual(load_batch_state(result.paths.root)["options"]["cookies"], cookie_path)
+
+    def test_state_writer_rejects_nan_without_replacing_previous_snapshot(self) -> None:
+        from paper_automation.batch_workflow import create_batch_paths, load_batch_state, save_batch_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = create_batch_paths(Path(tmp))
+            save_batch_state(paths, {"version": 1, "value": "safe"})
+            with self.assertRaises(ValueError):
+                save_batch_state(paths, {"version": 1, "value": float("nan")})
+
+            self.assertEqual(load_batch_state(paths.root), {"version": 1, "value": "safe"})
+
+    def test_invalid_resume_option_override_does_not_consume_claim(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
+        from paper_automation.batch_workflow import load_batch_state, resume_batch, start_batch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            started = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=Path(tmp),
+                gateway=FakeBatchGateway(initial_updates=lambda rows: [
+                    {**rows[0], "status": "auth_required", "source": "institutional", "file": "", "reason": "auth_required"},
+                ]),
+                normalizer=lambda **_kwargs: [
+                    {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                ],
+            )
+            with self.assertRaises(ValueError):
+                resume_batch(
+                    started.paths.root,
+                    gateway=FakeBatchGateway(),
+                    options=BatchOptions(cookies="Cookie: session=secret"),
+                )
+
+            self.assertFalse(load_batch_state(started.paths.root)["manual_retry_used"])
+
     def test_normalize_input_supports_markdown_csv_and_xlsx_without_changing_source(self) -> None:
         import csv
 
@@ -1958,6 +2140,137 @@ class BatchRunTests(unittest.TestCase):
         self.assertEqual([row["task_id"] for row in gateway.initial_rows], ["paper-0001", "paper-0002"])
         self.assertEqual([row["doi"] for row in gateway.initial_rows], ["10.1016/first", "10.1038/second"])
 
+    def test_normalize_expands_multi_doi_records_in_all_supported_file_types_without_mutation(self) -> None:
+        import csv
+
+        from openpyxl import Workbook
+
+        from paper_automation.batch_stages import BatchOptions
+        from paper_automation.batch_workflow import create_batch_paths, normalize_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doi_cell = "10.1000/first; https://doi.org/10.1000/second"
+            inputs = []
+
+            csv_path = root / "papers.csv"
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["doi", "title"])
+                writer.writeheader()
+                writer.writerow({"doi": doi_cell, "title": "Two DOI table record"})
+            inputs.append(csv_path)
+
+            for suffix in (".xlsx", ".xlsm"):
+                workbook = Workbook()
+                workbook.active.append(["doi", "title"])
+                workbook.active.append([doi_cell, "Two DOI workbook record"])
+                workbook_path = root / f"papers{suffix}"
+                workbook.save(workbook_path)
+                inputs.append(workbook_path)
+
+            for suffix in (".txt", ".md"):
+                text_path = root / f"papers{suffix}"
+                text_path.write_text(doi_cell + "\n", encoding="utf-8")
+                inputs.append(text_path)
+
+            for index, input_path in enumerate(inputs, start=1):
+                with self.subTest(suffix=input_path.suffix):
+                    original = input_path.read_bytes()
+                    paths = create_batch_paths(root, run_name=f"multi-{index}")
+                    rows = normalize_input(
+                        input_text=None,
+                        input_path=input_path,
+                        paths=paths,
+                        options=BatchOptions(),
+                    )
+
+                    self.assertEqual(
+                        [(row["task_id"], row["doi"]) for row in rows],
+                        [("paper-0001", "10.1000/first"), ("paper-0002", "10.1000/second")],
+                    )
+                    self.assertEqual(input_path.read_bytes(), original)
+
+    def test_normalize_marks_only_valid_doi_intake_rows_pending(self) -> None:
+        from types import SimpleNamespace
+
+        from paper_automation.batch_stages import BatchOptions
+        from paper_automation.batch_workflow import create_batch_paths, normalize_input
+        from sd_institutional_skill import IntakeRow
+
+        intake_rows = [
+            IntakeRow(
+                source="fixture",
+                row_number=1,
+                input_doi="10.1000/low",
+                doi="10.1000/low",
+                title="Low confidence title",
+                raw_value="10.1000/low",
+                status="needs_review",
+                reason="metadata_confidence_below_threshold:0.400",
+            ),
+            IntakeRow(
+                source="fixture",
+                row_number=2,
+                input_doi="10.1000/invalid",
+                doi="10.1000/invalid",
+                title="Invalid intake row",
+                raw_value="10.1000/invalid",
+                status="invalid",
+                reason="invalid_input",
+            ),
+            IntakeRow(
+                source="fixture",
+                row_number=3,
+                input_doi="",
+                doi="10.1000/resolved",
+                input_title="Resolved title only paper",
+                title="Resolved title only paper",
+                raw_value="Resolved title only paper",
+                status="valid",
+                reason="",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = create_batch_paths(Path(tmp))
+            with patch(
+                "sd_institutional_skill.build_intake",
+                return_value=SimpleNamespace(all_rows=intake_rows),
+            ):
+                rows = normalize_input(
+                    input_text="fixture",
+                    input_path=None,
+                    paths=paths,
+                    options=BatchOptions(),
+                )
+
+        self.assertEqual([row["status"] for row in rows], ["metadata_uncertain", "metadata_uncertain", "pending"])
+        self.assertEqual(rows[0]["reason"], "metadata_confidence_below_threshold:0.400")
+        self.assertEqual(rows[1]["reason"], "invalid_input")
+        self.assertEqual(rows[2]["doi"], "10.1000/resolved")
+
+    def test_real_low_confidence_title_is_metadata_uncertain_and_never_sent_to_gateway_stages(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
+        from paper_automation.batch_workflow import DefaultStageGateway, create_batch_paths, normalize_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = create_batch_paths(Path(tmp))
+            rows = normalize_input(
+                input_text="Titanium",
+                input_path=None,
+                paths=paths,
+                options=BatchOptions(),
+            )
+            with patch("paper_automation.batch_workflow.run_oa_stage") as oa_stage, patch(
+                "paper_automation.batch_workflow.run_sciencedirect_stage"
+            ) as sd_stage, patch("paper_automation.batch_workflow.run_non_elsevier_stage") as other_stage:
+                updates = DefaultStageGateway().run_initial(rows, paths, BatchOptions())
+
+        self.assertEqual(rows[0]["status"], "metadata_uncertain")
+        self.assertEqual(updates, [])
+        oa_stage.assert_not_called()
+        sd_stage.assert_not_called()
+        other_stage.assert_not_called()
+
     def test_duplicate_rows_are_terminal_and_excluded_from_pending_files(self) -> None:
         import csv
 
@@ -1985,7 +2298,7 @@ class BatchRunTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             paths = create_batch_paths(Path(tmp))
-            rows = [{"task_id": "paper-0001", "doi": "https://doi.org/10.1016/j.actamat.1", "title": "A"}]
+            rows = [{"task_id": "paper-0001", "doi": "https://doi.org/10.1016/j.actamat.1", "title": "A", "status": "pending"}]
             oa_result = [StageResult("paper-0001", "10.1016/j.actamat.1", "A", "no_open_pdf", "", "no_open_pdf", "oa")]
             sd_result = [StageResult("paper-0001", "10.1016/j.actamat.1", "A", "failed", "", "no_entitlement", "sciencedirect")]
             with patch("paper_automation.batch_workflow.run_oa_stage", return_value=oa_result), patch(
@@ -2036,6 +2349,271 @@ class BatchRunTests(unittest.TestCase):
             self.assertTrue(source.is_file())
             self.assertEqual(source.read_bytes(), b"%PDF-1.7\nabsolute fixture")
             self.assertEqual(Path(result.paths.root / "pdfs" / Path(result.paths.pdfs.glob("*.pdf").__next__().name)).read_bytes(), source.read_bytes())
+
+    def test_successful_files_use_task5_compatible_canonical_statuses(self) -> None:
+        from paper_automation.batch_workflow import load_batch_state, start_batch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            oa_pdf = root / "oa.pdf"
+            institutional_pdf = root / "institutional.pdf"
+            oa_pdf.write_bytes(b"%PDF-1.7\noa fixture")
+            institutional_pdf.write_bytes(b"%PDF-1.7\ninstitutional fixture")
+            gateway = FakeBatchGateway(initial_updates=lambda rows: [
+                {**rows[0], "status": "downloaded", "source": "oa", "file": str(oa_pdf), "reason": ""},
+                {**rows[1], "status": "downloaded", "source": "sciencedirect", "file": str(institutional_pdf), "reason": ""},
+            ])
+            result = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=root,
+                gateway=gateway,
+                normalizer=lambda **_kwargs: [
+                    {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                    {"task_id": "paper-0002", "doi": "10.1016/b", "title": "B", "status": "pending"},
+                ],
+            )
+            state = load_batch_state(result.paths.root)
+
+        self.assertEqual([row["status"] for row in state["rows"]], ["oa_downloaded", "institutional_downloaded"])
+        self.assertNotIn("downloaded", {row["status"] for row in state["rows"]})
+        self.assertEqual(result.success_count, 2)
+
+    def test_unknown_download_source_and_invalid_pdf_are_isolated_as_row_failures(self) -> None:
+        import csv
+
+        from paper_automation.batch_workflow import load_batch_state, start_batch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            valid_pdf = root / "valid.pdf"
+            html_pdf = root / "login.pdf"
+            valid_pdf.write_bytes(b"%PDF-1.7\nvalid fixture")
+            html_pdf.write_text("<html>login</html>", encoding="utf-8")
+            gateway = FakeBatchGateway(initial_updates=lambda rows: [
+                {**rows[0], "status": "downloaded", "source": "mystery", "file": str(valid_pdf), "reason": ""},
+                {**rows[1], "status": "downloaded", "source": "oa", "file": str(html_pdf), "reason": ""},
+                {**rows[2], "status": "downloaded", "source": "institutional", "file": str(root / "missing.pdf"), "reason": ""},
+            ])
+            result = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=root,
+                gateway=gateway,
+                normalizer=lambda **_kwargs: [
+                    {"task_id": f"paper-{index:04d}", "doi": f"10.1000/{index}", "title": str(index), "status": "pending"}
+                    for index in range(1, 4)
+                ],
+            )
+            state = load_batch_state(result.paths.root)
+            with result.paths.zotero_fallback.open("r", encoding="utf-8-sig") as handle:
+                fallback = list(csv.DictReader(handle))
+
+        self.assertEqual(
+            [row["status"] for row in state["rows"]],
+            ["invalid_download_source", "not_pdf_response", "not_pdf_response"],
+        )
+        self.assertTrue(all(row["file"] == "" for row in state["rows"]))
+        self.assertEqual([row["task_id"] for row in fallback], ["paper-0001", "paper-0002", "paper-0003"])
+
+    def test_success_file_symlink_is_a_row_failure_without_copying(self) -> None:
+        from paper_automation.batch_workflow import load_batch_state, start_batch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "linked.pdf"
+            source.write_bytes(b"%PDF-1.7\nsymlink fixture")
+            gateway = FakeBatchGateway(initial_updates=lambda rows: [
+                {**rows[0], "status": "downloaded", "source": "oa", "file": str(source), "reason": ""},
+            ])
+            original_is_symlink = Path.is_symlink
+
+            def fake_is_symlink(path):
+                return path == source or original_is_symlink(path)
+
+            with patch.object(Path, "is_symlink", new=fake_is_symlink):
+                result = start_batch(
+                    input_text="fixture",
+                    input_path=None,
+                    output_root=root,
+                    gateway=gateway,
+                    normalizer=lambda **_kwargs: [
+                        {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                    ],
+                )
+            state = load_batch_state(result.paths.root)
+
+        self.assertEqual(state["rows"][0]["status"], "not_pdf_response")
+        self.assertEqual(list(result.paths.pdfs.glob("*.pdf")), [])
+
+    def test_empty_gateway_updates_mark_only_required_rows_missing(self) -> None:
+        import csv
+
+        from paper_automation.batch_workflow import load_batch_state, start_batch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=Path(tmp),
+                gateway=FakeBatchGateway(initial_updates=lambda rows: []),
+                normalizer=lambda **_kwargs: [
+                    {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                    {"task_id": "paper-0002", "doi": "", "title": "Low confidence", "status": "metadata_uncertain", "reason": "low_confidence"},
+                    {"task_id": "paper-0003", "doi": "10.1000/c", "title": "C", "status": "duplicate", "reason": "duplicate_input"},
+                ],
+            )
+            state = load_batch_state(result.paths.root)
+            with result.paths.zotero_fallback.open("r", encoding="utf-8-sig") as handle:
+                fallback = list(csv.DictReader(handle))
+
+        self.assertEqual(
+            [row["status"] for row in state["rows"]],
+            ["missing_stage_update", "metadata_uncertain", "duplicate"],
+        )
+        self.assertEqual([row["task_id"] for row in fallback], ["paper-0001", "paper-0002"])
+        self.assertEqual(result.zotero_fallback_count, 2)
+
+    def test_partial_gateway_updates_mark_each_omitted_required_row_missing(self) -> None:
+        from paper_automation.batch_workflow import load_batch_state, start_batch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=Path(tmp),
+                gateway=FakeBatchGateway(initial_updates=lambda rows: [
+                    {**rows[0], "status": "no_open_pdf", "source": "oa", "file": "", "reason": "no_open_pdf"},
+                ]),
+                normalizer=lambda **_kwargs: [
+                    {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                    {"task_id": "paper-0002", "doi": "10.1000/b", "title": "B", "status": "pending"},
+                ],
+            )
+            state = load_batch_state(result.paths.root)
+
+        self.assertEqual([row["status"] for row in state["rows"]], ["no_open_pdf", "missing_stage_update"])
+
+    def test_start_gateway_exception_becomes_durable_row_failure_and_reports(self) -> None:
+        from paper_automation.batch_workflow import load_batch_state, start_batch
+
+        class RaisingGateway(FakeBatchGateway):
+            def run_initial(self, rows, paths, options):
+                raise RuntimeError("offline gateway failure")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=Path(tmp),
+                gateway=RaisingGateway(),
+                normalizer=lambda **_kwargs: [
+                    {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                    {"task_id": "paper-0002", "doi": "", "title": "Review", "status": "metadata_uncertain", "reason": "review"},
+                ],
+            )
+            state = load_batch_state(result.paths.root)
+
+            self.assertTrue(result.paths.zotero_fallback.is_file())
+            self.assertTrue((result.paths.reports / "batch_status.json").is_file())
+
+        self.assertEqual(state["rows"][0]["status"], "gateway_exception_RuntimeError")
+        self.assertEqual(state["rows"][1]["status"], "metadata_uncertain")
+
+    def test_resume_gateway_exception_enters_fallback_after_one_claim(self) -> None:
+        from paper_automation.batch_workflow import load_batch_state, resume_batch, start_batch
+
+        class RaisingRetryGateway(FakeBatchGateway):
+            def run_retry(self, rows, paths, options):
+                raise ConnectionError("offline retry failure")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            started = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=root,
+                gateway=FakeBatchGateway(initial_updates=lambda rows: [
+                    {**rows[0], "status": "captcha_required", "source": "institutional", "file": "", "reason": "captcha_required"},
+                ]),
+                normalizer=lambda **_kwargs: [
+                    {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                ],
+            )
+            resumed = resume_batch(started.paths.root, gateway=RaisingRetryGateway())
+            state = load_batch_state(started.paths.root)
+
+        self.assertEqual(state["rows"][0]["status"], "gateway_exception_ConnectionError")
+        self.assertTrue(state["manual_retry_used"])
+        self.assertEqual(resumed.zotero_fallback_count, 1)
+        self.assertEqual(resumed.manual_retry_count, 0)
+
+    def test_oa_callback_state_survives_later_institutional_exception(self) -> None:
+        from paper_automation.batch_stages import StageResult
+        from paper_automation.batch_workflow import DefaultStageGateway, load_batch_state, start_batch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            oa_pdf = root / "oa.pdf"
+            oa_pdf.write_bytes(b"%PDF-1.7\noa callback fixture")
+            oa_results = [
+                StageResult("paper-0001", "10.1000/a", "A", "downloaded", str(oa_pdf), "", "oa"),
+                StageResult("paper-0002", "10.1038/b", "B", "no_open_pdf", "", "no_open_pdf", "oa"),
+            ]
+            with patch("paper_automation.batch_workflow.run_oa_stage", return_value=oa_results), patch(
+                "paper_automation.batch_workflow.run_non_elsevier_stage",
+                side_effect=RuntimeError("institutional stage stopped"),
+            ):
+                result = start_batch(
+                    input_text="fixture",
+                    input_path=None,
+                    output_root=root,
+                    gateway=DefaultStageGateway(),
+                    normalizer=lambda **_kwargs: [
+                        {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
+                        {"task_id": "paper-0002", "doi": "10.1038/b", "title": "B", "status": "pending"},
+                    ],
+                )
+            state = load_batch_state(result.paths.root)
+
+        self.assertEqual(state["rows"][0]["status"], "oa_downloaded")
+        self.assertEqual(state["rows"][1]["status"], "gateway_exception_RuntimeError")
+
+    def test_callback_success_is_not_rolled_back_by_stale_final_return(self) -> None:
+        from paper_automation.batch_workflow import load_batch_state, start_batch
+
+        class CallbackThenStaleGateway:
+            def run_initial(self, rows, paths, options, *, on_updates):
+                on_updates([
+                    {**rows[0], "status": "oa_downloaded", "source": "oa", "file": rows[0]["fixture_pdf"], "reason": ""},
+                ])
+                return [
+                    {**rows[0], "status": "no_open_pdf", "source": "oa", "file": "", "reason": "stale_final_return"},
+                ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "oa.pdf"
+            source.write_bytes(b"%PDF-1.7\nidempotent callback fixture")
+            result = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=root,
+                gateway=CallbackThenStaleGateway(),
+                normalizer=lambda **_kwargs: [
+                    {
+                        "task_id": "paper-0001",
+                        "doi": "10.1000/a",
+                        "title": "A",
+                        "status": "pending",
+                        "fixture_pdf": str(source),
+                    },
+                ],
+            )
+            state = load_batch_state(result.paths.root)
+
+        self.assertEqual(state["rows"][0]["status"], "oa_downloaded")
+        self.assertEqual(state["rows"][0]["reason"], "")
 
     def test_unknown_or_duplicate_gateway_task_ids_are_rejected(self) -> None:
         from paper_automation.batch_workflow import start_batch
