@@ -862,3 +862,14 @@
 - 生成的输出文件：真实流程仍只在批次目录生成 `pdfs\\`、`reports\\`、`working\\zotero_results.csv` 或 `working\\zotero_results_retry_YYYYMMDD_HHMMSS.csv`；本次仅生成系统临时测试文件，没有真实下载或 Zotero 写入。
 - 如何检查是否成功：CLI RED 为 `BatchCliTests` 13 项中 1 项失败，明确捕获未解决 finalize 误报；Skill review RED 为 19 项测试中的新合同产生 23 个缺失断言。修复后 CLI 13 项、Skill 19 项均通过，全量离线测试 283 项通过（跳过 2 项）。
 - 注意事项或潜在风险：CLI 退出码仍为 0，表示报告成功生成而非全部论文成功；调用方必须读取输出和报告判断是否仍可恢复。Skill 是编排合同，真实 Zotero 工具返回结构仍需在用户环境中按协议校验。未联网、未调用真实 Zotero、未读取 Cookie、未自动处理 CAPTCHA、未打包。
+
+## 2026-07-11 05:22:20 +08:00 — Task 7 第二轮 stale 结果文件修复
+
+- 本次任务目标：阻止空 fallback 流程复用陈旧或格式不严格的 canonical Zotero 结果文件，并修正 Skill 对 pending/result CSV 空白记录及 Zotero ID 返回边界的描述。
+- 新增、修改或删除的文件：修改 `paper_batch.py`、`tests/test_batch_workflow.py`、`skills/paper-download/SKILL.md`、`tests/test_skills_packaging.py`、`CHANGELOG.md` 和 `.superpowers/sdd/task-7-report.md`；未修改 README/MANUAL_QA，未删除文件。
+- 具体修改内容：canonical 仅在含 UTF-8 BOM、可严格解码且 `csv.reader(strict=True)` 只得到一行精确 `ZOTERO_RESULT_FIELDS` 时复用；其他内容原样保留并排他创建 `zotero_results_retry_YYYYMMDD_HHMMSS[_N].csv` 仅表头文件，finalize 命令使用实际选中路径；同秒冲突递增后缀且不覆盖。Skill 分离 pending 可忽略 blank 与 result 必须拒绝物理空白/全空白数据行的规则，并要求 Zotero numeric ID 显式返回或可验证、缺失/歧义时 fail closed；本地 CSV 使用标准库 `csv.writer`、`x` 模式、`newline=""`、`utf-8-sig`，写前完整校验 task IDs，PDF/reparse 仍由 finalize 复验。
+- 修改原因：旧 `_ensure_header_only_zotero_results()` 对任意已存在 canonical 直接返回，且旧 `_finalize_command()` 固定指向 canonical；Skill 旧文字把 pending 与严格 result 的 blank 规则混为一谈，并可能让执行者假设工具返回 schema 或猜测 ID。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchCliTests -v`；`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_skills_packaging -v`；`..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`；`git diff --check`；使用 `rg` 扫描 Skill 禁止字符串与关键边界。
+- 生成的输出文件：空 fallback 且 canonical 无效时，新建 `working\\zotero_results_retry_YYYYMMDD_HHMMSS.csv`；同秒冲突依次使用 `_2`、`_3` 等后缀。canonical 与其他已有结果文件保持不变。本次仅生成测试临时文件，无真实 PDF/Zotero 输出。
+- 如何检查是否成功：CLI RED 为 16 项中 stale、物理空白行、同秒冲突 3 项失败；合法 header-only canonical 测试保持通过。Skill RED 为 20 项中的新增合同产生 15 个缺失断言。修复后 CLI 16 项、Skill 20 项通过，全量离线测试 287 项通过（跳过 2 项）。
+- 注意事项或潜在风险：严格复用有意拒绝无 BOM、附加空白行或任何数据行的 canonical；它们不会被删除或覆盖，而会留存供审计。时间戳冲突后缀没有固定上限，会持续使用排他创建直到获得安全文件名。未联网、未调用真实 Zotero、未读取 Cookie、未自动处理 CAPTCHA、未打包。

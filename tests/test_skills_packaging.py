@@ -132,6 +132,33 @@ class SkillPackagingTests(unittest.TestCase):
 
         self.assertIn("批次未完成且可恢复", cli_text)
 
+    def test_paper_download_skill_distinguishes_pending_and_result_csv_boundaries(self) -> None:
+        skill_text = (
+            PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        for required in (
+            "Pending CSV files may ignore completely blank records",
+            "Zotero result files reject every physical blank record",
+            "all-whitespace result data row",
+            "Do not assume a fixed Zotero MCP return schema",
+            "numeric `libraryID`",
+            "numeric `collectionId`",
+            "numeric `itemId`",
+            "array position",
+            "fail closed",
+            "library failure becomes `zotero_unavailable`",
+            "collection or item ID failure becomes `no_pdf` or `metadata_uncertain`",
+            "Python standard-library `csv.writer`",
+            "open mode `x`",
+            '`newline=""`',
+            '`encoding="utf-8-sig"`',
+            "fully construct and validate all current task IDs before opening the file",
+            "finalize revalidates PDF content and reparse-point safety",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, skill_text)
+
     def test_install_script_supports_dry_run_and_repo_root_env(self) -> None:
         text = (PROJECT_ROOT / "install_codex_skills.ps1").read_text(encoding="utf-8")
 

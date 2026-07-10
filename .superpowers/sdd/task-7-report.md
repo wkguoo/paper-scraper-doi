@@ -74,3 +74,31 @@ The baseline agent could only route to `sd_institutional_skill.py` or `paper_ski
 - Full offline result: 283 tests passed, 2 skipped.
 - No network, real Zotero, credentials, CAPTCHA automation, source-data changes,
   or packaging were used.
+
+## Second review repair cycle
+
+### Review RED
+
+- CLI: the 16-test focused run had 3 expected failures. A stale canonical file,
+  a canonical file containing a physical blank record, and two same-second
+  retry attempts all exposed unconditional canonical reuse. The valid
+  UTF-8-SIG exact-header-only canonical case remained passing.
+- Skill: the 20-test focused run produced 15 missing contract assertions for
+  pending/result blank-row differences, fail-closed numeric IDs, local
+  exclusive CSV writing, and finalize PDF/reparse revalidation.
+
+### Review GREEN
+
+- Canonical reuse now requires a UTF-8 BOM, successful strict CSV decoding, and
+  exactly one record equal to `ZOTERO_RESULT_FIELDS`. Any other canonical is
+  preserved while an exclusive timestamped retry file is selected; same-second
+  collisions use `_2`, `_3`, and later suffixes without overwrite.
+- `_finalize_command()` accepts the selected result path, so printed handoff
+  commands no longer point to stale canonical content.
+- The Skill now separates permissive pending blank-row handling from strict
+  result parsing, refuses inferred Zotero IDs or fixed response schemas, and
+  fixes standard-library CSV write and finalize validation boundaries.
+- Focused results: `BatchCliTests` 16/16 and skill packaging 20/20.
+- Full offline result: 287 tests passed, 2 skipped.
+- No network, real Zotero, credentials, CAPTCHA automation, source-data changes,
+  or packaging were used.

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
@@ -100,24 +102,64 @@ def _powershell_command(command: str, *arguments: object) -> str:
     return " ".join(parts)
 
 
-def _finalize_command(result: BatchRunResult) -> str:
+def _finalize_command(
+    result: BatchRunResult,
+    selected_results: Path | None = None,
+) -> str:
+    results_path = selected_results or result.paths.zotero_results
     return _powershell_command(
         "finalize",
         "--run-dir",
         Path(result.paths.root).expanduser().resolve(),
         "--zotero-results",
-        Path(result.paths.zotero_results).expanduser().resolve(),
+        Path(results_path).expanduser().resolve(),
     )
+
+
+def _write_header_only_exclusive(path: Path) -> None:
+    with path.open("x", newline="", encoding="utf-8-sig") as handle:
+        csv.writer(handle).writerow(ZOTERO_RESULT_FIELDS)
+
+
+def _is_exact_header_only_zotero_results(path: Path) -> bool:
+    try:
+        raw = path.read_bytes()
+        if not raw.startswith(b"\xef\xbb\xbf"):
+            return False
+        text = raw[3:].decode("utf-8")
+        records = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return False
+    return records == [ZOTERO_RESULT_FIELDS]
+
+
+def _retry_timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _create_header_only_retry(parent: Path) -> Path:
+    stem = f"zotero_results_retry_{_retry_timestamp()}"
+    sequence = 1
+    while True:
+        suffix = "" if sequence == 1 else f"_{sequence}"
+        candidate = parent / f"{stem}{suffix}.csv"
+        try:
+            _write_header_only_exclusive(candidate)
+        except FileExistsError:
+            sequence += 1
+            continue
+        return candidate
 
 
 def _ensure_header_only_zotero_results(result: BatchRunResult) -> tuple[Path, bool]:
     path = Path(result.paths.zotero_results).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with path.open("x", newline="", encoding="utf-8-sig") as handle:
-            csv.writer(handle).writerow(ZOTERO_RESULT_FIELDS)
+        _write_header_only_exclusive(path)
     except FileExistsError:
-        return path, False
+        if _is_exact_header_only_zotero_results(path):
+            return path, False
+        return _create_header_only_retry(path.parent), True
     return path, True
 
 
@@ -157,7 +199,7 @@ def _print_next_step(result: BatchRunResult) -> None:
     print(f"Zotero 结果文件绝对路径：{results_path}")
     print(f"精确表头：{','.join(ZOTERO_RESULT_FIELDS)}")
     print("可直接执行：")
-    print(_finalize_command(result))
+    print(_finalize_command(result, results_path))
 
 
 def _known_error_code(error: Exception) -> str | None:

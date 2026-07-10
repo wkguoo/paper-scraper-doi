@@ -4132,10 +4132,127 @@ class BatchCliTests(unittest.TestCase):
                 with redirect_stdout(stdout):
                     exit_code = main(["start", "--text", "10.1000/example"])
             after = results_path.read_bytes()
+            retry_paths = list(results_path.parent.glob("zotero_results_retry_*.csv"))
+            retry_raw = retry_paths[0].read_bytes() if len(retry_paths) == 1 else b""
+            retry_text = (
+                retry_paths[0].read_text(encoding="utf-8-sig")
+                if len(retry_paths) == 1
+                else ""
+            )
+            output = stdout.getvalue()
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(after, original)
-        self.assertIn(str(results_path.resolve()), stdout.getvalue())
+        self.assertEqual(len(retry_paths), 1)
+        retry_path = retry_paths[0]
+        self.assertTrue(retry_raw.startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(
+            retry_text.splitlines(),
+            ["task_id,zotero_item_id,attachment_path,status,reason"],
+        )
+        self.assertIn(str(retry_path.resolve()), output)
+        self.assertNotIn(
+            f"'--zotero-results' {self._ps_quote(results_path.resolve())}",
+            output,
+        )
+
+    def test_start_without_pending_rows_reuses_valid_header_only_canonical(self) -> None:
+        import csv
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_automation.batch_workflow import ZOTERO_RESULT_FIELDS
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "valid canonical"
+            results_path = root / "working" / "zotero_results.csv"
+            results_path.parent.mkdir(parents=True)
+            with results_path.open("x", newline="", encoding="utf-8-sig") as handle:
+                csv.writer(handle).writerow(ZOTERO_RESULT_FIELDS)
+            original = results_path.read_bytes()
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=self._result(root)):
+                with redirect_stdout(stdout):
+                    exit_code = main(["start", "--text", "10.1000/example"])
+
+            retry_paths = list(results_path.parent.glob("zotero_results_retry_*.csv"))
+            after = results_path.read_bytes()
+            output = stdout.getvalue()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(after, original)
+        self.assertEqual(retry_paths, [])
+        self.assertIn(
+            f"'--zotero-results' {self._ps_quote(results_path.resolve())}",
+            output,
+        )
+
+    def test_start_without_pending_rows_rejects_canonical_with_blank_record(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "blank canonical record"
+            results_path = root / "working" / "zotero_results.csv"
+            results_path.parent.mkdir(parents=True)
+            original = (
+                b"\xef\xbb\xbf"
+                b"task_id,zotero_item_id,attachment_path,status,reason\r\n\r\n"
+            )
+            results_path.write_bytes(original)
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=self._result(root)):
+                with redirect_stdout(stdout):
+                    exit_code = main(["start", "--text", "10.1000/example"])
+
+            retry_paths = list(results_path.parent.glob("zotero_results_retry_*.csv"))
+            after = results_path.read_bytes()
+            output = stdout.getvalue()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(after, original)
+        self.assertEqual(len(retry_paths), 1)
+        self.assertIn(str(retry_paths[0].resolve()), output)
+
+    def test_start_without_pending_rows_avoids_same_second_retry_collision(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "same second collision"
+            results_path = root / "working" / "zotero_results.csv"
+            results_path.parent.mkdir(parents=True)
+            original = b"stale-canonical"
+            results_path.write_bytes(original)
+            with patch("paper_batch.start_batch", return_value=self._result(root)), patch(
+                "paper_batch._retry_timestamp",
+                return_value="20260711_050000",
+                create=True,
+            ):
+                with redirect_stdout(StringIO()):
+                    first_exit = main(["start", "--text", "10.1000/example"])
+                with redirect_stdout(StringIO()):
+                    second_exit = main(["start", "--text", "10.1000/example"])
+
+            retry_names = sorted(path.name for path in results_path.parent.glob(
+                "zotero_results_retry_*.csv"
+            ))
+            after = results_path.read_bytes()
+
+        self.assertEqual((first_exit, second_exit), (0, 0))
+        self.assertEqual(after, original)
+        self.assertEqual(
+            retry_names,
+            [
+                "zotero_results_retry_20260711_050000.csv",
+                "zotero_results_retry_20260711_050000_2.csv",
+            ],
+        )
 
     def test_fallback_rows_do_not_create_zotero_results(self) -> None:
         from contextlib import redirect_stdout
