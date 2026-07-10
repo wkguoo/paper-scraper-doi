@@ -78,7 +78,6 @@ class PaperScraperUI:
         self.sheet_var = StringVar(value="")
         self.resume_from_var = StringVar(value="")
         self.cookies_file_var = StringVar(value=self.settings.get("cookies_file") or "")
-        self.manual_pdf_url_var = StringVar(value="")
         self.oa_input_file_var = StringVar(value="")
         self.oa_email_var = StringVar(value=self.settings.get("oa_email") or "")
         self.oa_limit_var = StringVar(value="")
@@ -374,7 +373,7 @@ class PaperScraperUI:
         )
         ttk.Label(
             options,
-            text="OA 资源辅助获取不会读取 Cookie JSON、不会打开机构登录浏览器，也不会使用 Sci-Hub/LibGen。",
+            text="OA 资源辅助获取不会读取 Cookie JSON、不会打开机构登录浏览器。",
             foreground="#555555",
             wraplength=420,
         ).grid(row=8, column=0, columnspan=3, sticky="ew", pady=(12, 0))
@@ -602,10 +601,6 @@ class PaperScraperUI:
         ttk.Label(frame, text="自定义文件名").grid(row=4, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.filename_var).grid(row=5, column=0, columnspan=3, sticky="ew", pady=(2, 8))
 
-        ttk.Label(frame, text="保底 PDF 链接（可选）").grid(row=6, column=0, columnspan=3, sticky="w")
-        ttk.Entry(frame, textvariable=self.manual_pdf_url_var).grid(
-            row=7, column=0, columnspan=3, sticky="ew", pady=(2, 8)
-        )
 
         next_row = 8
         if compact:
@@ -666,7 +661,6 @@ class PaperScraperUI:
             self.sheet_var,
             self.resume_from_var,
             self.cookies_file_var,
-            self.manual_pdf_url_var,
             self.oa_input_file_var,
             self.oa_email_var,
             self.oa_limit_var,
@@ -740,8 +734,6 @@ class PaperScraperUI:
             cookie_source = "未选择 Cookie"
         if self.download_pdf_var.get():
             pdf_text = "下载 PDF+补充材料" if self.download_supplements_var.get() else "下载 PDF"
-            if self._get_manual_pdf_url():
-                pdf_text += "（含保底链接）"
         else:
             pdf_text = "仅保存元数据/解析结果"
 
@@ -795,7 +787,7 @@ class PaperScraperUI:
                 items.append(("warn", f"输出目录不存在，运行时会尝试创建: {output_dir}"))
             else:
                 items.append(("error", f"输出目录父目录不可写或不存在: {output_dir.parent}"))
-            items.append(("ok", "OA 资源辅助获取不使用 Cookie、机构登录或付费墙绕过"))
+            items.append(("ok", "OA 资源辅助获取不使用 Cookie 或机构登录"))
             return items
 
         items = [("warn", warning) for warning in self.startup_warnings]
@@ -847,16 +839,6 @@ class PaperScraperUI:
             items.append(("warn", "未选择 Cookie JSON；运行时将等待手动登录浏览器"))
         else:
             items.append(("warn", "下载 PDF 通常需要 Cookie JSON 或已登录的 Edge/浏览器"))
-
-        manual_url = self._get_manual_pdf_url()
-        if manual_url:
-            normalized_url = manual_url.lower()
-            if not self.download_pdf_var.get():
-                items.append(("warn", "已填写保底 PDF 链接，但 PDF 下载未开启，运行时不会使用"))
-            elif not normalized_url.startswith(("http://", "https://")):
-                items.append(("error", "保底 PDF 链接必须以 http:// 或 https:// 开头"))
-            else:
-                items.append(("ok", "已填写保底 PDF 链接；仅在最后恰好 1 篇 PDF 失败时使用"))
         return items
 
     def _refresh_preflight_panel(self, items: list[tuple[str, str]]) -> None:
@@ -984,12 +966,6 @@ class PaperScraperUI:
             )
         ):
             return False
-        manual_url = self._get_manual_pdf_url()
-        if manual_url:
-            normalized_url = manual_url.lower()
-            if not normalized_url.startswith(("http://", "https://")):
-                messagebox.showerror("参数错误", "保底 PDF 链接必须以 http:// 或 https:// 开头。")
-                return False
         return True
 
     def _build_command(self, materialize_paste: bool = False, auto_retry_input: bool = False) -> list[str]:
@@ -1034,7 +1010,6 @@ class PaperScraperUI:
                 cmd.append("--open-browser-login")
             if self.download_pdf_var.get():
                 cmd.append("--download-pdfs")
-                self._append_value(cmd, "--manual-pdf-url", self._get_manual_pdf_url())
                 if not self.download_supplements_var.get():
                     cmd.append("--no-download-supplements")
             if auto_retry_input:
@@ -1062,7 +1037,6 @@ class PaperScraperUI:
             cmd.append("--open-browser-login")
         if self.download_pdf_var.get():
             cmd.append("--download-pdfs")
-            self._append_value(cmd, "--manual-pdf-url", self._get_manual_pdf_url())
             if not self.download_supplements_var.get():
                 cmd.append("--no-download-supplements")
 
@@ -1092,12 +1066,6 @@ class PaperScraperUI:
         value = value.strip()
         if value:
             cmd += [flag, value]
-
-    def _get_manual_pdf_url(self) -> str:
-        var = getattr(self, "manual_pdf_url_var", None)
-        if var is None:
-            return ""
-        return str(var.get() or "").strip()
 
     def _refresh_command_preview(self) -> None:
         try:

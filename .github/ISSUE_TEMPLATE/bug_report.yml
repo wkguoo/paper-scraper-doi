@@ -14,7 +14,7 @@ body:
       options:
         - label: I have not uploaded cookies, account passwords, PDFs, school/institution internal page screenshots, or private result files.
           required: true
-        - label: This issue does not involve bypassing access permissions, Sci-Hub, LibGen, CAPTCHA, or 403 restrictions.
+        - label: This issue does not involve bypassing access permissions, CAPTCHA, or 403 restrictions.
           required: true
   - type: textarea
     id: problem

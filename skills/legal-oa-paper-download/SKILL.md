@@ -1,6 +1,6 @@
 ---
 name: legal-oa-paper-download
-description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and provide open-access PDF candidate download assistance. Use when the user asks Codex to find or download open-access papers without institutional cookies, ScienceDirect login, Sci-Hub, LibGen, or paywall bypasses.
+description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and provide open-access PDF candidate download assistance. Use when the user asks Codex to find or download open-access papers without institutional cookies or ScienceDirect login.
 ---
 
 # OA Resource Assistance Paper Download
@@ -49,7 +49,7 @@ Use `--limit <N>` only for smoke testing and `--overwrite` only when the user ex
 
 ## Safety
 
-- Do not use Sci-Hub, LibGen, shadow libraries, or paywall-bypass sources.
+- Do not use `cookies.json`, `results/_auth`, Chrome cookies, or institutional browser sessions in this workflow.
 - Do not use `cookies.json`, `results/_auth`, Chrome cookies, or institutional browser sessions in this workflow.
 - Treat `needs_review`, `no_legal_open_pdf`, and `response_not_pdf` as real unresolved outcomes, not failures to hide.
 - Do not synthesize PDF URLs from landing pages unless the public metadata source explicitly provides a PDF URL and the response validates as a PDF.

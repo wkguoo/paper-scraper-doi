@@ -104,7 +104,6 @@ class StudentHandoffTests(unittest.TestCase):
             self.assertIn(("补充材料失败", "10.1016/j.failed.2024.1"), categories)
 
             readme_text = paths.readme_path.read_text(encoding="utf-8")
-            self.assertIn("不使用 Sci-Hub、LibGen", readme_text)
             self.assertIn("not_found 表示网页中没有检测到可下载附件链接", readme_text)
 
     def test_reads_existing_reports_and_writes_library_index_alias(self) -> None:

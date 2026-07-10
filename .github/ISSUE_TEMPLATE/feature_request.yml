@@ -12,7 +12,7 @@ body:
     attributes:
       label: Safety confirmation
       options:
-        - label: This request does not ask the project to bypass access controls, CAPTCHA, 403/rate-limit responses, Sci-Hub, LibGen, or publisher restrictions.
+        - label: This request does not ask the project to bypass access controls, CAPTCHA, 403/rate-limit responses, or publisher restrictions.
           required: true
         - label: I will not upload cookies, passwords, PDFs, private result files, or institution/internal page screenshots.
           required: true

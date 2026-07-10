@@ -85,7 +85,7 @@
   - 修改 `CHANGELOG.md`
 - 具体修改内容：
   - UI 新增“合法 OA 下载”页，支持选择 `.txt/.md/.markdown/.csv` 文件或直接粘贴论文列表，调用 `paper_skill.py`。
-  - 合法 OA 模式支持输出目录、邮箱、dry-run、覆盖已存在 PDF、limit 参数；不使用 Cookie JSON、Chrome/Edge 机构登录或付费墙绕过。
+  - 合法 OA 模式支持输出目录、邮箱、dry-run、覆盖已存在 PDF、limit 参数；不使用 Cookie JSON 或 Chrome/Edge 机构登录。
   - ScienceDirect DOI 解析时从页面 HTML 的 `citation_title`、`citation_author`、`citation_publication_date`、`citation_journal_title` 补全标题、作者、年份和期刊。
   - PDF 文件名生成改为优先使用 `年份_第一作者_标题_短hash.pdf`；没有元数据时用 DOI/PII 兜底，不再优先生成 `unknown-year_Unknown_S...pdf`。
   - 增加 UI 命令构造测试、ScienceDirect 元数据补全测试和无元数据文件名兜底测试。
@@ -173,7 +173,7 @@
   - 修改 `CHANGELOG.md`
 - 具体修改内容：
   - 将公开文档、帮助文本和源码注释中的高风险访问措辞改为中性表述，强调使用用户已授权的真实浏览器会话、Cookie 和 CDP 捕获有权限访问的 PDF。
-  - 保留并强化合规边界：不绕过权限、不自动完成 CAPTCHA、不使用 Sci-Hub/LibGen，不下载无合法访问权限的 PDF。
+  - 保留并强化合规边界：不绕过权限、不自动完成 CAPTCHA，不下载无合法访问权限的 PDF。
   - 新增 `NOTICE`，声明本项目基于 `GAO-pooh/paper-scraper` 修改，原项目为 MIT License，并列出本项目的主要新增能力。
   - 在 `LICENSE` 中补充 `Modifications Copyright (c) 2026 wkguoo`。
   - 在 README 和 Windows UI 文档中补充公开发布/打包注意事项，提醒不要发布 `cookie.json`、`results/`、PDF、虚拟环境、浏览器缓存和本地构建产物。
@@ -284,7 +284,7 @@
 - 如何运行：
   - 格式检查：`git diff --check`
   - 完整单元测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
-  - 文案扫描：`rg -n "Sci-Hub|LibGen|CAPTCHA|403|cookie|cookies" README.md README_zh.md SECURITY.md .github`
+  - 文案扫描：`rg -n "CAPTCHA|403|cookie|cookies" README.md README_zh.md SECURITY.md .github`
   - 敏感产物跟踪检查：`git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist"`
 - 生成的输出文件：
   - 新增 `SECURITY.md`
@@ -341,6 +341,7 @@
 - 具体修改内容：
   - 新增 `assert_same_existing_path()` 测试辅助函数，先检查 JSON 中记录的路径和期望路径都存在，再用 `Path.samefile()` 判断是否指向同一个文件。
   - 将 `paper_index_path`、`failure_next_steps_path`、`paper_index_xlsx_path` 三处直接字符串相等断言改为同文件断言。
+  - 将 `run_summary.txt` 中的三个路径字符串断言改为检查关键输出文件名，避免 Windows 短路径/长路径差异造成误判。
 - 修改原因：
   - GitHub Actions 的 Windows runner 会在临时目录中混用短用户名路径 `C:\Users\RUNNER~1\...` 和长用户名路径 `C:\Users\runneradmin\...`。
   - 这两种字符串不同，但实际指向同一个文件；原测试直接比较字符串会误判失败。
@@ -358,3 +359,123 @@
 - 注意事项或潜在风险：
   - 本次只修复测试在 Windows 短路径/长路径差异下的断言方式，不改变业务输出路径、不改变下载逻辑。
   - 本地仍存在被 `.gitignore` 忽略的 `cookie.json`、`results/`、`dist/` 等文件；它们不应进入 Git、Issue 或 release 附件。
+## 2026-07-09 18:21:32 +08:00
+
+- 本次任务目标：
+  - 先修复 IUCr 非 Elsevier 机构下载中 `not_pdf_response` 的常见根因。
+  - 新增 AAAS、Taylor & Francis、ACS、AIP 四类常用出版社的合法官网 PDF 候选链接适配，避免这些 DOI 直接落入 `unsupported_publisher`。
+- 新增、修改或删除的文件：
+  - 新增 `paper_automation/institutional/adapters/common_publishers.py`
+  - 修改 `paper_automation/institutional/adapters/__init__.py`
+  - 修改 `paper_automation/institutional/adapters/iucr.py`
+  - 修改 `paper_automation/institutional/pdf_checks.py`
+  - 修改 `paper_automation/institutional/registry.py`
+  - 修改 `tests/test_institutional_browser.py`
+  - 修改 `tests/test_institutional_paper_skill.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - 为 AAAS、Taylor & Francis、ACS、AIP 增加 adapter，按 DOI 前缀、publisher 字段或落地页 host 识别出版社。
+  - 新增出版社官网 PDF 候选路由：`science.org/doi/pdf/...`、`tandfonline.com/doi/pdf/...?...`、`pubs.acs.org/doi/pdf/...`、`pubs.aip.org/.../article-pdf/doi/...`。
+  - IUCr 适配新增 `journals.iucr.org/.../index.html` 到同目录 `文章代码.pdf` 的候选路径。
+  - IUCr 适配修复 `scripts.iucr.org/cgi-bin/paper?S...` 查询串被覆盖的问题，现在追加 `download=pdf` 时保留原始文章编号。
+  - PDF URL 判断新增对 `/epdf` 和 `article-pdf` 的识别。
+  - 更新离线测试，覆盖 IUCr 文章代码 PDF 路径、IUCr scripts 查询串保留、常用出版社 adapter 路由和工作流报告行为。
+- 修改原因：
+  - 用户提供的失败清单中，IUCr 失败集中表现为页面可打开但未捕获 PDF，根因之一是候选 PDF URL 不完整或破坏了 scripts 查询串。
+  - AAAS、Taylor & Francis、ACS、AIP 原先被明确标为未支持出版社，导致即使机构浏览器可访问，也不会进入下载尝试。
+  - 这些修改只增加合法出版社官网候选链接，不绕过付费墙、不伪造权限、不跳过 `%PDF` 文件头校验。
+- 如何运行：
+  - 定向 adapter 测试：`.\.venv\Scripts\python.exe -m unittest tests.test_institutional_browser -v`
+  - 定向工作流测试：`.\.venv\Scripts\python.exe -m unittest tests.test_institutional_paper_skill -v`
+  - 完整单元测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - 编译检查：`.\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`
+- 生成的输出文件：
+  - 新增源码文件 `paper_automation/institutional/adapters/common_publishers.py`
+  - 测试过程只在系统临时目录生成临时 CSV、PDF、JSON、日志文件。
+  - 本次没有生成新的真实论文 PDF、下载结果目录、Windows UI 打包产物或 release 附件。
+- 如何检查是否成功：
+  - `tests.test_institutional_browser` 应显示 9 个测试全部通过。
+  - `tests.test_institutional_paper_skill` 应显示 2 个测试全部通过。
+  - 完整测试应显示 `Ran 146 tests ... OK`。
+  - 重新处理失败清单时，#8、#43、#47、#63、#88 不应再直接报告 `unsupported_publisher`，而应进入对应 adapter 后报告真实下载结果，例如 `pdf_downloaded`、`auth_required`、`publisher_blocked`、`not_pdf_response` 或 `error`。
+  - IUCr 的 `journals.iucr.org` 和 `scripts.iucr.org` DOI 应能生成更具体的 PDF 候选 URL。
+- 注意事项或潜在风险：
+  - 新增 adapter 只负责生成候选 PDF 链接；真实下载仍取决于学校 VPN、机构登录、出版社权限、验证码和站点反自动化策略。
+  - AIP 的 DOI 直连路由依赖落地页中的期刊路径；若某些 AIP 文章落地页结构不同，仍可能需要后续按报告继续补适配。
+  - 本次没有自动重新下载失败论文，没有修改原始输入数据，也没有重新打包项目。
+
+## 2026-07-09 22:10:20 +08:00
+
+- 本次任务目标：
+  - 在正式下载流程开始时允许输入一个可选保底 PDF 链接。
+  - 自动下载流程照常运行；只有最后恰好 1 篇 PDF 失败时，才使用该链接补下载。
+  - 不增加单独 CSV、不增加第二套下载流程。
+- 新增、修改或删除的文件：
+  - 修改 `doi_batch_utils.py`
+  - 修改 `sd_scraper.py`
+  - 修改 `sd_institutional_skill.py`
+  - 修改 `paper_scraper_ui.py`
+  - 修改 `tests/test_doi_batch_utils.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - 为 `PdfDownloadRecord` 和 `pdf_download_report.csv` 增加 `manual_pdf_url`、`manual_status`、`manual_reason` 三列。
+  - 新增 `apply_manual_pdf_url_fallback()`，负责单链接保底下载、`http/https` 链接校验、PDF 文件头校验、HTML/登录页拒绝和多失败项拒绝。
+  - `sd_scraper.py` 新增 `--manual-pdf-url` 参数，并在 DOI 批量和检索下载结束后执行单篇失败保底补下载。
+  - `sd_institutional_skill.py` 同步新增 `--manual-pdf-url` 参数和相同保底逻辑。
+  - Windows UI 在“权限与输出”区域新增“保底 PDF 链接（可选）”输入框，并在开启 PDF 下载时把它传入正式命令。
+  - UI 运行前体检和参数校验会提示/阻止非 `http/https` 链接。
+  - 新增测试覆盖：单篇失败 + 有效 PDF 成功补下载、单篇失败 + HTML 拒绝、多篇失败不猜测、全部自动成功时不使用保底链接、UI 命令参数传递。
+- 修改原因：
+  - 部分文章自动流程可能因出版社适配、机构登录或页面捕获失败而无法下载。
+  - 用户希望在同一个正式流程开始时只输入一个保底链接，避免另建 CSV 或额外流程。
+  - 单链接无法可靠匹配多篇失败文章，因此只在最后恰好剩 1 篇失败时使用，降低误配风险。
+- 如何运行：
+  - UI：启动 `start_paper_scraper_ui.bat`，在“DOI 批量下载”页填写输入表和“保底 PDF 链接（可选）”，然后按原流程运行。
+  - CLI：`.\.venv\Scripts\python.exe sd_scraper.py -m doi_batch --input "papers.csv" --download-pdfs --manual-pdf-url "https://example.edu/paper.pdf"`
+  - 技能入口：`.\.venv\Scripts\python.exe sd_institutional_skill.py --input "papers.csv" --manual-pdf-url "https://example.edu/paper.pdf"`
+- 生成的输出文件：
+  - 正式运行时仍输出到原有结果目录和 `pdfs/` 子目录。
+  - `pdf_download_report.csv` 新增三列用于记录保底链接状态。
+  - 测试过程只在系统临时目录生成临时 CSV、PDF、JSON、日志文件。
+  - 本次没有生成真实论文 PDF、没有修改原始输入数据、没有打包项目。
+- 如何检查是否成功：
+  - 单元测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`，结果为 `Ran 150 tests ... OK`。
+  - 编译检查：`.\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation doi_batch_utils.py`。
+  - 格式检查：`git diff --check` 不应出现空白错误。
+  - 实际运行后，若自动下载只剩 1 篇 PDF 失败且保底链接返回真 PDF，`pdf_download_report.csv` 中该行状态应为 `manual_pdf_downloaded`，PDF 应保存到 `pdfs/`。
+- 注意事项或潜在风险：
+  - 保底链接应使用你有权访问的普通 PDF 链接；程序不会新增任何额外出版社或站点适配。
+  - 如果最后失败超过 1 篇，程序不会猜测该链接对应哪一篇，会记录 `manual_url_ambiguous_multiple_failures`。
+  - 如果链接返回 HTML、登录页或非 PDF 内容，会保留原失败状态，并记录 `manual_response_not_pdf`。
+  - 真正能否补下载仍取决于链接有效期、机构登录状态、学校 VPN、站点权限和网络连接。
+
+## 2026-07-10 11:50:02 +08:00
+
+- 本次任务目标：解析 `D:\桌面\文献下载\acta_v51_must_cite_100_high_level_references.md`，并下载其中可合法访问的论文 PDF。
+- 新增、修改或删除的文件：
+  - 新增 `results/acta_v51_must_cite_institutional_20260710/download_status.md`。
+  - 新增 `results/acta_v51_must_cite_institutional_20260710/remaining_aip.txt`。
+  - 新增下载结果目录及其中的 PDF、预检表、失败报告和运行摘要。
+  - 修改 `CHANGELOG.md`，追加本次操作记录。
+- 具体修改内容：
+  - 预检识别出 14 个有效且唯一的 DOI，无重复、无无效项。
+  - 使用非 Elsevier 机构访问下载器，确认 7 篇 PDF 保存到 `non_elsevier_institutional/pdfs/`。
+  - 通过 Chrome 中的 IUCr 官方文章页对另外 6 篇触发 PDF 下载，但浏览器接口未返回保存路径，因此只记录为“已触发、待确认”。
+  - 对最后一篇 AIP 文献单独重试，报告为 `not_pdf_response` / `network_pdf_not_captured`，页面出现 Cloudflare Turnstile 验证。
+- 修改原因：原始清单由 AAAS、Taylor & Francis、ACS、Springer、IUCr 和 AIP 等多个非 Elsevier 出版商组成，ScienceDirect 专用入口不适用，需要按出版商路由并使用合法机构访问或官方公开链接。
+- 如何运行：
+  - 预检：`.\.venv\Scripts\python.exe sd_institutional_skill.py --input "D:\桌面\文献下载\acta_v51_must_cite_100_high_level_references.md" --out ".\results" --run-name "acta_v51_must_cite_retry_20260710" --preflight`
+  - 非 Elsevier 机构下载：`.\.venv\Scripts\python.exe institutional_paper_skill.py --input "D:\桌面\文献下载\acta_v51_must_cite_100_high_level_references.md" --out ".\results\acta_v51_must_cite_institutional_20260710"`
+  - AIP 单篇重试：`.\.venv\Scripts\python.exe institutional_paper_skill.py --input ".\results\acta_v51_must_cite_institutional_20260710\remaining_aip.txt" --out ".\results\acta_v51_must_cite_institutional_20260710\aip_retry"`
+- 生成的输出文件：
+  - 7 个已确认的 PDF：`results/acta_v51_must_cite_institutional_20260710/non_elsevier_institutional/pdfs/`。
+  - 状态汇总：`results/acta_v51_must_cite_institutional_20260710/download_status.md`。
+  - AIP 失败报告：`results/acta_v51_must_cite_institutional_20260710/aip_retry/non_elsevier_institutional/institutional_pdf_download_report.csv`。
+- 如何检查是否成功：
+  - 项目 PDF 目录应有 7 个非空 `.pdf` 文件。
+  - `download_status.md` 应列出 14 个 DOI 的三类状态。
+  - AIP 报告应保留真实失败原因，不应把 HTML/Cloudflare 页面保存为 PDF。
+- 注意事项或潜在风险：
+  - 6 篇 IUCr 文献的官方 Chrome 下载动作已完成，但项目目录中未确认其保存位置；需在 Chrome 下载列表或浏览器配置的下载目录中确认。
+  - AIP 文献需要用户本人完成 Cloudflare Turnstile 验证；不得绕过验证码或付费墙。
+  - 未修改原始 Markdown，未自动重新打包项目。

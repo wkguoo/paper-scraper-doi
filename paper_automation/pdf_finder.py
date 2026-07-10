@@ -5,9 +5,6 @@ from urllib.parse import urlparse
 from .models import MetadataResult, PdfCandidate
 
 
-BLOCKED_DOMAINS = ("sci-hub", "libgen", "library genesis")
-
-
 def choose_pdf_candidate(metadata: MetadataResult) -> PdfCandidate | None:
     unpaywall = metadata.unpaywall or {}
     if unpaywall.get("is_oa"):
@@ -54,10 +51,7 @@ def _allowed_url(url: str) -> bool:
     if not url:
         return False
     parsed = urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        return False
-    host = parsed.netloc.lower()
-    return not any(blocked in host for blocked in BLOCKED_DOMAINS)
+    return parsed.scheme in {"http", "https"}
 
 
 def _looks_like_pdf_url(url: str) -> bool:

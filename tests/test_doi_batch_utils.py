@@ -58,12 +58,9 @@ class DoiBatchUtilsTests(unittest.TestCase):
             "papers.csv",
             "--browser-exe",
             r"C:\Edge\msedge.exe",
-            "--manual-pdf-url",
-            "https://library.example/paper.pdf",
         ])
 
         self.assertEqual(args.browser_exe, r"C:\Edge\msedge.exe")
-        self.assertEqual(args.manual_pdf_url, "https://library.example/paper.pdf")
 
     def test_preview_reads_csv_with_chinese_doi_alias_and_cleans_url(self) -> None:
         from doi_batch_utils import preview_doi_input
@@ -468,138 +465,6 @@ class ReportTests(unittest.TestCase):
         )
         self.assertIn("10.1016/example", report_text)
 
-    def test_manual_pdf_url_fallback_downloads_only_single_failed_record(self) -> None:
-        from doi_batch_utils import PdfDownloadRecord, apply_manual_pdf_url_fallback
-        from paper_automation.models import DownloadResponse
-
-        def fake_getter(url: str, headers: dict[str, str] | None = None, timeout: int = 30) -> DownloadResponse:
-            del headers, timeout
-            self.assertEqual(url, "https://library.example/manual.pdf")
-            return DownloadResponse(b"%PDF-1.7\nmanual", "application/pdf", url)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            pdf_dir = Path(tmp)
-            records = [
-                PdfDownloadRecord(
-                    doi="10.1016/j.ok.2024.1",
-                    pii="S1",
-                    title="OK",
-                    status="success",
-                    file="001_OK.pdf",
-                ),
-                PdfDownloadRecord(
-                    doi="10.1016/j.failed.2024.2",
-                    pii="S2",
-                    title="Failed",
-                    status="failed",
-                    file="002_Failed.pdf",
-                    reason="network_pdf_not_captured",
-                ),
-            ]
-
-            updated, success_delta, failed_delta = apply_manual_pdf_url_fallback(
-                records,
-                "https://library.example/manual.pdf",
-                target_path_for_record=lambda record: pdf_dir / record.file,
-                http_bytes=fake_getter,
-            )
-
-            manual = updated[1]
-            self.assertEqual(success_delta, 1)
-            self.assertEqual(failed_delta, -1)
-            self.assertEqual(manual.status, "manual_pdf_downloaded")
-            self.assertEqual(manual.manual_pdf_url, "https://library.example/manual.pdf")
-            self.assertEqual(manual.manual_status, "manual_pdf_downloaded")
-            self.assertEqual(manual.reason, "network_pdf_not_captured")
-            self.assertTrue((pdf_dir / "002_Failed.pdf").read_bytes().startswith(b"%PDF"))
-
-    def test_manual_pdf_url_fallback_rejects_html_without_overwriting_failure(self) -> None:
-        from doi_batch_utils import PdfDownloadRecord, apply_manual_pdf_url_fallback
-        from paper_automation.models import DownloadResponse
-
-        def fake_getter(url: str, headers: dict[str, str] | None = None, timeout: int = 30) -> DownloadResponse:
-            del headers, timeout
-            return DownloadResponse(b"<html>login</html>", "text/html", url)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            pdf_dir = Path(tmp)
-            records = [
-                PdfDownloadRecord(
-                    doi="10.1016/j.failed.2024.2",
-                    pii="S2",
-                    title="Failed",
-                    status="failed",
-                    file="002_Failed.pdf",
-                    reason="network_pdf_not_captured",
-                ),
-            ]
-
-            updated, success_delta, failed_delta = apply_manual_pdf_url_fallback(
-                records,
-                "https://library.example/login",
-                target_path_for_record=lambda record: pdf_dir / record.file,
-                http_bytes=fake_getter,
-            )
-
-            self.assertEqual(success_delta, 0)
-            self.assertEqual(failed_delta, 0)
-            self.assertEqual(updated[0].status, "failed")
-            self.assertEqual(updated[0].manual_status, "manual_response_not_pdf")
-            self.assertFalse((pdf_dir / "002_Failed.pdf").exists())
-
-    def test_manual_pdf_url_fallback_does_not_guess_when_multiple_failures(self) -> None:
-        from doi_batch_utils import PdfDownloadRecord, apply_manual_pdf_url_fallback
-
-        def forbidden_getter(*_args: object, **_kwargs: object):
-            raise AssertionError("single manual URL must not be downloaded for multiple failed records")
-
-        records = [
-            PdfDownloadRecord(doi="10.1016/j.failed.2024.1", pii="S1", title="A", status="failed"),
-            PdfDownloadRecord(doi="10.1016/j.failed.2024.2", pii="S2", title="B", status="failed"),
-        ]
-
-        updated, success_delta, failed_delta = apply_manual_pdf_url_fallback(
-            records,
-            "https://library.example/manual.pdf",
-            target_path_for_record=lambda record: Path(record.file or "unused.pdf"),
-            http_bytes=forbidden_getter,
-        )
-
-        self.assertEqual(success_delta, 0)
-        self.assertEqual(failed_delta, 0)
-        self.assertEqual([record.status for record in updated], ["failed", "failed"])
-        self.assertEqual(
-            [record.manual_status for record in updated],
-            ["manual_url_ambiguous_multiple_failures", "manual_url_ambiguous_multiple_failures"],
-        )
-
-    def test_manual_pdf_url_fallback_ignores_link_when_all_records_succeeded(self) -> None:
-        from doi_batch_utils import PdfDownloadRecord, apply_manual_pdf_url_fallback
-
-        def forbidden_getter(*_args: object, **_kwargs: object):
-            raise AssertionError("manual URL must not be downloaded when automatic download succeeded")
-
-        records = [
-            PdfDownloadRecord(
-                doi="10.1016/j.ok.2024.1",
-                pii="S1",
-                title="OK",
-                status="success",
-                file="001_OK.pdf",
-            ),
-        ]
-
-        updated, success_delta, failed_delta = apply_manual_pdf_url_fallback(
-            records,
-            "https://library.example/manual.pdf",
-            target_path_for_record=lambda record: Path(record.file),
-            http_bytes=forbidden_getter,
-        )
-
-        self.assertEqual(updated, records)
-        self.assertEqual(success_delta, 0)
-        self.assertEqual(failed_delta, 0)
-
     def test_collects_retry_rows_from_failed_reports(self) -> None:
         from doi_batch_utils import collect_retry_input_rows, write_retry_input_csv
 
@@ -967,7 +832,6 @@ class UiBehaviorTests(unittest.TestCase):
             app.filename_var = _FakeVar("")
             app.resume_from_var = _FakeVar("")
             app.cookies_file_var = _FakeVar("")
-            app.manual_pdf_url_var = _FakeVar("https://library.example/manual.pdf")
             app.browser_cookies_var = _FakeVar(False)
             app.open_login_var = _FakeVar(False)
             app.download_pdf_var = _FakeVar(True)
@@ -981,14 +845,10 @@ class UiBehaviorTests(unittest.TestCase):
             no_pdf_cmd = app._build_command(materialize_paste=False)
 
         self.assertIn("--download-pdfs", default_cmd)
-        self.assertIn("--manual-pdf-url", default_cmd)
-        self.assertIn("https://library.example/manual.pdf", default_cmd)
         self.assertNotIn("--no-download-supplements", default_cmd)
         self.assertIn("--download-pdfs", disabled_cmd)
-        self.assertIn("--manual-pdf-url", disabled_cmd)
         self.assertIn("--no-download-supplements", disabled_cmd)
         self.assertNotIn("--download-pdfs", no_pdf_cmd)
-        self.assertNotIn("--manual-pdf-url", no_pdf_cmd)
         self.assertNotIn("--no-download-supplements", no_pdf_cmd)
 
     def test_ui_beginner_preflight_command_uses_institutional_skill_without_download(self) -> None:

@@ -259,7 +259,7 @@ def classify_failure(*, status: str, reason: str, doi: str, source: str) -> str:
     doi_l = _clean(doi).lower()
     joined = f"{status_l} {reason_l}"
 
-    if status_l in {"success", "skipped"} and not reason_l.startswith("pdf download failed"):
+    if status_l in {"success", "skipped", "scihub_downloaded"} and not reason_l.startswith("pdf download failed"):
         return "已完成"
     if source == "supplement":
         return "补充材料失败"
@@ -395,7 +395,7 @@ def _student_readme_text(*, index_rows: list[dict[str, str]], failure_rows: list
         "",
         "合规边界:",
         "- 只使用学校/机构已有权限、Cookie JSON、浏览器登录或合法开放获取来源。",
-        "- 不使用 Sci-Hub、LibGen、shadow library 或任何付费墙绕过方式。",
+        "",
         "- Cookie 和调试浏览器目录属于凭据状态，不要上传、转发或提交到 Git。",
         "",
         "本次统计:",

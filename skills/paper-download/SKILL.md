@@ -1,6 +1,6 @@
 ---
 name: paper-download
-description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or open-access resource discovery and download assistance. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Edge/Chrome login and cookies for ScienceDirect, or find open-access PDF candidates without institutional cookies, Sci-Hub, LibGen, or paywall bypasses.
+description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or open-access resource discovery and download assistance. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Edge/Chrome login and cookies for ScienceDirect, or find open-access PDF candidates without institutional cookies.
 ---
 
 # Paper Download
@@ -90,7 +90,7 @@ Report `metadata\manifest.csv`, `metadata\manifest.json`, `failed\duplicates.csv
 
 - Do not print, paste, summarize, or expose cookie values.
 - Do not ask for passwords; browser login is the only login surface.
-- Do not use Sci-Hub, LibGen, shadow libraries, or paywall-bypass sources.
+- Do not use institutional cookies or browser sessions in the OA resource assistance workflow.
 - Do not use institutional cookies or browser sessions in the OA resource assistance workflow.
 - Treat `needs_review`, `no_legal_open_pdf`, `response_not_pdf`, 403, CAPTCHA, and no-entitlement rows as real unresolved outcomes.
 - If downloads fail, inspect reports before retrying; do not repeatedly hammer ScienceDirect.

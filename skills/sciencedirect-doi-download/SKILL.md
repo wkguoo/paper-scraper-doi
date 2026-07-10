@@ -116,7 +116,7 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 ```
 
 - If ScienceDirect shows CAPTCHA, wait for the user to complete it in the opened browser, then continue polling instead of restarting the job repeatedly.
-- If institutional access still fails, inspect `pdf_download_report.csv` and `run_summary.json`, then use only legal public sources such as publisher OA pages, author/lab pages, or Unpaywall. Do not use Sci-Hub, LibGen, or paywall-bypass sources.
+- If institutional access still fails, inspect `pdf_download_report.csv` and `run_summary.json`, then use only legal public sources such as publisher OA pages, author/lab pages, or Unpaywall.
 - If Chinese text in `run_summary.txt` looks garbled in PowerShell, inspect the CSV/XLSX reports or open the file in an editor with UTF-8 support.
 - If `review_hint` says to补 DOI or完整引用, report that row as unresolved and ask for DOI/title/journal/year/volume/pages before retrying.
 - If supplement status is `not_found`, explain that no detectable supplement links were exposed on the article page; do not count it as a PDF failure.
@@ -125,7 +125,7 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 
 - Do not print, paste, summarize, or expose cookie values.
 - Do not ask the user for passwords; the browser window is the only login surface.
-- Do not use Sci-Hub, LibGen, or paywall-bypass sources.
+- Treat `results/_auth/sciencedirect_cookies.json` as a local credential cache and never commit it.
 - Treat `results/_auth/sciencedirect_cookies.json` as a local credential cache and never commit it.
 - Treat the temporary debug browser profile as local credential state. The default workflow copies only a minimal browser profile subset, but the profile still must not be shared.
 - Treat `needs_review` rows as unresolved; do not manually force them into download unless the user confirms the DOI.

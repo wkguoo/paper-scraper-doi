@@ -21,7 +21,7 @@ from doi_batch_utils import (
     PdfDownloadRecord,
     RunSummary,
     TEXT_ENCODINGS,
-    apply_manual_pdf_url_fallback,
+    apply_auto_fallback,
     check_cookie_json,
     clean_doi,
     extract_doi_from_text,
@@ -321,22 +321,14 @@ def main(argv: list[str] | None = None) -> int:
             for item in results
         ]
 
-    if download_pdfs and args.manual_pdf_url:
-        pdf_records, manual_success_delta, manual_failed_delta = apply_manual_pdf_url_fallback(
-            pdf_records,
-            args.manual_pdf_url,
-            target_path_for_record=lambda record: run_dir / "pdfs" / Path(
-                record.file or f"manual_{clean_doi(record.doi).replace('/', '_') or 'paper'}.pdf"
-            ).name,
-        )
-        if manual_success_delta or manual_failed_delta:
-            pdf_success += manual_success_delta
-            pdf_failed = max(0, pdf_failed + manual_failed_delta)
-            print("[保底下载] 已使用手动 PDF 链接补下载 1 篇。", flush=True)
-        else:
-            manual_statuses = sorted({record.manual_status for record in pdf_records if record.manual_status})
-            if manual_statuses:
-                print(f"[保底下载] 未补下载；状态: {', '.join(manual_statuses)}", flush=True)
+    # --- 自动 Sci-Hub / Anna's Archive 回退 ---
+    pdf_records, auto_success, auto_failed = apply_auto_fallback(
+        pdf_records, run_dir / "pdfs",
+    )
+    if auto_success or auto_failed:
+        pdf_success += auto_success
+        pdf_failed = max(0, pdf_failed + auto_failed)
+        print(f"[自动回退] Sci-Hub/Anna's 补下载: 成功 {auto_success}，仍失败 {auto_failed}", flush=True)
 
     pdf_report_path = write_pdf_download_report(pdf_records, run_dir)
     if download_supplements and results:
@@ -432,10 +424,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Resolve DOI metadata but do not download PDFs")
     parser.add_argument("--no-download-pdfs", action="store_true", help="Skip PDF downloads after DOI resolution")
     parser.add_argument("--no-download-supplements", action="store_true", help="When downloading PDFs, do not download ScienceDirect supplementary files")
-    parser.add_argument(
-        "--manual-pdf-url",
-        help="Optional fallback PDF URL; after automatic downloads, use it only if exactly one PDF failed",
-    )
     parser.add_argument("--cookies", help="Explicit Cookie JSON file to use before cached/browser cookies")
     parser.add_argument(
         "--login-wait-seconds",

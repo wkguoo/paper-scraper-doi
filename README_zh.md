@@ -28,7 +28,6 @@
 - 不能替你输入学校账号密码。
 - 不能绕过学校、出版社或 ScienceDirect 的访问权限。
 - 不能自动完成 CAPTCHA、人机验证、403 或限速。
-- 不能使用 Sci-Hub、LibGen 或其他侵权来源。
 - 不能保证题名-only 的模糊匹配 100% 正确；不确定的记录会进入 `needs_review`。
 
 ## 新手最快开始
@@ -149,7 +148,7 @@ DOI: 10.1038/s41586-024-07000-1
 Example title copied from a bibliography
 ```
 
-这个流程不会读取 `cookies.json`，不会使用机构登录，也不会使用 Sci-Hub 或 LibGen。
+这个流程不会读取 `cookies.json`，不会使用机构登录。
 
 ## 图形界面用法
 

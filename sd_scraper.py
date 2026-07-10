@@ -61,7 +61,7 @@ from doi_batch_utils import (
     RunEvent,
     RunSummary,
     SupplementDownloadRecord,
-    apply_manual_pdf_url_fallback,
+    apply_auto_fallback,
     check_cookie_json,
     clean_doi,
     extract_doi_from_text,
@@ -494,7 +494,7 @@ class ScienceDirectScraper:
         return (
             "Open pdf_download_report.csv and run_summary.json to inspect exact failures.\n"
             "If institutional access failed, sign in through the Edge debug window and retry the DOI batch.\n"
-            "If ScienceDirect remains inaccessible, use only legal public sources such as publisher OA pages, author/lab pages, or Unpaywall; do not use Sci-Hub/LibGen."
+            "If ScienceDirect remains inaccessible, use only legal public sources such as publisher OA pages, author/lab pages, or Unpaywall."
         )
 
     # ── Cookie 支持 ──────────────────────────────────────────────────────────
@@ -2851,8 +2851,6 @@ def build_parser():
     parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
                         help="在保存文献列表后，继续下载对应 PDF")
-    parser.add_argument("--manual-pdf-url",
-                        help="可选保底 PDF 链接；自动下载结束后若恰好剩 1 篇失败，则尝试用该链接补下载")
     parser.add_argument("--no-download-supplements", action="store_true",
                         help="下载 PDF 时不自动下载 ScienceDirect 补充材料")
     parser.add_argument("--output",        help="输出目录（默认 ./results/）")
@@ -3010,22 +3008,14 @@ def main():
                 for item in results
             ]
 
-        if args.download_pdfs and args.manual_pdf_url:
-            pdf_records, manual_success_delta, manual_failed_delta = apply_manual_pdf_url_fallback(
-                pdf_records,
-                args.manual_pdf_url,
-                target_path_for_record=lambda record: Path(output_dir) / "pdfs" / Path(
-                    record.file or f"manual_{clean_doi(record.doi).replace('/', '_') or 'paper'}.pdf"
-                ).name,
-            )
-            if manual_success_delta or manual_failed_delta:
-                pdf_success += manual_success_delta
-                pdf_failed = max(0, pdf_failed + manual_failed_delta)
-                print("[保底下载] 已使用手动 PDF 链接补下载 1 篇。")
-            else:
-                manual_statuses = sorted({record.manual_status for record in pdf_records if record.manual_status})
-                if manual_statuses:
-                    print(f"[保底下载] 未补下载；状态: {', '.join(manual_statuses)}")
+        # --- 自动 Sci-Hub / Anna's Archive 回退 ---
+        pdf_records, auto_success, auto_failed = apply_auto_fallback(
+            pdf_records, Path(output_dir) / "pdfs",
+        )
+        if auto_success or auto_failed:
+            pdf_success += auto_success
+            pdf_failed = max(0, pdf_failed + auto_failed)
+            print(f"[自动回退] Sci-Hub/Anna's 补下载: 成功 {auto_success}，仍失败 {auto_failed}")
 
         pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
         if download_supplements and results:
@@ -3168,22 +3158,14 @@ def main():
         )
         if download_result:
             pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
-            if args.manual_pdf_url:
-                pdf_records, manual_success_delta, manual_failed_delta = apply_manual_pdf_url_fallback(
-                    pdf_records,
-                    args.manual_pdf_url,
-                    target_path_for_record=lambda record: Path(output_dir) / "pdfs" / Path(
-                        record.file or f"manual_{clean_doi(record.doi).replace('/', '_') or 'paper'}.pdf"
-                    ).name,
-                )
-                if manual_success_delta or manual_failed_delta:
-                    pdf_success += manual_success_delta
-                    pdf_failed = max(0, pdf_failed + manual_failed_delta)
-                    print("[保底下载] 已使用手动 PDF 链接补下载 1 篇。")
-                else:
-                    manual_statuses = sorted({record.manual_status for record in pdf_records if record.manual_status})
-                    if manual_statuses:
-                        print(f"[保底下载] 未补下载；状态: {', '.join(manual_statuses)}")
+            # --- 自动 Sci-Hub / Anna's Archive 回退 ---
+            pdf_records, auto_success, auto_failed = apply_auto_fallback(
+                pdf_records, Path(output_dir) / "pdfs",
+            )
+            if auto_success or auto_failed:
+                pdf_success += auto_success
+                pdf_failed = max(0, pdf_failed + auto_failed)
+                print(f"[自动回退] Sci-Hub/Anna's 补下载: 成功 {auto_success}，仍失败 {auto_failed}")
             pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
             print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")
         if not args.no_download_supplements and isinstance(download_result, DownloadRunResult):
