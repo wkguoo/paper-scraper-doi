@@ -259,7 +259,7 @@ def classify_failure(*, status: str, reason: str, doi: str, source: str) -> str:
     doi_l = _clean(doi).lower()
     joined = f"{status_l} {reason_l}"
 
-    if status_l in {"success", "skipped", "scihub_downloaded"} and not reason_l.startswith("pdf download failed"):
+    if status_l in {"success", "skipped"} and not reason_l.startswith("pdf download failed"):
         return "已完成"
     if source == "supplement":
         return "补充材料失败"

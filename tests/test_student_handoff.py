@@ -7,6 +7,18 @@ from pathlib import Path
 
 
 class StudentHandoffTests(unittest.TestCase):
+    def test_shadow_library_status_is_not_completed(self) -> None:
+        from student_handoff import classify_failure
+
+        category = classify_failure(
+            status="scihub_downloaded",
+            reason="",
+            doi="10.1016/j.failed.2024.1",
+            source="pdf",
+        )
+
+        self.assertEqual(category, "可重试 PDF 失败")
+
     def test_writes_student_index_readme_xlsx_and_failure_next_steps(self) -> None:
         from doi_batch_utils import PdfDownloadRecord, SupplementDownloadRecord
         from student_handoff import write_student_handoff

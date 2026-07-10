@@ -510,3 +510,14 @@
 - 生成的输出文件：仅生成 `.codex-test-tmp` 下的临时测试报告；未修改原始输入、现有 PDF 或项目打包文件。
 - 如何检查是否成功：安全测试和完整测试套件均为 `OK`，并且源码扫描不再匹配 `Sci-Hub`、`scihub`、`Anna's Archive`、`annas_archive` 或 `apply_auto_fallback`。
 - 注意事项或潜在风险：此更改不会下载 OA 失败的文献；这些记录将留待后续经授权的 Zotero 阶段处理。根据 Task 1 范围修正，`sd_scraper.py` 与 `tests/test_doi_batch_utils.py` 已纳入本任务。
+
+## 2026-07-10 17:49:10 +08:00
+
+- 本次任务目标：修复 Task 1 代码审查发现的活跃交接流程遗漏，禁止把遗留 `scihub_downloaded` 状态视为已完成 PDF。
+- 新增、修改或删除的文件：修改 `student_handoff.py`、`tests/test_student_handoff.py`、`CHANGELOG.md`，并补充 `.superpowers/sdd/task-1-report.md`。
+- 具体修改内容：从 `classify_failure()` 的完成状态集合中移除 `scihub_downloaded`；新增回归测试，要求该遗留状态归类为“可重试 PDF 失败”。
+- 修改原因：`sd_institutional_skill.py` 和 `sd_scraper.py` 都调用学生交接生成器，遗留状态分支违反“每个活跃工作流均不得保留影子文献库行为”的约束。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_student_handoff -v`；`..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`。
+- 生成的输出文件：测试仅在 `.codex-test-tmp` 下生成临时交接表；未修改原始输入、现有 PDF 或打包产物。
+- 如何检查是否成功：新增测试先 RED（实际“已完成”，期望“可重试 PDF 失败”），修复后焦点套件 3 项通过，完整套件 `Ran 151 tests ... OK`，扩展活跃源码扫描无匹配。
+- 注意事项或潜在风险：旧报告中的 `scihub_downloaded` 记录现在会显示为待处理项，供后续授权 Zotero 阶段复核；本次未重新打包项目。
