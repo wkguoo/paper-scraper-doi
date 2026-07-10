@@ -3972,3 +3972,184 @@ class BatchFinalizeTests(unittest.TestCase):
         self.assertEqual(after, old_bytes)
         self.assertEqual(absent_after, set(names) - old_names)
         self.assertEqual(transient, [])
+
+
+class BatchCliTests(unittest.TestCase):
+    def _result(self, root: Path, *, manual: int = 0, fallback: int = 0):
+        from paper_automation.batch_workflow import BatchPaths, BatchRunResult
+
+        paths = BatchPaths(
+            root=root,
+            pdfs=root / "pdfs",
+            reports=root / "reports",
+            working=root / "working",
+            state=root / "working" / "batch_state.json",
+            normalized_input=root / "working" / "normalized_input.csv",
+            manual_retry=root / "working" / "manual_retry.csv",
+            zotero_fallback=root / "working" / "zotero_fallback.csv",
+            zotero_results=root / "working" / "zotero_results.csv",
+        )
+        return BatchRunResult(
+            paths=paths,
+            total_count=5,
+            success_count=2,
+            failed_count=3,
+            manual_retry_count=manual,
+            zotero_fallback_count=fallback,
+        )
+
+    def test_start_calls_workflow_with_all_safe_options_and_prints_resume_command(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "含 空格 的批次"
+            secret = "cookie-secret-must-not-appear"
+            stdout, stderr = StringIO(), StringIO()
+            result = self._result(root, manual=1, fallback=2)
+            with patch("paper_batch.start_batch", return_value=result) as start:
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main([
+                        "start", "--text", "10.1000/example", "--out", str(root),
+                        "--run-name", "实验批次", "--email", "student@example.edu",
+                        "--cookies", secret, "--browser-exe", "browser.exe",
+                        "--login-wait-seconds", "12", "--debug-port", "9444",
+                        "--throttle-seconds", "0.5",
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(start.call_args.kwargs["input_text"], "10.1000/example")
+        self.assertIsNone(start.call_args.kwargs["input_path"])
+        self.assertEqual(start.call_args.kwargs["output_root"], str(root))
+        self.assertEqual(start.call_args.kwargs["run_name"], "实验批次")
+        options = start.call_args.kwargs["options"]
+        self.assertEqual(options.email, "student@example.edu")
+        self.assertEqual(options.cookies, secret)
+        self.assertEqual(options.browser_exe, "browser.exe")
+        self.assertEqual(options.login_wait_seconds, 12)
+        self.assertEqual(options.debug_port, 9444)
+        self.assertEqual(options.throttle_seconds, 0.5)
+        output = stdout.getvalue()
+        for label in (
+            "运行目录：", "最终 PDF 目录：", "总计：5", "成功：2", "失败：3",
+            "待人工重试：1", "待 Zotero 回退：2", "人工重试清单：",
+            "Zotero 回退清单：", "报告目录：",
+        ):
+            self.assertIn(label, output)
+        expected = f'"{sys.executable}" "paper_batch.py" resume --run-dir "{root}"'
+        self.assertIn(expected, output)
+        self.assertNotIn(secret, output)
+        self.assertNotIn(secret, stderr.getvalue())
+
+    def test_resume_prints_zotero_finalize_command_when_no_manual_rows_remain(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "resume run"
+            result = self._result(root, fallback=2)
+            stdout = StringIO()
+            with patch("paper_batch.resume_batch", return_value=result) as resume:
+                with redirect_stdout(stdout):
+                    exit_code = main(["resume", "--run-dir", str(root)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(resume.call_args.args, (str(root),))
+        output = stdout.getvalue()
+        self.assertIn("请在 Zotero 中处理回退条目", output)
+        self.assertIn(
+            f'"{sys.executable}" "paper_batch.py" finalize --run-dir "{root}" '
+            f'--zotero-results "{root / "working" / "zotero_results.csv"}"',
+            output,
+        )
+
+    def test_start_without_pending_rows_prompts_for_header_only_zotero_results(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "completed run"
+            result = self._result(root)
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=result):
+                with redirect_stdout(stdout):
+                    exit_code = main(["start", "--text", "10.1000/example", "--out", str(root)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("仅含表头", stdout.getvalue())
+        self.assertIn("finalize --run-dir", stdout.getvalue())
+
+    def test_finalize_prints_completion_without_retry_command(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "final run"
+            results_csv = root / "working" / "zotero_results.csv"
+            result = self._result(root)
+            stdout = StringIO()
+            with patch("paper_batch.finalize_batch", return_value=result) as finalize:
+                with redirect_stdout(stdout):
+                    exit_code = main([
+                        "finalize", "--run-dir", str(root), "--zotero-results", str(results_csv),
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(finalize.call_args.args, (str(root), str(results_csv)))
+        self.assertIn("批次已完成", stdout.getvalue())
+        self.assertIn(f"最终 PDF 目录：{root / 'pdfs'}", stdout.getvalue())
+        self.assertNotIn(" resume --run-dir ", stdout.getvalue())
+
+    def test_start_rejects_both_input_sources(self) -> None:
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from paper_batch import main
+
+        with redirect_stderr(StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                main(["start", "--text", "10.1000/example", "--input", "papers.csv"])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_workflow_errors_return_two_without_traceback_or_cookie_secret(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        secret = "cookie-secret-must-not-appear"
+        stdout, stderr = StringIO(), StringIO()
+        with patch("paper_batch.start_batch", side_effect=ValueError(secret)):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main([
+                    "start", "--text", "10.1000/example", "--cookies", secret,
+                ])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("错误码 2", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertNotIn(secret, stdout.getvalue())
+        self.assertNotIn(secret, stderr.getvalue())
+
+    def test_help_is_chinese_and_describes_supported_safe_workflow(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        stdout = StringIO()
+        with redirect_stdout(stdout):
+            with self.assertRaises(SystemExit) as raised:
+                main(["--help"])
+        self.assertEqual(raised.exception.code, 0)
+        output = stdout.getvalue()
+        for text in ("TXT/MD/CSV/XLSX/XLSM", "只重试一次", "合法 OA/授权访问", "非破坏复制", "start", "resume", "finalize"):
+            self.assertIn(text, output)

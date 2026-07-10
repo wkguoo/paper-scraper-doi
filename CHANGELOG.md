@@ -817,3 +817,15 @@
 - 生成的输出文件：正式批次仍在 `reports/` 发布 `final_manifest.csv/.xlsx`、`failed.csv`、`run_summary.txt`、`batch_status.csv/.json`，PDF 输出仍位于批次 `pdfs/`；测试临时输出仅位于 ignored `.codex-test-tmp/`。
 - 如何检查是否成功：Task 5 `Ran 24 tests ... OK`；Task 4 `Ran 38 tests ... OK`；Task 2 文件/PDF `Ran 26 tests ... OK (skipped=1)`；全套 `Ran 268 tests ... OK (skipped=2)`；compileall 退出码 0。新增交错测试逐字段确认最终 CSV 等于磁盘最新 state；第二次哈希后替换为另一有效 PDF 或 symlink/reparse 均不得发布外部内容。
 - 注意事项或潜在风险：同句柄方案消除了应用层“最终验证后按路径重新打开”的窗口，并在复制后再次核对路径身份；仍无法对抗具备更高权限、可在多个系统调用之间持续快速切换路径且最终恢复原身份的操作系统级对抗。PDF 内容有效性仍沿用 Task 2 的最小尺寸和 `%PDF-` 文件头检查，不是完整 PDF 结构解析。未联网、未访问真实 Zotero、未读取 Cookie、未打包。
+
+## 2026-07-11 04:15 +08:00 — Task 6 初学者批次 CLI
+
+- 本次任务目标：新增面向初学者的 `start`、`resume`、`finalize` 批次命令行入口，并保持 Task 4/5 工作流接口不变。
+- 新增、修改或删除的文件：新增 `paper_batch.py`；修改 `tests/test_batch_workflow.py` 的 `BatchCliTests`；追加 `CHANGELOG.md`；新增本地未纳入提交的 `.sdd/task-6-report`。未删除文件，未修改 Task 7 文档、README、技能、原始输入、PDF、Cookie 或打包产物。
+- 具体修改内容：`start` 的 `--input` 与 `--text` 使用严格互斥必填参数，并将全部 `BatchOptions` 安全参数传递给真实 `start_batch()`；`resume` 和 `finalize` 分别调用真实工作流函数。成功时统一输出运行目录、最终 PDF 目录、总计/成功/失败/人工重试/Zotero 回退数量、两份 CSV 与报告目录；根据待处理数量输出带双引号路径的准确下一步命令。预期工作流异常仅输出中文错误码 2，不输出 traceback、Cookie 内容或 state 内容。
+- 修改原因：为初学者提供可复现、可直接复制的批次入口，同时延续“仅一次人工重试、合法 OA/授权访问、Zotero 附件非破坏复制”的安全边界。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe paper_batch.py --help`；启动示例：`..\\..\\.venv\\Scripts\\python.exe paper_batch.py start --text "10.1000/example" --out "results"`。后续命令由 CLI 根据批次状态打印。
+- 生成的输出文件：实际运行在所选输出根目录新建批次目录及其 `pdfs/`、`working/manual_retry.csv`、`working/zotero_fallback.csv`、`working/zotero_results.csv`、`reports/`；本次测试临时文件仅位于忽略的 `.codex-test-tmp/`。
+- 如何检查是否成功：TDD 红灯确认缺少模块后，`BatchCliTests` 7 项通过；Task4 `BatchRunTests` 38 项通过；Task5 `BatchFinalizeTests` 24 项通过；已检查根帮助和 `start --help` 的简体中文输出。提交前还将运行全套离线测试、compileall 与 `git diff --check`。
+- 注意事项或潜在风险：测试不联网、不读取真实 Cookie、不使用真实 Zotero；真实下载结果仍取决于合法 OA 来源或用户拥有的机构授权。项目未重新打包。
+- 验证补充：全套离线测试 `python -m unittest discover -s tests -v` 已运行 `275` 项并通过（`skipped=2`）；`python -m compileall paper_batch.py paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation` 与 `git diff --check` 均以退出码 0 完成。
