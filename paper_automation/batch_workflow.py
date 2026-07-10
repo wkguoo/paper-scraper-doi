@@ -100,6 +100,14 @@ ZOTERO_FAILURE_STATUSES = {
 }
 ZOTERO_INPUT_STATUSES = set(ZOTERO_SUCCESS) | ZOTERO_FAILURE_STATUSES
 FINAL_MANIFEST_FIELDS = [*NORMALIZED_FIELDS, "zotero_item_id"]
+FINAL_REPORT_FILENAMES = (
+    "final_manifest.csv",
+    "final_manifest.xlsx",
+    "failed.csv",
+    "run_summary.txt",
+    "batch_status.csv",
+    "batch_status.json",
+)
 _STAGE_SUCCESS_STATUSES = {"downloaded", "oa_downloaded", "institutional_downloaded"}
 _INSTITUTIONAL_SOURCES = {"sciencedirect", "non_elsevier", "institutional"}
 
@@ -581,8 +589,17 @@ def _report_row(row: dict, fields: list[str]) -> dict[str, str]:
     return {field: str(row.get(field, "") or "") for field in fields}
 
 
+def _csv_safe_value(value: object) -> str:
+    text = str(value or "")
+    stripped = text.lstrip()
+    return f"'{text}" if stripped[:1] in {"=", "+", "-", "@"} else text
+
+
 def _write_report_csv(path: Path, fields: list[str], rows: list[dict]) -> Path:
-    normalized_rows = [_report_row(row, fields) for row in rows]
+    normalized_rows = [
+        {field: _csv_safe_value(row.get(field, "")) for field in fields}
+        for row in rows
+    ]
 
     def write(temporary: Path) -> None:
         with temporary.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -637,6 +654,55 @@ def _write_final_manifest_xlsx(path: Path, rows: list[dict]) -> Path:
             os.fsync(handle.fileno())
 
     return _atomic_report_file(path, ".xlsx.tmp", write)
+
+
+def _copy_report_backup(source: Path, destination: Path) -> None:
+    with source.open("rb") as source_handle, destination.open("xb") as target_handle:
+        for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+            target_handle.write(chunk)
+        target_handle.flush()
+        os.fsync(target_handle.fileno())
+
+
+def _cleanup_report_transaction_dir(directory: Path) -> None:
+    for filename in FINAL_REPORT_FILENAMES:
+        (directory / filename).unlink(missing_ok=True)
+    try:
+        directory.rmdir()
+    except OSError:
+        pass
+
+
+def _publish_report_set(paths: BatchPaths, staging: Path) -> None:
+    backup = Path(tempfile.mkdtemp(prefix=".final_reports_backup_", dir=paths.reports))
+    existed: dict[str, bool] = {}
+    try:
+        for filename in FINAL_REPORT_FILENAMES:
+            target = paths.reports / filename
+            existed[filename] = target.exists() or target.is_symlink()
+            if existed[filename]:
+                _copy_report_backup(target, backup / filename)
+        try:
+            for filename in FINAL_REPORT_FILENAMES:
+                os.replace(staging / filename, paths.reports / filename)
+        except Exception as publish_error:
+            rollback_errors: list[str] = []
+            for filename in FINAL_REPORT_FILENAMES:
+                target = paths.reports / filename
+                try:
+                    if existed[filename]:
+                        os.replace(backup / filename, target)
+                    else:
+                        target.unlink(missing_ok=True)
+                except OSError as rollback_error:
+                    rollback_errors.append(f"{filename}:{rollback_error}")
+            if rollback_errors:
+                raise RuntimeError(
+                    "final_report_rollback_failed:" + ";".join(rollback_errors)
+                ) from publish_error
+            raise
+    finally:
+        _cleanup_report_transaction_dir(backup)
 
 
 def _tabular_doi_cells(input_path: Path) -> dict[str, str] | None:
@@ -856,7 +922,23 @@ def _merge_stage_rows(rows: list[dict], updates: object, paths: BatchPaths) -> l
     return merged_rows
 
 
-def _apply_stage_updates(state: dict, updates: object, paths: BatchPaths) -> None:
+def _apply_stage_updates(
+    state: dict,
+    updates: object,
+    paths: BatchPaths,
+    *,
+    assume_locked: bool = False,
+) -> None:
+    if not assume_locked:
+        with batch_state_lock(paths.root):
+            latest = load_batch_state(paths.root)
+            _validate_state(latest, expected_run_dir=paths.root)
+            _apply_stage_updates(latest, updates, paths, assume_locked=True)
+            state.clear()
+            state.update(latest)
+        return
+
+    _validate_state(state, expected_run_dir=paths.root)
     normalized_updates = _validate_stage_updates(state["rows"], updates)
     for update in normalized_updates:
         state["rows"] = _merge_stage_rows(state["rows"], [update], paths)
@@ -1186,10 +1268,14 @@ def _filename_for_batch_row(row: dict) -> str:
 def _copy_zotero_attachment(row: dict, attachment_path: str, paths: BatchPaths) -> Path:
     source = _local_zotero_attachment(attachment_path)
     source_hash = _sha256(source)
+    verified_source = _local_zotero_attachment(attachment_path)
+    verified_hash = _sha256(verified_source)
+    if source != verified_source or source_hash != verified_hash:
+        raise ValueError("zotero_attachment_changed")
     for candidate in paths.pdfs.glob("*.pdf"):
-        if _same_pdf_content(candidate, source_hash):
+        if _same_pdf_content(candidate, verified_hash):
             return candidate
-    return copy_pdf_safely(source, paths.pdfs, _filename_for_batch_row(row))
+    return copy_pdf_safely(verified_source, paths.pdfs, _filename_for_batch_row(row))
 
 
 def _metadata_uncertain_audit(reason: object) -> str:
@@ -1282,13 +1368,28 @@ def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
         "failed_count": failure_count,
     }
     try:
-        _write_report_csv(paths.reports / "final_manifest.csv", FINAL_MANIFEST_FIELDS, manifest_rows)
-        _write_final_manifest_xlsx(paths.reports / "final_manifest.xlsx", manifest_rows)
-        _write_report_csv(paths.reports / "failed.csv", FINAL_MANIFEST_FIELDS, failed_rows)
-        _write_report_text(paths.reports / "run_summary.txt", "\n".join(summary_lines) + "\n")
-        # Keep Task 4 report names available for start/resume callers.
-        _write_report_csv(paths.reports / "batch_status.csv", NORMALIZED_FIELDS, manifest_rows)
-        _write_report_json(paths.reports / "batch_status.json", summary)
+        paths.reports.mkdir(parents=True, exist_ok=True)
+        paths.working.mkdir(parents=True, exist_ok=True)
+        with _file_lock(
+            paths.working / "final_reports.lock",
+            timeout=10.0,
+            invalid_timeout_error="invalid_final_report_lock_timeout",
+            timeout_error="final_report_lock_timeout",
+        ):
+            staging = Path(
+                tempfile.mkdtemp(prefix=".final_reports_staging_", dir=paths.reports)
+            )
+            try:
+                _write_report_csv(staging / "final_manifest.csv", FINAL_MANIFEST_FIELDS, manifest_rows)
+                _write_final_manifest_xlsx(staging / "final_manifest.xlsx", manifest_rows)
+                _write_report_csv(staging / "failed.csv", FINAL_MANIFEST_FIELDS, failed_rows)
+                _write_report_text(staging / "run_summary.txt", "\n".join(summary_lines) + "\n")
+                # Keep Task 4 report names available for start/resume callers.
+                _write_report_csv(staging / "batch_status.csv", NORMALIZED_FIELDS, manifest_rows)
+                _write_report_json(staging / "batch_status.json", summary)
+                _publish_report_set(paths, staging)
+            finally:
+                _cleanup_report_transaction_dir(staging)
     except Exception as exc:
         raise RuntimeError(f"final_report_write_failed:{type(exc).__name__}:{exc}") from exc
 
@@ -1302,58 +1403,64 @@ def finalize_batch(
     paths = _paths_from_run_dir(run_dir)
     state = load_batch_state(paths.root)
     _validate_state(state, expected_run_dir=paths.root)
-    results = _read_zotero_results(Path(zotero_results), state["rows"])
-    results_by_id = {result["task_id"]: result for result in results}
-    for index, existing in enumerate(state["rows"]):
-        task_id = str(existing.get("task_id", "") or "")
-        result = results_by_id.get(task_id)
-        if result is None or _is_terminal_status(existing.get("status", "")):
-            continue
-        updated = dict(existing)
-        zotero_status = result["status"]
-        if zotero_status in ZOTERO_SUCCESS:
-            if not result["zotero_item_id"]:
-                updated.update(
-                    status="zotero_item_id_missing",
-                    source="zotero",
-                    file="",
-                    reason="zotero_item_id_missing",
-                    zotero_item_id="",
-                )
-            else:
-                try:
-                    target = _copy_zotero_attachment(updated, result["attachment_path"], paths)
-                except (OSError, ValueError) as exc:
+    results_path = Path(zotero_results)
+    _read_zotero_results(results_path, state["rows"])
+    with batch_state_lock(paths.root):
+        state = load_batch_state(paths.root)
+        _validate_state(state, expected_run_dir=paths.root)
+        results = _read_zotero_results(results_path, state["rows"])
+        results_by_id = {result["task_id"]: result for result in results}
+        for index, existing in enumerate(state["rows"]):
+            task_id = str(existing.get("task_id", "") or "")
+            result = results_by_id.get(task_id)
+            if result is None or _is_terminal_status(existing.get("status", "")):
+                continue
+            updated = dict(existing)
+            zotero_status = result["status"]
+            if zotero_status in ZOTERO_SUCCESS:
+                if not result["zotero_item_id"]:
                     updated.update(
-                        status="not_pdf_response",
+                        status="zotero_item_id_missing",
                         source="zotero",
                         file="",
-                        reason=f"not_pdf_response:{exc}",
-                        zotero_item_id=result["zotero_item_id"],
+                        reason="zotero_item_id_missing",
+                        zotero_item_id="",
                     )
                 else:
-                    previous_status = str(existing.get("status", "") or "").strip().lower()
-                    updated.update(
-                        status=ZOTERO_SUCCESS[zotero_status],
-                        source="zotero",
-                        file=str(target),
-                        reason=(
-                            _metadata_uncertain_audit(existing.get("reason", ""))
-                            if previous_status == "metadata_uncertain" else ""
-                        ),
-                        zotero_item_id=result["zotero_item_id"],
-                    )
-        else:
-            updated.update(
-                status=zotero_status,
-                source="zotero",
-                file="",
-                reason=result["reason"],
-                zotero_item_id=result["zotero_item_id"],
-            )
-        state["rows"][index] = updated
-        save_batch_state(paths, state)
-    write_final_reports(paths, state["rows"])
+                    try:
+                        target = _copy_zotero_attachment(updated, result["attachment_path"], paths)
+                    except (OSError, ValueError) as exc:
+                        updated.update(
+                            status="not_pdf_response",
+                            source="zotero",
+                            file="",
+                            reason=f"not_pdf_response:{exc}",
+                            zotero_item_id=result["zotero_item_id"],
+                        )
+                    else:
+                        previous_status = str(existing.get("status", "") or "").strip().lower()
+                        updated.update(
+                            status=ZOTERO_SUCCESS[zotero_status],
+                            source="zotero",
+                            file=str(target),
+                            reason=(
+                                _metadata_uncertain_audit(existing.get("reason", ""))
+                                if previous_status == "metadata_uncertain" else ""
+                            ),
+                            zotero_item_id=result["zotero_item_id"],
+                        )
+            else:
+                updated.update(
+                    status=zotero_status,
+                    source="zotero",
+                    file="",
+                    reason=result["reason"],
+                    zotero_item_id=result["zotero_item_id"],
+                )
+            state["rows"][index] = updated
+            save_batch_state(paths, state)
+        report_rows = [dict(row) for row in state["rows"]]
+    write_final_reports(paths, report_rows)
     return _result_from_state(paths, state)
 
 
@@ -1476,7 +1583,8 @@ def start_batch(
         "options": serialized_options,
         "rows": rows,
     }
-    save_batch_state(paths, state)
+    with batch_state_lock(paths.root):
+        save_batch_state(paths, state)
     runner = gateway or DefaultStageGateway()
     _run_gateway_with_state(
         runner=runner,

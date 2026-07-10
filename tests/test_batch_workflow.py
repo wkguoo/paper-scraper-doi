@@ -3536,3 +3536,219 @@ class BatchFinalizeTests(unittest.TestCase):
             finally:
                 if junction_dir.exists():
                     junction_dir.rmdir()
+
+    def test_report_csv_escapes_formula_like_data_only(self) -> None:
+        import csv
+
+        from paper_automation import batch_workflow as workflow
+
+        values = ["=SUM(1,2)", "+cmd", "-1+2", "@lookup", "   =leading", "ordinary", "  ordinary", ""]
+        expected = ["'=SUM(1,2)", "'+cmd", "'-1+2", "'@lookup", "'   =leading", "ordinary", "  ordinary", ""]
+        rows = [{"value": value} for value in values]
+        original_rows = [dict(row) for row in rows]
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "safe.csv"
+            workflow._write_report_csv(target, ["value"], rows)
+            with target.open("r", newline="", encoding="utf-8-sig") as handle:
+                reader = csv.reader(handle)
+                records = list(reader)
+
+        self.assertEqual(records[0], ["value"])
+        self.assertEqual([record[0] for record in records[1:]], expected)
+        self.assertEqual(rows, original_rows)
+
+    def test_finalize_reloads_locked_state_and_preserves_concurrent_project_success(self) -> None:
+        import threading
+
+        from paper_automation import batch_workflow as workflow
+
+        parsed_old_view = threading.Event()
+        release_finalize = threading.Event()
+        finalize_errors = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_pdf = root / "project.pdf"
+            project_pdf.write_bytes(b"%PDF-1.7\nproject success fixture")
+            zotero_pdf = root / "zotero.pdf"
+            zotero_pdf.write_bytes(b"%PDF-1.7\nzotero stale fixture")
+            paths = self._paths_with_state(root, [self._row("paper-0001")])
+            zotero_csv = paths.working / "zotero_results.csv"
+            self._write_zotero_csv(
+                zotero_csv,
+                [{"task_id": "paper-0001", "zotero_item_id": "42", "attachment_path": str(zotero_pdf), "status": "downloaded", "reason": ""}],
+            )
+            real_reader = workflow._read_zotero_results
+            reader_calls = 0
+
+            def controlled_reader(path, rows):
+                nonlocal reader_calls
+                result = real_reader(path, rows)
+                reader_calls += 1
+                if reader_calls == 1:
+                    parsed_old_view.set()
+                    if not release_finalize.wait(10.0):
+                        raise TimeoutError("test_finalize_release_timeout")
+                return result
+
+            def run_finalize():
+                try:
+                    workflow.finalize_batch(paths.root, zotero_csv)
+                except BaseException as exc:
+                    finalize_errors.append(exc)
+
+            caller_state = workflow.load_batch_state(paths.root)
+            with patch.object(workflow, "_read_zotero_results", side_effect=controlled_reader):
+                worker = threading.Thread(target=run_finalize)
+                worker.start()
+                self.assertTrue(parsed_old_view.wait(10.0))
+                workflow._apply_stage_updates(
+                    caller_state,
+                    [{**caller_state["rows"][0], "status": "oa_downloaded", "source": "oa", "file": str(project_pdf), "reason": ""}],
+                    paths,
+                )
+                release_finalize.set()
+                worker.join(10.0)
+            self.assertFalse(worker.is_alive())
+            final_state = workflow.load_batch_state(paths.root)
+            copied_hash = hashlib.sha256(Path(final_state["rows"][0]["file"]).read_bytes()).hexdigest()
+            project_hash = hashlib.sha256(project_pdf.read_bytes()).hexdigest()
+
+        self.assertEqual(finalize_errors, [])
+        self.assertEqual(reader_calls, 2)
+        self.assertEqual(final_state["rows"][0]["status"], "oa_downloaded")
+        self.assertEqual(final_state["rows"][0]["source"], "oa")
+        self.assertEqual(caller_state["rows"][0]["status"], "oa_downloaded")
+        self.assertEqual(copied_hash, project_hash)
+
+    def test_zotero_attachment_change_after_first_hash_is_rejected(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "attachment.pdf"
+            source.write_bytes(b"%PDF-1.7\noriginal safe attachment")
+            external_bytes = b"%PDF-1.7\nreplacement external attachment"
+            paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
+            real_sha256 = workflow._sha256
+            hash_calls = 0
+
+            def replace_after_first_hash(path):
+                nonlocal hash_calls
+                digest = real_sha256(path)
+                hash_calls += 1
+                if hash_calls == 1:
+                    source.write_bytes(external_bytes)
+                return digest
+
+            with patch.object(workflow, "_sha256", side_effect=replace_after_first_hash):
+                with self.assertRaisesRegex(ValueError, "^zotero_attachment_changed$"):
+                    workflow._copy_zotero_attachment(self._row("paper-0001"), str(source), paths)
+            published = list(paths.pdfs.glob("*.pdf"))
+
+        self.assertGreaterEqual(hash_calls, 2)
+        self.assertEqual(published, [])
+
+    def test_zotero_attachment_reparse_injected_after_first_hash_is_rejected(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "attachment.pdf"
+            source.write_bytes(b"%PDF-1.7\noriginal safe attachment")
+            paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
+            real_validator = workflow._local_zotero_attachment
+            validation_calls = 0
+
+            def reparse_on_second_validation(path):
+                nonlocal validation_calls
+                validation_calls += 1
+                if validation_calls == 2:
+                    raise ValueError("zotero_attachment_reparse_point")
+                return real_validator(path)
+
+            with patch.object(workflow, "_local_zotero_attachment", side_effect=reparse_on_second_validation):
+                with self.assertRaisesRegex(ValueError, "^zotero_attachment_reparse_point$"):
+                    workflow._copy_zotero_attachment(self._row("paper-0001"), str(source), paths)
+            published = list(paths.pdfs.glob("*.pdf"))
+
+        self.assertEqual(validation_calls, 2)
+        self.assertEqual(published, [])
+
+    def test_report_generation_failure_leaves_existing_six_file_set_unchanged(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        names = [
+            "final_manifest.csv",
+            "final_manifest.xlsx",
+            "failed.csv",
+            "run_summary.txt",
+            "batch_status.csv",
+            "batch_status.json",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._paths_with_state(Path(tmp), [self._row("paper-0001")])
+            old_bytes = {name: f"old::{name}".encode("utf-8") for name in names}
+            for name, content in old_bytes.items():
+                (paths.reports / name).write_bytes(content)
+            with patch.object(workflow, "_write_final_manifest_xlsx", side_effect=OSError("synthetic xlsx failure")):
+                with self.assertRaisesRegex(RuntimeError, "final_report_write_failed:OSError:synthetic xlsx failure"):
+                    workflow.write_final_reports(paths, [self._row("paper-0001")])
+            after = {name: (paths.reports / name).read_bytes() for name in names}
+            transient = list(paths.reports.glob(".final_reports_*"))
+
+        self.assertEqual(after, old_bytes)
+        self.assertEqual(transient, [])
+
+    def test_report_publish_failure_rolls_back_entire_six_file_set(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        names = [
+            "final_manifest.csv",
+            "final_manifest.xlsx",
+            "failed.csv",
+            "run_summary.txt",
+            "batch_status.csv",
+            "batch_status.json",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._paths_with_state(Path(tmp), [self._row("paper-0001")])
+            old_names = {names[1], names[3], names[5]}
+            old_bytes = {
+                name: f"old::{name}".encode("utf-8")
+                for name in old_names
+            }
+            for name, content in old_bytes.items():
+                (paths.reports / name).write_bytes(content)
+            real_replace = workflow.os.replace
+            publish_count = 0
+            failed_once = False
+
+            def fail_third_publish(source, destination):
+                nonlocal publish_count, failed_once
+                source_path = Path(source)
+                destination_path = Path(destination)
+                is_publish = (
+                    source_path.parent.name.startswith(".final_reports_staging_")
+                    and destination_path.parent == paths.reports
+                    and destination_path.name in names
+                )
+                if is_publish:
+                    publish_count += 1
+                    if publish_count == 3 and not failed_once:
+                        failed_once = True
+                        raise OSError("synthetic publish failure")
+                return real_replace(source, destination)
+
+            with patch.object(workflow.os, "replace", side_effect=fail_third_publish):
+                with self.assertRaisesRegex(RuntimeError, "final_report_write_failed:OSError:synthetic publish failure"):
+                    workflow.write_final_reports(paths, [self._row("paper-0001")])
+            after = {name: (paths.reports / name).read_bytes() for name in old_names}
+            absent_after = {
+                name for name in names if name not in old_names and not (paths.reports / name).exists()
+            }
+            transient = list(paths.reports.glob(".final_reports_*"))
+
+        self.assertEqual(publish_count, 3)
+        self.assertEqual(after, old_bytes)
+        self.assertEqual(absent_after, set(names) - old_names)
+        self.assertEqual(transient, [])

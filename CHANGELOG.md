@@ -774,3 +774,25 @@
 - 生成的输出文件：正式流程仍输出 `reports/final_manifest.csv`、`final_manifest.xlsx`、`failed.csv` 和 `run_summary.txt`；测试临时产物仅位于忽略的 `.codex-test-tmp/`，未覆盖原输入或 Zotero 附件。
 - 如何检查是否成功：Task 5 聚焦测试显示 `Ran 14 tests ... OK`，其中真实 Windows junction 测试实际通过；全套离线测试显示 `Ran 258 tests ... OK (skipped=2)`；编译和差异检查退出码为 0。
 - 注意事项或潜在风险：PDF 内容验证仍沿用 Task 2 的 `%PDF-` 文件头和最小大小规则，并非完整结构解析；路径链检查与复制之间仍存在操作系统级极短 TOCTOU 窗口，但复制阶段会再次从源快照校验 PDF。未联网、未访问真实 Zotero、未读取 Cookie、未打包项目。
+
+## 2026-07-11 03:38:57 +08:00 — Task 5 第二修复波次
+
+- 本次任务目标：修复最新 2 个 P1 与 2 个 P2，覆盖报告 CSV 公式注入、批次状态并发覆盖、Zotero 附件 TOCTOU，以及六文件报告集合的部分发布问题。
+- 新增、修改或删除的文件：修改 `paper_automation/batch_workflow.py`、`tests/test_batch_workflow.py`、`CHANGELOG.md`；仅在本地追加 `.superpowers/sdd/task-5-report.md`，该文件继续 ignored 且未重新纳入 Git；未修改 Task 6。
+- 具体修改内容：
+  - `_write_report_csv()` 仅对 CSV 数据单元格执行 Excel 注入转义：若 `lstrip()` 后首字符为 `= + - @`，在原值前添加单引号。CSV 查看时会显示该安全前缀；表头、XLSX 和 state 不变。
+  - `_apply_stage_updates()` 使用统一 `batch_state_lock`，锁内重新加载并验证最新 state，逐行 merge/save 后同步调用者 snapshot；`assume_locked=True` 提供内部无嵌套路径。`start_batch()` 初始 state 保存也遵守同一锁协议，gateway 网络调用不持锁。
+  - `finalize_batch()` 在锁外预读 CSV，修改前获取同一 state 锁、重新加载最新 state 并重新校验 CSV/task IDs，保护并发产生的 OA/机构成功；报告使用锁内最终 snapshot。
+  - `_copy_zotero_attachment()` 在首次路径验证和哈希后，再次执行完整绝对路径/祖先 reparse 检查并重新哈希；规范路径或哈希变化时报 `zotero_attachment_changed`，随后仍由 `copy_pdf_safely()` 快照校验。
+  - `write_final_reports()` 在独立报告锁内先向唯一 staging 目录生成并 fsync 全部六个固定报告；全部成功后备份旧集合再发布。任一 replace 失败会恢复全部旧文件并移除本轮原本无旧文件的目标，只清理本轮 staging/backup 中的固定报告名。
+- 修改原因：旧实现可能让 CSV 数据被表格软件解释为公式；阶段更新和 Zotero 对账可能基于旧 state 相互覆盖；附件在首次哈希后可被替换；六个报告逐个发布会留下新旧混合集合。
+- 如何运行：
+  - `$env:TEMP=(Resolve-Path .codex-test-tmp); $env:TMP=$env:TEMP`
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchFinalizeTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchRunTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`
+  - `git diff --check`
+- 生成的输出文件：正式流程仍发布 `final_manifest.csv/.xlsx`、`failed.csv`、`run_summary.txt`、`batch_status.csv/.json`；事务临时目录成功或可回滚失败后均清理。测试产物仅位于 ignored `.codex-test-tmp/`，未修改原始输入或 Zotero 附件。
+- 如何检查是否成功：Task 5 聚焦测试 `Ran 20 tests ... OK`；Task 4 `Ran 38 tests ... OK`；全套离线测试 `Ran 264 tests ... OK (skipped=2)`；compileall 和 diff-check 退出码为 0。
+- 注意事项或潜在风险：六文件发布依赖逐文件 `os.replace()` 加回滚，无法提供跨六个文件的操作系统原生单指令原子可见性，但失败后会恢复一致旧集合；附件第二次哈希与 `copy_pdf_safely()` 打开源文件之间仍存在极短竞态窗口，最终快照会再次执行 PDF 校验。未联网、未操作真实 Zotero、未读取 Cookie、未打包。
