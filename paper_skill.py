@@ -11,7 +11,7 @@ from paper_automation.workflow import run_workflow
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Identify messy paper text, resolve metadata, and download accessible open-access PDF candidates.",
+        description="Identify paper text, resolve metadata, and download publicly available open-access PDF candidates.",
     )
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--input", help="Text/CSV/Markdown file containing copied paper information")

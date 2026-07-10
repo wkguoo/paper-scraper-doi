@@ -24,6 +24,14 @@ def assert_same_existing_path(testcase: unittest.TestCase, actual: str, expected
 
 
 class InstitutionalSkillIntakeTests(unittest.TestCase):
+    def test_sciencedirect_main_has_no_shadow_library_fallback(self) -> None:
+        import inspect
+        import sd_institutional_skill
+
+        source = inspect.getsource(sd_institutional_skill.main)
+        self.assertNotIn("apply_auto_fallback", source)
+        self.assertNotIn("scihub_downloaded", source)
+
     def test_main_writes_empty_reports_when_no_valid_doi(self) -> None:
         from sd_institutional_skill import main
 

@@ -446,21 +446,6 @@ def write_pdf_bytes_atomic(target_path: str | Path, pdf_bytes: bytes) -> int:
 
 
 
-def apply_auto_fallback(
-    records: list,
-    target_dir,
-    *,
-    enable_scihub: bool = True,
-    enable_annas: bool = True,
-    throttle: float = 5.0,
-) -> tuple[list, int, int]:
-    """Thin re-export of paper_automation.scihub_fallback.apply_auto_fallback."""
-    from paper_automation.scihub_fallback import apply_auto_fallback as _impl
-    from pathlib import Path as _Path
-    return _impl(records, _Path(target_dir),
-                 enable_scihub=enable_scihub, enable_annas=enable_annas, throttle=throttle)
-
-
 def collect_retry_input_rows(
     pdf_report_path: str | Path | None = None,
     doi_failed_path: str | Path | None = None,
@@ -742,7 +727,7 @@ def load_resume_success_dois(output_dir: str | Path | None) -> set[str]:
     pdf_report = Path(output_dir) / "pdf_download_report.csv"
     success: set[str] = set()
     for row in _read_csv_rows(pdf_report):
-        if str(row.get("status") or "").strip().lower() not in {"success", "scihub_downloaded"}:
+        if str(row.get("status") or "").strip().lower() not in {"success"}:
             continue
         doi = clean_doi(row.get("doi", ""))
         if doi:

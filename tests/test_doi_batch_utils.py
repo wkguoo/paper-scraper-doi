@@ -48,6 +48,11 @@ class _FakeButton:
 
 
 class DoiBatchUtilsTests(unittest.TestCase):
+    def test_sd_scraper_main_has_no_shadow_library_fallback(self) -> None:
+        source = (PROJECT_ROOT / "sd_scraper.py").read_text(encoding="utf-8")
+        self.assertNotIn("apply_auto_fallback", source)
+        self.assertNotIn("scihub_downloaded", source)
+
     def test_sd_scraper_parser_accepts_browser_exe(self) -> None:
         import sd_scraper
 

@@ -495,3 +495,18 @@
 - 生成的输出文件：仅生成被 Git 忽略的测试临时目录和子任务进度文件；未生成论文 PDF。
 - 如何检查是否成功：`git branch --show-current` 应为 `codex/zotero-paper-download`，完整测试显示 `Ran 146 tests ... OK`。
 - 注意事项或潜在风险：主工作区未提交修改保持不变；本次未自动重新打包项目。
+
+## 2026-07-10 17:36:56 +08:00
+
+- 本次任务目标：移除所有活跃工作流中的影子文献库自动下载回退，为后续授权的 Zotero 回退阶段保留明确失败记录。
+- 新增、修改或删除的文件：
+  - 删除 `paper_automation/scihub_fallback.py`
+  - 修改 `paper_automation/workflow.py`、`sd_institutional_skill.py`、`sd_scraper.py`、`doi_batch_utils.py`、`paper_skill.py`
+  - 修改 `tests/test_paper_automation.py`、`tests/test_sd_institutional_skill.py`、`tests/test_doi_batch_utils.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：删除 `apply_auto_fallback` 包装器及所有活跃调用；OA 工作流失败保留为 `failed` 和 `no_legal_open_pdf`；恢复判定仅接受 `success`；更新 legal OA CLI 描述；新增三个源码/行为安全回归测试。
+- 修改原因：避免未经授权的影子文献库下载，并为后续项目优先与 Zotero 授权回退流程提供可追踪的失败记录。
+- 如何运行：在隔离工作树运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_paper_automation.WorkflowSafetyTests -v`、`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_sd_institutional_skill -v`、`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_doi_batch_utils -v` 和 `..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`。
+- 生成的输出文件：仅生成 `.codex-test-tmp` 下的临时测试报告；未修改原始输入、现有 PDF 或项目打包文件。
+- 如何检查是否成功：安全测试和完整测试套件均为 `OK`，并且源码扫描不再匹配 `Sci-Hub`、`scihub`、`Anna's Archive`、`annas_archive` 或 `apply_auto_fallback`。
+- 注意事项或潜在风险：此更改不会下载 OA 失败的文献；这些记录将留待后续经授权的 Zotero 阶段处理。根据 Task 1 范围修正，`sd_scraper.py` 与 `tests/test_doi_batch_utils.py` 已纳入本任务。

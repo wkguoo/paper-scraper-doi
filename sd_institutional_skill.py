@@ -21,7 +21,6 @@ from doi_batch_utils import (
     PdfDownloadRecord,
     RunSummary,
     TEXT_ENCODINGS,
-    apply_auto_fallback,
     check_cookie_json,
     clean_doi,
     extract_doi_from_text,
@@ -320,15 +319,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             for item in results
         ]
-
-    # --- 自动 Sci-Hub / Anna's Archive 回退 ---
-    pdf_records, auto_success, auto_failed = apply_auto_fallback(
-        pdf_records, run_dir / "pdfs",
-    )
-    if auto_success or auto_failed:
-        pdf_success += auto_success
-        pdf_failed = max(0, pdf_failed - auto_success)
-        print(f"[自动回退] Sci-Hub/Anna's 补下载: 成功 {auto_success}，仍失败 {auto_failed}", flush=True)
 
     pdf_report_path = write_pdf_download_report(pdf_records, run_dir)
     if download_supplements and results:
