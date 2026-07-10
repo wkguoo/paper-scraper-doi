@@ -585,3 +585,31 @@
   - 为保证崩溃清理不误删活跃快照，同一目标目录的快照创建也在目录锁内，因此大 PDF 会串行复制，并可能需要调用方调大 `lock_timeout`。
   - PDF 有效性仍按 Task 2 约定只检查最小大小和 `%PDF-` 文件头，不执行完整 PDF 结构解析。
   - 硬链接目录项在突然断电时的持久性由操作系统和文件系统保证；本实现已在发布前 `fsync` 完整快照，但 Windows 没有额外执行目录句柄 `fsync`。
+
+## 2026-07-10 19:18:53 +08:00
+
+- 本次任务目标：执行 Task 2 第四修复波次，只修复 PDF 目标 symlink 被错误复用，以及文件锁接受 `nan`/无穷 timeout 两项审查发现。
+- 新增、修改或删除的文件：
+  - 修改 `paper_automation/batch_workflow.py`。
+  - 修改 `tests/test_batch_workflow.py`。
+  - 修改 `CHANGELOG.md`，追加本记录。
+  - 追加 `.superpowers/sdd/task-2-report.md`。
+  - 未修改 Task 3+ 文件、`__init__` 文件、原始输入、现有 PDF 或 Zotero 附件。
+- 具体修改内容：
+  - `_same_pdf_content()` 在验证或哈希前先检查 `Path.is_symlink()`；只有非 symlink 且通过 PDF 文件校验的常规文件才允许按相同 SHA-256 内容复用。
+  - requested target、首个哈希候选和后续数字候选继续共用同一复用 helper；任何 symlink 均作为不可修改的占位冲突保留，并继续寻找安全后缀，通过既有硬链接原子发布独立 PDF。
+  - `_file_lock()` 使用 `math.isfinite()`，只接受 finite 且大于等于 0 的 timeout；负数、`nan`、`+inf`、`-inf` 均在打开/等待锁之前抛出对应 `ValueError`。
+  - `batch_state_lock()` 保持 `invalid_batch_state_lock_timeout`，`copy_pdf_safely()` 保持 `invalid_pdf_publish_lock_timeout`。
+  - 新增永不跳过的 mocked `is_symlink()` 逻辑测试；新增真实 file symlink 端到端测试，在明确权限/平台不支持时才 skip；新增 state/PDF 两组四值 timeout 参数测试。
+- 修改原因：`Path.is_file()`、文件打开和哈希默认跟随 symlink，旧实现会返回指向目标目录外附件的链接；`nan < 0` 与 `+inf < 0` 都为假，旧 timeout 校验会让这两个无效值进入甚至成功取得锁。
+- 如何运行：先把 `TEMP`/`TMP` 设置为隔离工作树 `.codex-test-tmp`，然后运行：
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchFileTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`
+  - `git diff --check`
+- 生成的输出文件：测试仅在被忽略的 `.codex-test-tmp` 下生成临时目录、锁、快照和 PDF；未联网下载论文，未修改真实附件，未打包项目。
+- 如何检查是否成功：初始 RED 为 `Ran 26 tests in 2.367s`、`FAILED (failures=5, skipped=1)`；修复后聚焦测试为 `Ran 26 tests in 2.569s ... OK (skipped=1)`；完整套件为 `Ran 177 tests in 10.606s ... OK (skipped=1)`；`compileall` 退出码为 0，`git diff --check` 无空白错误。
+- 注意事项或潜在风险：
+  - 当前 Windows 环境创建真实 file symlink 返回 `WinError 1314`，因此端到端 symlink 测试按要求跳过；mocked 核心逻辑测试始终执行并通过。
+  - symlink 占位不会被删除、改写或作为交付路径返回；这可能使已有旧命名被跳过并产生哈希/数字后缀，这是预期安全行为。
+  - PDF 仍只按最小大小和 `%PDF-` 文件头校验；硬链接支持、同目录串行复制与断电持久性风险保持第三波次记录不变。

@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import math
 import os
 import tempfile
 import time
@@ -213,7 +214,7 @@ def _file_lock(
     timeout_error: str,
 ) -> Iterator[None]:
     timeout_seconds = float(timeout)
-    if timeout_seconds < 0:
+    if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
         raise ValueError(invalid_timeout_error)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
@@ -293,7 +294,11 @@ def _sha256(path: Path) -> str:
 
 
 def _same_pdf_content(path: Path, expected_hash: str) -> bool:
-    return is_valid_pdf(path) and _sha256(path) == expected_hash
+    return (
+        not path.is_symlink()
+        and is_valid_pdf(path)
+        and _sha256(path) == expected_hash
+    )
 
 
 def _path_exists(path: Path) -> bool:

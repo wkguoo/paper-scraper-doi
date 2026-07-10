@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import multiprocessing
@@ -287,6 +288,20 @@ class BatchFileTests(unittest.TestCase):
             with workflow.batch_state_lock(paths.root, timeout=1.0):
                 pass
 
+    def test_batch_state_lock_rejects_negative_and_non_finite_timeouts(self) -> None:
+        import paper_automation.batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = workflow.create_batch_paths(Path(tmp))
+            for timeout in (-1.0, float("nan"), float("inf"), float("-inf")):
+                with self.subTest(timeout=timeout):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "invalid_batch_state_lock_timeout",
+                    ):
+                        with workflow.batch_state_lock(paths.root, timeout=timeout):
+                            self.fail("invalid timeout acquired the state lock")
+
     def test_two_processes_cannot_claim_the_same_manual_retry(self) -> None:
         import paper_automation.batch_workflow as workflow
 
@@ -393,6 +408,61 @@ class BatchFileTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertTrue(source.exists())
             self.assertEqual(len(list(destination.glob("*.pdf"))), 1)
+
+    def test_same_pdf_content_logic_never_reuses_a_symlink(self) -> None:
+        import paper_automation.batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "paper.pdf"
+            payload = b"%PDF-1.7\nlogic symlink payload"
+            pdf.write_bytes(payload)
+            expected_hash = hashlib.sha256(payload).hexdigest()
+
+            with patch.object(Path, "is_symlink", return_value=True):
+                reusable = workflow._same_pdf_content(pdf, expected_hash)
+
+            self.assertFalse(reusable)
+
+    def test_copy_treats_real_symlinks_as_occupied_and_publishes_independent_pdf(
+        self,
+    ) -> None:
+        import paper_automation.batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            payload = b"%PDF-1.7\nreal symlink payload"
+            source.write_bytes(payload)
+            destination = root / "pdfs"
+            destination.mkdir()
+            short_hash = hashlib.sha256(payload).hexdigest()[:8]
+            target = destination / "paper.pdf"
+            hash_candidate = destination / f"paper_{short_hash}.pdf"
+            try:
+                target.symlink_to(source)
+                hash_candidate.symlink_to(source)
+            except (OSError, NotImplementedError) as exc:
+                permission_error = (
+                    isinstance(exc, PermissionError)
+                    or getattr(exc, "errno", None) in {errno.EACCES, errno.EPERM}
+                    or getattr(exc, "winerror", None) in {5, 1314}
+                )
+                if permission_error or isinstance(exc, NotImplementedError):
+                    self.skipTest(f"file symlinks unavailable: {exc}")
+                raise
+
+            copied = workflow.copy_pdf_safely(source, destination, "paper.pdf")
+
+            self.assertEqual(copied.name, f"paper_{short_hash}_2.pdf")
+            self.assertTrue(target.is_symlink())
+            self.assertTrue(hash_candidate.is_symlink())
+            self.assertFalse(copied.is_symlink())
+            self.assertFalse(os.path.samefile(source, copied))
+            self.assertEqual(copied.read_bytes(), payload)
+            self.assertTrue(workflow.is_valid_pdf(copied))
+
+            source.write_bytes(b"%PDF-1.7\nsource changed later")
+            self.assertEqual(copied.read_bytes(), payload)
 
     def test_same_pdf_concurrent_copies_publish_one_complete_target(self) -> None:
         from paper_automation.batch_workflow import is_valid_pdf
@@ -551,6 +621,31 @@ class BatchFileTests(unittest.TestCase):
                 self._join_workers(worker)
 
             self.assertEqual(result_queue.get(timeout=5.0)[0], "ok")
+
+    def test_copy_rejects_negative_and_non_finite_lock_timeouts(self) -> None:
+        import paper_automation.batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            source.write_bytes(b"%PDF-1.7\ninvalid timeout payload")
+            destination = root / "pdfs"
+
+            for index, timeout in enumerate(
+                (-1.0, float("nan"), float("inf"), float("-inf")),
+                start=1,
+            ):
+                with self.subTest(timeout=timeout):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "invalid_pdf_publish_lock_timeout",
+                    ):
+                        workflow.copy_pdf_safely(
+                            source,
+                            destination,
+                            f"paper_{index}.pdf",
+                            lock_timeout=timeout,
+                        )
 
     def test_hard_link_publish_failure_never_exposes_a_formal_pdf(self) -> None:
         import paper_automation.batch_workflow as workflow
