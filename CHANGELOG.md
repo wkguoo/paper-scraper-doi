@@ -638,3 +638,30 @@
 - 注意事项或潜在风险：
   - 当前 `sd_institutional_skill` CLI 没有 `debug-port` 或 `throttle` 参数，适配器不传递未被支持的参数，以避免真实 ScienceDirect 调用因 argparse 失败；这两个参数已正确传给支持它们的非 Elsevier 工作流。
   - 本机 Windows 未授予创建 file symlink 的权限（`WinError 1314`），所以端到端 symlink 测试被跳过；适配器仍在逻辑上显式拒绝 symlink。
+
+## 2026-07-10 20:00:59 +08:00
+
+- 本次任务目标：执行 Task 3 复审修复波次，修复三阶段相对 PDF 路径、OA `source_index` 映射、ScienceDirect 部分报告与非零返回码并存、以及规范重复输入四类问题。
+- 新增、修改或删除的文件：
+  - 修改 `paper_automation/batch_stages.py`。
+  - 修改 `tests/test_batch_workflow.py`，仅扩展 `BatchStageTests`。
+  - 追加 `CHANGELOG.md` 和被 Git 忽略的 `.superpowers/sdd/task-3-report.md`。
+  - 未修改 Task 4+ 文件、已有下载器实现、原始输入或项目打包文件。
+- 具体修改内容：
+  - `_map_report()` 现在显式接收 `pdf_base_dir`。OA 相对文件按 `workflow_result.output_dir/pdfs` 解析；该属性缺失、空或为 `None` 时，按实际 manifest 运行目录的 `pdfs` 回退；ScienceDirect 和非 Elsevier 均按报告目录下的 `pdfs` 解析。
+  - 相对 PDF 返回解析后的稳定绝对路径；包含 `..` 或 symlink 且会逃逸阶段 `pdfs` 根目录的路径被拒绝。绝对路径保持原路径语义，但仍必须是非 symlink、常规可读文件并通过 Task 2 `is_valid_pdf()`。
+  - OA 按 parser 的 1-based `source_index` 为真正传入 parser 的非空 owner 行建立映射；报告优先按 `source_index` 精确匹配，再使用项目现有 `clean_doi()` 与规范标题降级，支持 DOI URL、元数据标题替换和乱序报告。
+  - ScienceDirect 非零返回码不再先整体短路：报告存在时先映射已有成功或真实失败行，仅缺失行使用 `stage_exit_code_N`；报告完全缺失时仍全部记录该返回码。
+  - 三阶段在调用下层前按规范 DOI、无 DOI 时按规范标题识别重复，只把第一个 owner 传给现有下载器；重复项按原输入顺序返回 `status=duplicate`、`reason=duplicate_stage_input`、空文件路径和正确 source。机构阶段仅在存在重复时于 `output_dir/working/` 写 UTF-8-SIG 去重阶段输入，不覆盖原输入。
+- 修改原因：真实项目报告通常只保存 PDF 文件名而非绝对路径；OA 报告标题和 DOI 可能在元数据解析后变化；ScienceDirect 可能在部分成功落盘后返回非零；下层去重会使重复输入只产生一条报告。旧适配器分别会误报 `invalid_pdf`、错配/漏配任务、丢失部分成功、或把重复项误报为缺失报告行。
+- 如何运行：在隔离 worktree 中设置 `$env:TEMP=(Resolve-Path .codex-test-tmp); $env:TMP=$env:TEMP`，然后运行：
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchStageTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_automation`
+  - `git diff --check`
+- 生成的输出文件：测试只在被忽略的 `.codex-test-tmp` 中生成临时报告、PDF 固件和去重阶段 CSV；正式运行遇到重复机构输入时会生成 `working/sciencedirect_stage_input.csv` 或 `working/non_elsevier_stage_input.csv`。未联网、未读取或记录 cookie 内容、未移动/删除源 PDF、未打包项目。
+- 如何检查是否成功：修复后聚焦测试为 `Ran 23 tests ... OK (skipped=1)`；完整套件为 `Ran 200 tests ... OK (skipped=2)`；`compileall paper_automation` 和 `git diff --check` 退出码均为 0。
+- 注意事项或潜在风险：
+  - Task 2 `is_valid_pdf()` 仍按最小字节数和 `%PDF-` 文件头校验，不执行完整 PDF 结构解析。
+  - 当前 Windows 环境无法创建真实 file symlink（`WinError 1314`），端到端测试继续跳过；不依赖权限的 mocked symlink-before-resolve 测试已执行并通过。
+  - 适配器只清理自身的逻辑输入，不删除原始输入、报告或 PDF；重复阶段 CSV 为可诊断中间文件，后续重复运行会更新同一批次的对应阶段 CSV。

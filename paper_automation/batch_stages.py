@@ -4,6 +4,7 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
+from doi_batch_utils import clean_doi
 from sd_institutional_skill import main as sd_main
 
 from .batch_workflow import is_valid_pdf
@@ -30,6 +31,12 @@ class StageResult:
     file: str
     reason: str
     source: str
+
+
+@dataclass(frozen=True)
+class _PreparedRows:
+    owner_rows: list[dict]
+    layout: list[int | None]
 
 
 def split_institutional_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -60,29 +67,56 @@ def write_stage_input(rows: list[dict], path: Path) -> Path:
 def run_oa_stage(rows: list[dict], output_dir: Path, options: BatchOptions) -> list[StageResult]:
     if not rows:
         return []
-    input_text = "\n".join(_oa_input_value(row) for row in rows)
+    prepared = _prepare_stage_rows(rows)
+    stage_rows: list[dict] = []
+    input_values: list[str] = []
+    for row in prepared.owner_rows:
+        stage_row = dict(row)
+        input_value = _oa_input_value(row)
+        if input_value:
+            input_values.append(input_value)
+            stage_row["_stage_source_index"] = str(len(input_values))
+        stage_rows.append(stage_row)
+    input_text = "\n".join(input_values)
     try:
         workflow_result = run_workflow(input_text, output_dir / "oa", email=options.email)
     except Exception as exc:
-        return _stage_failure(rows, "oa", _exception_reason(exc))
+        owner_results = _stage_failure(prepared.owner_rows, "oa", _exception_reason(exc))
+        return _restore_stage_results(rows, prepared, owner_results, "oa")
 
     report_path = Path(getattr(workflow_result, "manifest_csv", ""))
-    return _map_report(
-        rows,
+    raw_output_dir = getattr(workflow_result, "output_dir", "")
+    workflow_output_dir = str(raw_output_dir).strip() if raw_output_dir is not None else ""
+    pdf_base_dir = (
+        Path(workflow_output_dir) / "pdfs"
+        if workflow_output_dir
+        else report_path.parent.parent / "pdfs"
+    )
+    owner_results = _map_report(
+        stage_rows,
         report_path,
+        pdf_base_dir=pdf_base_dir,
         source="oa",
         status_field="download_status",
         success_statuses={"downloaded", "skipped"},
     )
+    return _restore_stage_results(rows, prepared, owner_results, "oa")
 
 
 def run_sciencedirect_stage(input_path: Path, output_dir: Path, options: BatchOptions) -> list[StageResult]:
     rows = _read_stage_input(input_path)
     if not rows:
         return []
+    prepared = _prepare_stage_rows(rows)
+    stage_input_path = _deduplicated_stage_input(
+        input_path,
+        output_dir,
+        prepared,
+        source="sciencedirect",
+    )
     argv = [
         "--input",
-        str(input_path),
+        str(stage_input_path),
         "--out",
         str(output_dir),
         "--run-name",
@@ -101,26 +135,43 @@ def run_sciencedirect_stage(input_path: Path, output_dir: Path, options: BatchOp
     try:
         exit_code = sd_main(argv)
     except Exception as exc:
-        return _stage_failure(rows, "sciencedirect", _exception_reason(exc))
-    if exit_code != 0:
-        return _stage_failure(rows, "sciencedirect", f"stage_exit_code_{exit_code}")
+        owner_results = _stage_failure(prepared.owner_rows, "sciencedirect", _exception_reason(exc))
+        return _restore_stage_results(rows, prepared, owner_results, "sciencedirect")
 
-    return _map_report(
-        rows,
-        output_dir / "sciencedirect" / "pdf_download_report.csv",
+    report_path = output_dir / "sciencedirect" / "pdf_download_report.csv"
+    if exit_code != 0 and not report_path.is_file():
+        owner_results = _stage_failure(prepared.owner_rows, "sciencedirect", f"stage_exit_code_{exit_code}")
+        return _restore_stage_results(rows, prepared, owner_results, "sciencedirect")
+    owner_results = _map_report(
+        prepared.owner_rows,
+        report_path,
+        pdf_base_dir=report_path.parent / "pdfs",
         source="sciencedirect",
         status_field="status",
         success_statuses={"success"},
+        missing_row_reason=(
+            f"stage_exit_code_{exit_code}"
+            if exit_code != 0
+            else "missing_stage_report_row"
+        ),
     )
+    return _restore_stage_results(rows, prepared, owner_results, "sciencedirect")
 
 
 def run_non_elsevier_stage(input_path: Path, output_dir: Path, options: BatchOptions) -> list[StageResult]:
     rows = _read_stage_input(input_path)
     if not rows:
         return []
+    prepared = _prepare_stage_rows(rows)
+    stage_input_path = _deduplicated_stage_input(
+        input_path,
+        output_dir,
+        prepared,
+        source="non_elsevier",
+    )
     try:
         workflow_result = run_institutional_workflow(
-            input_path=input_path,
+            input_path=stage_input_path,
             output_dir=output_dir,
             email=options.email,
             browser_exe=options.browser_exe or None,
@@ -129,7 +180,8 @@ def run_non_elsevier_stage(input_path: Path, output_dir: Path, options: BatchOpt
             throttle_seconds=options.throttle_seconds,
         )
     except Exception as exc:
-        return _stage_failure(rows, "non_elsevier", _exception_reason(exc))
+        owner_results = _stage_failure(prepared.owner_rows, "non_elsevier", _exception_reason(exc))
+        return _restore_stage_results(rows, prepared, owner_results, "non_elsevier")
 
     report_path = Path(
         getattr(
@@ -138,13 +190,15 @@ def run_non_elsevier_stage(input_path: Path, output_dir: Path, options: BatchOpt
             output_dir / "non_elsevier_institutional" / "institutional_pdf_download_report.csv",
         )
     )
-    return _map_report(
-        rows,
+    owner_results = _map_report(
+        prepared.owner_rows,
         report_path,
+        pdf_base_dir=report_path.parent / "pdfs",
         source="non_elsevier",
         status_field="status",
         success_statuses={"pdf_downloaded"},
     )
+    return _restore_stage_results(rows, prepared, owner_results, "non_elsevier")
 
 
 def _oa_input_value(row: dict) -> str:
@@ -158,13 +212,81 @@ def _read_stage_input(path: Path) -> list[dict[str, str]]:
         return [{key: str(value or "") for key, value in row.items()} for row in csv.DictReader(handle)]
 
 
+def _prepare_stage_rows(rows: list[dict]) -> _PreparedRows:
+    owner_rows: list[dict] = []
+    layout: list[int | None] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        identity = _stage_input_identity(row)
+        if identity is not None and identity in seen:
+            layout.append(None)
+            continue
+        if identity is not None:
+            seen.add(identity)
+        layout.append(len(owner_rows))
+        owner_rows.append(row)
+    return _PreparedRows(owner_rows=owner_rows, layout=layout)
+
+
+def _stage_input_identity(row: dict) -> tuple[str, str] | None:
+    doi = _normalise_doi(row.get("doi", ""))
+    if doi:
+        return "doi", doi
+    title = _normalise_identity(row.get("title", ""))
+    if title:
+        return "title", title
+    return None
+
+
+def _deduplicated_stage_input(
+    input_path: Path,
+    output_dir: Path,
+    prepared: _PreparedRows,
+    *,
+    source: str,
+) -> Path:
+    if len(prepared.owner_rows) == len(prepared.layout):
+        return input_path
+    return write_stage_input(
+        prepared.owner_rows,
+        output_dir / "working" / f"{source}_stage_input.csv",
+    )
+
+
+def _restore_stage_results(
+    input_rows: list[dict],
+    prepared: _PreparedRows,
+    owner_results: list[StageResult],
+    source: str,
+) -> list[StageResult]:
+    results: list[StageResult] = []
+    for row, owner_index in zip(input_rows, prepared.layout):
+        if owner_index is None:
+            results.append(
+                StageResult(
+                    task_id=str(row.get("task_id", "")),
+                    doi=str(row.get("doi", "")),
+                    title=str(row.get("title", "")),
+                    status="duplicate",
+                    file="",
+                    reason="duplicate_stage_input",
+                    source=source,
+                )
+            )
+        else:
+            results.append(owner_results[owner_index])
+    return results
+
+
 def _map_report(
     input_rows: list[dict],
     report_path: Path,
     *,
+    pdf_base_dir: Path,
     source: str,
     status_field: str,
     success_statuses: set[str],
+    missing_row_reason: str = "missing_stage_report_row",
 ) -> list[StageResult]:
     if not report_path.is_file():
         return _stage_failure(input_rows, source, "stage_report_missing")
@@ -178,9 +300,18 @@ def _map_report(
     results: list[StageResult] = []
     for input_row, report_row in zip(input_rows, matched_rows):
         if report_row is None:
-            results.append(_failure_for_row(input_row, source, "missing_stage_report_row"))
+            results.append(_failure_for_row(input_row, source, missing_row_reason))
             continue
-        results.append(_normalise_report_row(input_row, report_row, source, status_field, success_statuses))
+        results.append(
+            _normalise_report_row(
+                input_row,
+                report_row,
+                pdf_base_dir,
+                source,
+                status_field,
+                success_statuses,
+            )
+        )
     return results
 
 
@@ -196,15 +327,20 @@ def _match_report_rows(input_rows: list[dict], report_rows: list[dict[str, str]]
 
 
 def _find_matching_report_row(input_row: dict, report_rows: list[dict[str, str]]) -> int | None:
-    input_doi = _normalise_identity(input_row.get("doi", ""))
+    source_index = str(input_row.get("_stage_source_index", "")).strip()
+    if source_index:
+        for index, report_row in enumerate(report_rows):
+            if report_row.get("source_index", "").strip() == source_index:
+                return index
+    input_doi = _normalise_doi(input_row.get("doi", ""))
     input_title = _normalise_identity(input_row.get("title", ""))
     if input_doi and input_title:
         for index, report_row in enumerate(report_rows):
-            if _normalise_identity(report_row.get("doi", "")) == input_doi and _normalise_identity(report_row.get("title", "")) == input_title:
+            if _normalise_doi(report_row.get("doi", "")) == input_doi and _normalise_identity(report_row.get("title", "")) == input_title:
                 return index
     if input_doi:
         for index, report_row in enumerate(report_rows):
-            if _normalise_identity(report_row.get("doi", "")) == input_doi:
+            if _normalise_doi(report_row.get("doi", "")) == input_doi:
                 return index
     if input_title:
         for index, report_row in enumerate(report_rows):
@@ -227,6 +363,7 @@ def _find_matching_row_number(index: int, report_rows: list[dict[str, str]]) -> 
 def _normalise_report_row(
     input_row: dict,
     report_row: dict[str, str],
+    pdf_base_dir: Path,
     source: str,
     status_field: str,
     success_statuses: set[str],
@@ -235,13 +372,14 @@ def _normalise_report_row(
     reason = report_row.get("reason", "").strip()
     file = report_row.get("file", "").strip()
     if status.lower() in success_statuses:
-        if _is_valid_local_pdf(file):
+        pdf_path = _resolve_report_pdf(file, pdf_base_dir)
+        if pdf_path is not None and _is_valid_local_pdf(pdf_path):
             return StageResult(
                 task_id=str(input_row.get("task_id", "")),
                 doi=report_row.get("doi", "") or str(input_row.get("doi", "")),
                 title=report_row.get("title", "") or str(input_row.get("title", "")),
                 status="downloaded",
-                file=file,
+                file=str(pdf_path),
                 reason="",
                 source=source,
             )
@@ -257,11 +395,26 @@ def _normalise_report_row(
     )
 
 
-def _is_valid_local_pdf(file: str) -> bool:
+def _resolve_report_pdf(file: str, pdf_base_dir: Path) -> Path | None:
     if not file or file.lower().startswith(("http://", "https://")):
-        return False
+        return None
+    path = Path(file).expanduser()
+    if path.is_absolute():
+        return path
     try:
-        path = Path(file).expanduser()
+        base_dir = pdf_base_dir.expanduser().resolve()
+        candidate = base_dir / path
+        if candidate.is_symlink():
+            return None
+        resolved = candidate.resolve()
+        resolved.relative_to(base_dir)
+    except (OSError, ValueError):
+        return None
+    return resolved
+
+
+def _is_valid_local_pdf(path: Path) -> bool:
+    try:
         return not path.is_symlink() and path.is_file() and is_valid_pdf(path)
     except OSError:
         return False
@@ -285,6 +438,10 @@ def _failure_for_row(input_row: dict, source: str, reason: str, *, doi: str = ""
 
 def _normalise_identity(value: object) -> str:
     return " ".join(str(value or "").split()).lower()
+
+
+def _normalise_doi(value: object) -> str:
+    return clean_doi(value).lower()
 
 
 def _exception_reason(exc: Exception) -> str:
