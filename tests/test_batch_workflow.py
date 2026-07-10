@@ -3975,6 +3975,10 @@ class BatchFinalizeTests(unittest.TestCase):
 
 
 class BatchCliTests(unittest.TestCase):
+    @staticmethod
+    def _ps_quote(value: object) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
     def _result(self, root: Path, *, manual: int = 0, fallback: int = 0):
         from paper_automation.batch_workflow import BatchPaths, BatchRunResult
 
@@ -4005,7 +4009,7 @@ class BatchCliTests(unittest.TestCase):
         from paper_batch import main
 
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "含 空格 的批次"
+            root = Path(tmp) / "含 空格 O'Brien 的批次"
             secret = "cookie-secret-must-not-appear"
             stdout, stderr = StringIO(), StringIO()
             result = self._result(root, manual=1, fallback=2)
@@ -4038,8 +4042,14 @@ class BatchCliTests(unittest.TestCase):
             "Zotero 回退清单：", "报告目录：",
         ):
             self.assertIn(label, output)
-        expected = f'"{sys.executable}" "paper_batch.py" resume --run-dir "{root}"'
+        script = (PROJECT_ROOT / "paper_batch.py").resolve()
+        expected = (
+            f"& {self._ps_quote(Path(sys.executable).resolve())} {self._ps_quote(script)} "
+            f"'resume' '--run-dir' {self._ps_quote(root)}"
+        )
         self.assertIn(expected, output)
+        self.assertTrue(str(script).startswith(str(PROJECT_ROOT.resolve())))
+        self.assertIn("O''Brien", output)
         self.assertNotIn(secret, output)
         self.assertNotIn(secret, stderr.getvalue())
 
@@ -4050,7 +4060,7 @@ class BatchCliTests(unittest.TestCase):
         from paper_batch import main
 
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "resume run"
+            root = Path(tmp) / "resume O'Brien run"
             result = self._result(root, fallback=2)
             stdout = StringIO()
             with patch("paper_batch.resume_batch", return_value=result) as resume:
@@ -4061,13 +4071,15 @@ class BatchCliTests(unittest.TestCase):
         self.assertEqual(resume.call_args.args, (str(root),))
         output = stdout.getvalue()
         self.assertIn("请在 Zotero 中处理回退条目", output)
+        script = (PROJECT_ROOT / "paper_batch.py").resolve()
         self.assertIn(
-            f'"{sys.executable}" "paper_batch.py" finalize --run-dir "{root}" '
-            f'--zotero-results "{root / "working" / "zotero_results.csv"}"',
+            f"& {self._ps_quote(Path(sys.executable).resolve())} {self._ps_quote(script)} "
+            f"'finalize' '--run-dir' {self._ps_quote(root)} "
+            f"'--zotero-results' {self._ps_quote(root / 'working' / 'zotero_results.csv')}",
             output,
         )
 
-    def test_start_without_pending_rows_prompts_for_header_only_zotero_results(self) -> None:
+    def test_start_without_pending_rows_creates_header_only_zotero_results(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
 
@@ -4081,9 +4093,80 @@ class BatchCliTests(unittest.TestCase):
                 with redirect_stdout(stdout):
                     exit_code = main(["start", "--text", "10.1000/example", "--out", str(root)])
 
+            results_path = root / "working" / "zotero_results.csv"
+            raw = results_path.read_bytes()
+            text = results_path.read_text(encoding="utf-8-sig")
+
         self.assertEqual(exit_code, 0)
-        self.assertIn("仅含表头", stdout.getvalue())
-        self.assertIn("finalize --run-dir", stdout.getvalue())
+        self.assertTrue(raw.startswith(b"\xef\xbb\xbf"))
+        self.assertEqual(
+            text.splitlines(),
+            ["task_id,zotero_item_id,attachment_path,status,reason"],
+        )
+        self.assertIn(str(results_path.resolve()), stdout.getvalue())
+        self.assertIn("task_id,zotero_item_id,attachment_path,status,reason", stdout.getvalue())
+        self.assertIn("'finalize' '--run-dir'", stdout.getvalue())
+
+    def test_start_without_pending_rows_does_not_overwrite_existing_zotero_results(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "existing results"
+            results_path = root / "working" / "zotero_results.csv"
+            results_path.parent.mkdir(parents=True)
+            original = b"existing-content-must-stay"
+            results_path.write_bytes(original)
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=self._result(root)):
+                with redirect_stdout(stdout):
+                    exit_code = main(["start", "--text", "10.1000/example"])
+            after = results_path.read_bytes()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(after, original)
+        self.assertIn(str(results_path.resolve()), stdout.getvalue())
+
+    def test_fallback_rows_do_not_create_zotero_results(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "fallback run"
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=self._result(root, fallback=1)):
+                with redirect_stdout(stdout):
+                    exit_code = main(["start", "--text", "10.1000/example"])
+            exists = (root / "working" / "zotero_results.csv").exists()
+
+        self.assertEqual(exit_code, 0)
+        self.assertFalse(exists)
+
+    def test_header_file_write_error_returns_two_without_secret_or_traceback(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        secret = "cookie-secret-in-path-must-not-leak"
+        stdout, stderr = StringIO(), StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "write failure"
+            with patch("paper_batch.start_batch", return_value=self._result(root)), patch(
+                "paper_batch._ensure_header_only_zotero_results",
+                side_effect=OSError(secret),
+            ):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(["start", "--text", "10.1000/example"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertNotIn(secret, stdout.getvalue())
+        self.assertNotIn(secret, stderr.getvalue())
 
     def test_finalize_prints_completion_without_retry_command(self) -> None:
         from contextlib import redirect_stdout
@@ -4106,7 +4189,7 @@ class BatchCliTests(unittest.TestCase):
         self.assertEqual(finalize.call_args.args, (str(root), str(results_csv)))
         self.assertIn("批次已完成", stdout.getvalue())
         self.assertIn(f"最终 PDF 目录：{root / 'pdfs'}", stdout.getvalue())
-        self.assertNotIn(" resume --run-dir ", stdout.getvalue())
+        self.assertNotIn("'resume' '--run-dir'", stdout.getvalue())
 
     def test_start_rejects_both_input_sources(self) -> None:
         from contextlib import redirect_stderr
@@ -4138,6 +4221,57 @@ class BatchCliTests(unittest.TestCase):
         self.assertNotIn("Traceback", stderr.getvalue())
         self.assertNotIn(secret, stdout.getvalue())
         self.assertNotIn(secret, stderr.getvalue())
+
+    def test_known_workflow_error_codes_get_fixed_hints_without_secret_leak(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        cases = {
+            "zotero_results_fields_invalid": "Zotero 结果 CSV 表头",
+            "zotero_results_file_missing": "Zotero 结果文件",
+            "zotero_result_status_invalid": "status",
+            "invalid_batch_state": "批次状态",
+            "cookies_must_be_path": "Cookie JSON 文件路径",
+            "empty_input": "至少一条文献",
+            "manual_retry_status_mismatch": "人工重试清单",
+        }
+        secret = "cookie=value;session=must-not-leak"
+        for code, hint in cases.items():
+            with self.subTest(code=code):
+                stdout, stderr = StringIO(), StringIO()
+                with patch("paper_batch.start_batch", side_effect=ValueError(f"{code}:{secret}")):
+                    with redirect_stdout(stdout), redirect_stderr(stderr):
+                        exit_code = main(["start", "--text", "10.1000/example"])
+                self.assertEqual(exit_code, 2)
+                self.assertIn(code, stderr.getvalue())
+                self.assertIn(hint, stderr.getvalue())
+                self.assertNotIn(secret, stdout.getvalue())
+                self.assertNotIn(secret, stderr.getvalue())
+
+    def test_generated_powershell_help_command_runs_from_another_directory(self) -> None:
+        import subprocess
+
+        from paper_batch import _powershell_command
+
+        command = _powershell_command("--help")
+        with tempfile.TemporaryDirectory() as tmp:
+            completed = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", command],
+                cwd=tmp,
+                capture_output=True,
+                timeout=20,
+                check=False,
+            )
+
+        self.assertEqual(
+            completed.returncode,
+            0,
+            completed.stderr.decode(errors="replace"),
+        )
+        self.assertTrue(command.startswith("& '"))
+        self.assertIn(self._ps_quote((PROJECT_ROOT / "paper_batch.py").resolve()), command)
 
     def test_help_is_chinese_and_describes_supported_safe_workflow(self) -> None:
         from contextlib import redirect_stdout

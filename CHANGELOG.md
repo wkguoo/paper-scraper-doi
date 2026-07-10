@@ -829,3 +829,14 @@
 - 如何检查是否成功：TDD 红灯确认缺少模块后，`BatchCliTests` 7 项通过；Task4 `BatchRunTests` 38 项通过；Task5 `BatchFinalizeTests` 24 项通过；已检查根帮助和 `start --help` 的简体中文输出。提交前还将运行全套离线测试、compileall 与 `git diff --check`。
 - 注意事项或潜在风险：测试不联网、不读取真实 Cookie、不使用真实 Zotero；真实下载结果仍取决于合法 OA 来源或用户拥有的机构授权。项目未重新打包。
 - 验证补充：全套离线测试 `python -m unittest discover -s tests -v` 已运行 `275` 项并通过（`skipped=2`）；`python -m compileall paper_batch.py paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation` 与 `git diff --check` 均以退出码 0 完成。
+
+## 2026-07-11 04:30 +08:00 — Task 6 复审修复
+
+- 本次任务目标：修复初学者 CLI 复审提出的 PowerShell 下一步命令、安全错误提示和空 Zotero 结果文件自动创建三项问题。
+- 新增、修改或删除的文件：修改 `paper_batch.py`、`tests/test_batch_workflow.py` 和 `CHANGELOG.md`；追加本地未提交的 `.sdd/task-6-report`。未新增工作树，未修改 Task 4/5 工作流、Task 7 文档、README、技能或打包文件，未删除文件。
+- 具体修改内容：下一步命令改为 `& '绝对 Python' '绝对 paper_batch.py' 'resume/finalize' ...`，所有参数使用 PowerShell 单引号且内部单引号以 `''` 转义；新增固定 `ERROR_HINTS`，仅从异常文本首部识别白名单安全错误码，已知码显示固定中文建议，未知错误只显示异常类型与通用提示；当无人工重试、`fallback_count == 0` 且 `zotero_results.csv` 不存在时，以排他创建模式写入 UTF-8-SIG 的五列表头，已有文件不覆盖，有 fallback 时不创建。
+- 修改原因：原命令使用相对脚本名和双引号，不能保证从任意工作目录安全执行；原错误提示无法给出可操作错误码；无 fallback 时仍要求初学者手工创建 CSV，容易产生表头或编码错误。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe paper_batch.py --help`；运行 `start` 或 `resume` 后可直接复制 CLI 输出的 PowerShell 命令。CLI 测试命令为 `..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchCliTests -v`。
+- 生成的输出文件：仅在 `fallback_count == 0`、无需先重试且目标不存在时创建 `working/zotero_results.csv`，编码为 UTF-8-SIG，唯一数据行为表头 `task_id,zotero_item_id,attachment_path,status,reason`；不会覆盖已有结果文件。测试临时输出仍位于忽略的 `.codex-test-tmp/`。
+- 如何检查是否成功：严格 TDD 先观察命令格式、错误映射、缺失表头文件和文件写入异常用例失败，再实现至 `BatchCliTests` 12 项通过；PowerShell help 命令从另一临时工作目录执行成功；Task4 38 项、Task5 24 项通过；全套 280 项通过（跳过 2 项）；help 中文正常，compileall 退出码 0。
+- 注意事项或潜在风险：错误提示只允许显示 `ERROR_HINTS` 白名单中的首个安全错误码，绝不回显异常余文；CSV 使用排他创建避免并发覆盖，但磁盘权限或目录错误仍会安全返回错误码 2。未联网、未读取真实 Cookie、未操作真实 Zotero 附件、未重新打包。
