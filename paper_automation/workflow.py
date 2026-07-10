@@ -114,6 +114,8 @@ def run_workflow(
                     row["download_status"] = rec.status
                     row["file"] = rec.file
                     row["reason"] = rec.reason
+                    row["pdf_source"] = getattr(rec, "manual_status", "") or "scihub"
+                    row["pdf_url"] = getattr(rec, "manual_pdf_url", "") or ""
                     downloaded_count += 1
                     failed_count -= 1
         if auto_success or auto_failed:

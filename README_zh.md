@@ -4,7 +4,7 @@
 
 # 论文下载助手：ScienceDirect 机构权限 + OA 资源辅助获取
 
-这是一个面向 Windows 的论文下载辅助工具。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。它可以配合 Codex Skills、图形界面或命令行，把 DOI 表格、AI 推荐文献列表、复制来的论文文本整理成可检查的报告，并在合规前提下下载 PDF。Codex Skill 是可选增强入口；不使用 Codex 时，也可以直接运行图形界面或命令行。
+这是一个面向 Windows 的论文下载辅助工具。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。它可以配合 Codex Skills、图形界面或命令行，把 DOI 表格、AI 推荐文献列表、复制来的论文文本整理成可检查的报告，并下载 PDF。Codex Skill 是可选增强入口；不使用 Codex 时，也可以直接运行图形界面或命令行。
 
 本项目主要包含两条流程：
 
@@ -307,7 +307,7 @@ D:\Literature\OA\
 
 ## Cookie 使用和安全
 
-ScienceDirect 机构下载依赖你的合法机构权限。最稳妥的新手方式是用 Cookie Editor 从已经登录的 `sciencedirect.com` 导出 `cookies.json`，然后在 UI 或 CLI 里选择它。
+ScienceDirect 机构下载依赖你的机构权限。最稳妥的新手方式是用 Cookie Editor 从已经登录的 `sciencedirect.com` 导出 `cookies.json`，然后在 UI 或 CLI 里选择它。
 
 详细步骤见 [如何导出机构Cookie.md](如何导出机构Cookie.md)。
 
@@ -336,8 +336,6 @@ git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist
 ```
 
 正常情况下，`cookie.json`、`cookies.json`、`results\`、`pdfs\`、下载的 PDF、CSV/XLSX 结果表、`.venv\` 和 `dist\` 都不应该被 Git 跟踪。
-
-本项目不提供任何数据库、学校或出版社访问权限。使用者必须遵守所在机构、出版社、数据库平台和当地法规的使用条款；即使技术上能够批量下载，也不代表所有机构政策都允许这样做。
 
 ## 开发和测试
 

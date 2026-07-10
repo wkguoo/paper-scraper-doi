@@ -327,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if auto_success or auto_failed:
         pdf_success += auto_success
-        pdf_failed = max(0, pdf_failed + auto_failed)
+        pdf_failed = max(0, pdf_failed - auto_success)
         print(f"[自动回退] Sci-Hub/Anna's 补下载: 成功 {auto_success}，仍失败 {auto_failed}", flush=True)
 
     pdf_report_path = write_pdf_download_report(pdf_records, run_dir)
@@ -1258,13 +1258,13 @@ def build_beginner_recommendations(
     if duplicate_count:
         recommendations.append(f"发现 {duplicate_count} 条重复输入；程序只保留首次识别记录。")
     if non_sciencedirect_count:
-        recommendations.append(f"有 {non_sciencedirect_count} 条 DOI 疑似不是 ScienceDirect/Elsevier，必要时改用合法 OA 流程。")
+        recommendations.append(f"有 {non_sciencedirect_count} 条 DOI 疑似不是 ScienceDirect/Elsevier，可改用 OA 流程。")
     if not auto_web_search and review_count and not preflight_only:
         recommendations.append("若题名或短引用较多，可重跑正式解析时加 --resolve-title-only --auto-web-search 尝试公开学术搜索补 DOI。")
     if pdf_failed:
         recommendations.append("PDF 失败时先看 pdf_download_report.csv；常见原因是 cookie 过期、无机构权限、验证码或限速。")
     if failure_reasons:
-        recommendations.append("解析失败时先按失败原因分组处理，不要反复重跑同一批输入。")
+        recommendations.append("解析失败时先按失败原因分组处理，可按失败原因分组后分批处理。")
     if not recommendations:
         recommendations.append("当前没有需要处理的异常项。")
     return recommendations

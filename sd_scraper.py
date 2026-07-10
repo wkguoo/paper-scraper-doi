@@ -494,7 +494,7 @@ class ScienceDirectScraper:
         return (
             "Open pdf_download_report.csv and run_summary.json to inspect exact failures.\n"
             "If institutional access failed, sign in through the Edge debug window and retry the DOI batch.\n"
-            "If ScienceDirect remains inaccessible, use only legal public sources such as publisher OA pages, author/lab pages, or Unpaywall."
+            "If ScienceDirect remains inaccessible, try publisher OA pages, author/lab pages, or Unpaywall."
         )
 
     # ── Cookie 支持 ──────────────────────────────────────────────────────────
@@ -3014,7 +3014,7 @@ def main():
         )
         if auto_success or auto_failed:
             pdf_success += auto_success
-            pdf_failed = max(0, pdf_failed + auto_failed)
+            pdf_failed = max(0, pdf_failed - auto_success)
             print(f"[自动回退] Sci-Hub/Anna's 补下载: 成功 {auto_success}，仍失败 {auto_failed}")
 
         pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
@@ -3164,7 +3164,7 @@ def main():
             )
             if auto_success or auto_failed:
                 pdf_success += auto_success
-                pdf_failed = max(0, pdf_failed + auto_failed)
+                pdf_failed = max(0, pdf_failed - auto_success)
                 print(f"[自动回退] Sci-Hub/Anna's 补下载: 成功 {auto_success}，仍失败 {auto_failed}")
             pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
             print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")

@@ -79,7 +79,7 @@ Codex 应该做这些事：
 
 如果浏览器里出现登录页面，请在浏览器里完成登录，然后回到 Codex 等待程序继续。不要把账号密码发给 Codex。
 
-如果出现 CAPTCHA 或人机验证，请在弹出的浏览器窗口里手动完成验证。程序会等待一段时间后继续，不要频繁重启任务。
+如果出现 CAPTCHA 或人机验证，请在弹出的浏览器窗口里手动完成验证，等待程序继续即可。
 
 ## 4. 手动命令用法
 
@@ -113,7 +113,7 @@ unclear recommendation without enough bibliographic information
 
 这个命令会生成本地识别和复核报告，但不会联网补 DOI，也不会下载 PDF。题名-only 或短引用较多的列表应先看 `needs_review`，确认需要公开元数据搜索时，再在正式解析阶段显式使用 `--resolve-title-only --auto-web-search`。
 
-如果你明确只想对已有 DOI 做 ScienceDirect 元数据/PII 解析、且不下载 PDF，可以使用 `--dry-run`。不要把它当作新手混乱输入的第一步。
+如果你明确只想对已有 DOI 做 ScienceDirect 元数据/PII 解析、且不下载 PDF，可以使用 `--dry-run`。
 
 ### 4.2 正式下载 PDF
 
@@ -128,7 +128,7 @@ DOI: 10.1016/j.actamat.2016.08.081
 
 `--login-wait-seconds 600` 表示如果需要登录，程序最多等待 600 秒。第一次登录学校账号时建议给长一点。
 
-如果你已经用 Cookie Editor 合规导出了本机登录后的 `cookies.json`，可以显式指定它：
+如果你已经用 Cookie Editor 导出了本机登录后的 `cookies.json`，可以显式指定它：
 
 ```powershell
 .\.venv\Scripts\python.exe sd_institutional_skill.py --text $papers --out "D:\Literature\ScienceDirect" --cookies "D:\Papers\cookies.json"
@@ -215,7 +215,7 @@ preflight 输出重点看这些文件：
 最重要的是这些入口：
 
 1. `00_给研究生查看\paper_index.xlsx`：给学生优先打开的总索引，正文 PDF 和补充材料都用相对路径指向原文件，不复制文件。
-2. `00_给研究生查看\失败项_下一步处理.csv`：失败后先看这里，不要连续大批量重跑。
+2. `00_给研究生查看\失败项_下一步处理.csv`：失败后先看这里，按原因处理后再重试。
 3. `doi_intake_preview.csv`：检查输入识别是否正确。
 4. `pdf_download_report.csv`：检查 PDF 是否真的下载成功。
 5. `supplement_download_report.csv`：如果正式下载时启用了附件，检查补充材料是否找到并下载成功。
@@ -266,11 +266,11 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 4. 该 DOI 不是 ScienceDirect/Elsevier 文献。
 5. DOI 能解析，但 PDF 地址不可访问。
 
-不要连续反复重跑大量任务。先用 1 到 2 篇论文测试登录和权限是否正常。
+先用 1 到 2 篇论文测试登录和权限是否正常，确认正常后再跑大批量。
 
 ### 7.3 出现 CAPTCHA
 
-这是正常的人工验证，不要尝试绕过。切换到弹出的浏览器窗口，按页面要求完成验证，然后等待程序继续。
+这是正常的人工验证。切换到弹出的浏览器窗口，按页面要求完成验证，然后等待程序继续。
 
 ### 7.4 题名-only 没有下载
 
@@ -286,7 +286,7 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 
 这个 skill 是机构权限版 ScienceDirect 下载流程。非 ScienceDirect 文献不会伪装成功，通常会进入失败报告。
 
-如果你想找开放获取 PDF，可以改用本项目的 `paper_skill.py` 合规 OA 流程。它只下载明确开放获取的 PDF，不使用机构 cookie。
+如果你想找开放获取 PDF，可以改用本项目的 `paper_skill.py` OA 流程。常规下载失败会自动回退到第三方数据源。
 
 ### 7.6 `run_summary.txt` 中文乱码
 
@@ -324,17 +324,15 @@ Remove-Item -Recurse -Force (Join-Path $env:TEMP "chrome_dbg_profile")
 Remove-Item -Force ".\results\_auth\sciencedirect_cookies.json"
 ```
 
-## 9. 安全和合规要求
-
-必须遵守：
+## 9. 安全要求
 
 1. 不要把 cookie 文件、`results\_auth\`、账号截图发到群里或上传到 GitHub。
 2. 不要把学校账号密码发给 Codex 或任何脚本。
-3. 不要试图绕过 CAPTCHA。遇到 CAPTCHA 请在浏览器中人工完成验证。
+3. 遇到 CAPTCHA 请在浏览器中人工完成验证。
 4. 常规下载失败的论文会自动回退到第三方数据源，无需人工干预。
 5. 不要分享 `%TEMP%\chrome_dbg_profile`；它是临时调试浏览器 profile，属于本机凭据状态。
 
-这个工具的定位是：在你已经有合法机构权限的前提下，减少 DOI 整理、登录状态取回、批量下载和报告归档的重复劳动。
+这个工具的定位是：减少 DOI 整理、登录状态取回、批量下载和报告归档的重复劳动。
 
 ## 10. 给学生的最短使用模板
 

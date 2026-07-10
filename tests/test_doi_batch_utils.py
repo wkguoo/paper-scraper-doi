@@ -434,7 +434,7 @@ class ReportTests(unittest.TestCase):
                 pdf_report_path=str(out / "pdf_download_report.csv"),
                 cookie_message="已识别 5 个 Cookie，其中 2 个与 ScienceDirect/Elsevier 相关",
                 browser_message=r"Edge: C:\Edge\msedge.exe; profile: C:\Edge\User Data\Default; debug_port: 9222",
-                download_next_steps="Retry after Edge institutional sign-in.\nUse only legal public sources.",
+                download_next_steps="Retry after Edge institutional sign-in.\ntry publisher OA pages, author/lab pages, or Unpaywall.",
             )
             summary_path = write_run_summary(summary)
             report_path = write_pdf_download_report(

@@ -283,7 +283,7 @@ def classify_failure(*, status: str, reason: str, doi: str, source: str) -> str:
 def next_step_for_category(category: str) -> str:
     return {
         "需补 DOI/文献信息": "补齐 DOI、完整题名、期刊、年份或卷页后重新预检。",
-        "非 ScienceDirect": "改用合法 OA 流程，或人工确认该 DOI 是否属于 Elsevier/ScienceDirect。",
+        "非 ScienceDirect": "改用 OA 流程，或人工确认该 DOI 是否属于 Elsevier/ScienceDirect。",
         "重复输入": "无需重试；保留首次记录即可。",
         "无机构权限": "在校内网络、VPN 或 CARSI 环境确认机构是否有正文 PDF 权限。",
         "验证码或限速": "暂停下载，检查调试浏览器中的验证码或限速提示，稍后小批量重试。",
@@ -393,10 +393,6 @@ def _student_readme_text(*, index_rows: list[dict[str, str]], failure_rows: list
         "- 补充材料相对路径指向上级输出目录里的 supplements\\。",
         "- supplement 状态 not_found 表示网页中没有检测到可下载附件链接，不代表正文 PDF 下载失败。",
         "",
-        "合规边界:",
-        "- 优先使用学校/机构已有权限、Cookie JSON、浏览器登录或合法开放获取来源。",
-        "- 常规下载失败的论文会自动回退到第三方公开数据源补充获取。",
-        "",
         "- Cookie 和调试浏览器目录属于凭据状态，不要上传、转发或提交到 Git。",
         "",
         "本次统计:",
@@ -411,8 +407,7 @@ def _student_readme_text(*, index_rows: list[dict[str, str]], failure_rows: list
         "",
         "处理失败项:",
         "- 先打开 失败项_下一步处理.csv，按类别处理。",
-        "- 不要反复大批量重试同一批失败 DOI；先确认 Cookie、机构权限、验证码、限速或 DOI 信息是否正确。",
-        "- 需要重试时，优先小批量重试。",
+        "- 先确认 Cookie、机构权限、验证码、限速或 DOI 信息是否正确，再小批量重试。",
         "",
     ])
     return "\n".join(lines)

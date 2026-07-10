@@ -1,6 +1,6 @@
 # 如何导出机构 Cookie 以使用学校账号下载 ScienceDirect
 
-这份说明写给第一次使用本项目的用户。`cookies.json` 的作用是让脚本在合规前提下复用你已经登录 ScienceDirect 的机构访问状态，从而访问你所在学校或机构已经订阅的内容。
+这份说明写给第一次使用本项目的用户。`cookies.json` 的作用是让脚本复用你已经登录 ScienceDirect 的机构访问状态，从而访问你所在学校或机构已经订阅的内容。
 
 ## 先确认你是否需要 Cookie
 
@@ -10,7 +10,7 @@
 | 使用 Windows UI 的 `DOI 批量下载` | 推荐使用 |
 | 使用 `sd_scraper.py -m doi_batch --download-pdfs` | 推荐使用 |
 | 使用 Codex Skill 并让脚本弹出浏览器登录 | 不一定需要，脚本也可以通过浏览器登录缓存凭据 |
-| 使用 `legal-oa-paper-download` 或 `paper_skill.py` 合法 OA 流程 | 不需要，也不应该使用 |
+| 使用 `legal-oa-paper-download` 或 `paper_skill.py` OA 流程 | 不需要，也不应该使用 |
 
 Cookie 不是账号密码，但它属于登录凭据。请按账号密码的安全级别处理。
 
@@ -120,7 +120,7 @@ DOI: 10.1016/j.actamat.2016.08.081
 | Cookie Editor 导出的不是 JSON | 导出时确认选择 `Export as JSON`，不要选择 Netscape 或纯文本格式。 |
 | UI 中已经选了 `cookies.json`，还要不要读 Chrome Cookie | 不需要。优先使用导出的 `cookies.json`，减少浏览器读取失败的情况。 |
 | 换电脑后还能用原来的 Cookie 吗 | 不建议。请在当前电脑和当前浏览器重新登录并导出。 |
-| 合法 OA 下载要不要 Cookie | 不需要。`paper_skill.py` 和 `legal-oa-paper-download` 不使用机构 Cookie。 |
+| OA 下载要不要 Cookie | 不需要。`paper_skill.py` 和 `legal-oa-paper-download` 不使用机构 Cookie。 |
 
 ## 安全清单
 
@@ -131,7 +131,6 @@ DOI: 10.1016/j.actamat.2016.08.081
 - 不要提交下载的 PDF、补充材料、结果表或日志。
 - 不要把 Cookie 内容粘贴到 Codex、聊天软件、邮件或 issue 中。
 - 不要分享 `%TEMP%\chrome_dbg_profile`。
-- 只在你有合法访问权限的前提下使用本工具。
 
 如果在公共电脑或临时测试机器上使用过机构登录，可以清理本机凭据状态：
 
