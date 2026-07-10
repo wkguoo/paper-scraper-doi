@@ -3981,6 +3981,9 @@ class BatchFinalizeTests(unittest.TestCase):
 class BatchEndToEndTests(unittest.TestCase):
     def test_start_resume_finalize_produces_one_manifest_and_valid_pdfs(self) -> None:
         import csv
+        from io import BytesIO
+
+        from openpyxl import load_workbook
 
         from paper_automation.batch_workflow import (
             finalize_batch,
@@ -4102,10 +4105,28 @@ class BatchEndToEndTests(unittest.TestCase):
                 )
 
             finalized = finalize_batch(started.paths.root, started.paths.zotero_results)
+            report_names = (
+                "final_manifest.csv",
+                "final_manifest.xlsx",
+                "failed.csv",
+                "run_summary.txt",
+                "batch_status.csv",
+                "batch_status.json",
+            )
+            reports_before_rerun = {
+                name: (started.paths.reports / name).read_bytes()
+                for name in report_names
+            }
+            state_before_rerun = started.paths.state.read_bytes()
             delivered_before_rerun = {
                 path.name: path.read_bytes() for path in started.paths.pdfs.glob("*.pdf")
             }
             rerun = finalize_batch(started.paths.root, started.paths.zotero_results)
+            reports_after_rerun = {
+                name: (started.paths.reports / name).read_bytes()
+                for name in report_names
+            }
+            state_after_rerun = started.paths.state.read_bytes()
             delivered_after_rerun = {
                 path.name: path.read_bytes() for path in started.paths.pdfs.glob("*.pdf")
             }
@@ -4124,15 +4145,51 @@ class BatchEndToEndTests(unittest.TestCase):
             delivered = list(started.paths.pdfs.glob("*.pdf"))
             self.assertEqual(len(delivered), 2)
             self.assertTrue(all(is_valid_pdf(path) for path in delivered))
+            self.assertEqual(
+                {
+                    hashlib.sha256(payload).hexdigest()
+                    for payload in delivered_after_rerun.values()
+                },
+                {
+                    hashlib.sha256(project_payload).hexdigest(),
+                    hashlib.sha256(zotero_payload).hexdigest(),
+                },
+            )
             self.assertTrue((started.paths.reports / "final_manifest.xlsx").exists())
             self.assertIn(
                 "no_available_pdf",
                 (started.paths.reports / "run_summary.txt").read_text(encoding="utf-8"),
             )
-            self.assertEqual(
-                {row["task_id"] for row in final_rows},
-                {"paper-0001", "paper-0002", "paper-0003"},
+            expected_task_ids = ["paper-0001", "paper-0002", "paper-0003"]
+            self.assertEqual(len(final_rows), 3)
+            self.assertCountEqual(
+                [row["task_id"] for row in final_rows],
+                expected_task_ids,
             )
+            byte_stable_reports = set(report_names) - {"final_manifest.xlsx"}
+            for name in byte_stable_reports:
+                with self.subTest(idempotent_report=name):
+                    self.assertEqual(
+                        reports_before_rerun[name],
+                        reports_after_rerun[name],
+                    )
+
+            def xlsx_rows(payload: bytes) -> list[tuple]:
+                workbook = load_workbook(
+                    BytesIO(payload),
+                    read_only=True,
+                    data_only=False,
+                )
+                try:
+                    return list(workbook.active.iter_rows(values_only=True))
+                finally:
+                    workbook.close()
+
+            self.assertEqual(
+                xlsx_rows(reports_before_rerun["final_manifest.xlsx"]),
+                xlsx_rows(reports_after_rerun["final_manifest.xlsx"]),
+            )
+            self.assertEqual(state_before_rerun, state_after_rerun)
             self.assertEqual(delivered_before_rerun, delivered_after_rerun)
             self.assertEqual(
                 hashlib.sha256(project_pdf.read_bytes()).hexdigest(),

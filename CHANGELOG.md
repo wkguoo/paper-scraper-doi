@@ -889,3 +889,17 @@
 - 生成的输出文件：仅创建测试临时目录内的模拟批次 `pdfs/`、`reports/final_manifest.csv/.xlsx`、`run_summary.txt` 和状态文件，退出测试后自动清理；审计证据写入 `.superpowers/sdd/task-8-report.md`。
 - 如何检查是否成功：focused 测试全部断言通过，并且完整离线测试套件、语法检查和差异检查均成功；查看 `task-8-report.md` 可追溯每项证据。
 - 注意事项或潜在风险：本次严格离线，未联网、未调用真实 Zotero、未读取 Cookie/密码、未安装 Skill、未打包。真实 Zotero 的个人文库、PDF 可用性、机构授权、登录/CAPTCHA 与手工验收仍需用户在授权的应用环境中完成；未修改原始输入或实际 PDF。
+
+## 2026-07-11 05:43:23 +08:00 — Task 8 离线验收审查修复
+
+- 本次任务目标：修复 Task 8 审查指出的离线验收证据不足，严格验证两个最终 PDF 的不同来源、最终清单行唯一性，以及重复 `finalize` 的报告、状态和 PDF 幂等性。
+- 新增、修改或删除的文件：修改 `tests/test_batch_workflow.py`、`CHANGELOG.md` 和 `.superpowers/sdd/task-8-report.md`；未新增或删除产品文件，未修改产品代码。
+- 提交前工作树状态：本隔离工作树进入本轮审查修复前 `git status --short --untracked-files=all` 无输出，现有未提交文件为无。
+- 具体修改内容：新增最终 PDF 内容 SHA-256 集合断言，要求恰好等于 `project_payload` 与 `zotero_payload` 的两个哈希；新增 `final_manifest.csv` 行数等于 3 及 `assertCountEqual` 重数断言，保证每个 `task_id` 恰好出现一次；首次 `finalize` 后保存六份报告、state 和最终 PDF 的 bytes，第二次 `finalize` 后验证五份字节稳定报告、state 与最终 PDF 全部逐字节不变，并验证 XLSX 工作表值不变。
+- XLSX 实际行为验证：诊断测试在两次 `finalize` 间隔 2.1 秒时，聚合字节比较按预期失败；核对后仅 `final_manifest.xlsx` 的 ZIP/工作簿时间元数据变化。当前产品每次以 `openpyxl.Workbook` 新建 XLSX，设计未保证包级字节确定性，因此测试保留首次/二次 XLSX 原始 bytes，但只对工作表值做语义幂等断言，不伪造字节幂等结论。
+- 修改原因：原测试只检查 PDF 数量和有效性，不能排除同一来源被复制两次；只比较 task ID 集合不能排除重复行；只比较 PDF 名称和 bytes 不能证明报告与 state 在重复 finalize 后保持稳定。
+- 如何运行：`..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchEndToEndTests -v`；`..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`；`git diff --check`。
+- 测试输出：最终 focused 为 `Ran 1 test in 0.632s`、`OK`；完整离线套件为 `Ran 288 tests in 14.350s`、`OK (skipped=2)`。诊断阶段曾得到 1 个预期失败，用于确认 XLSX 包元数据非确定性，最终测试未保留该人为延迟。
+- 生成的输出文件：测试仅在临时目录生成并自动清理两份源 PDF、两个最终 PDF、六份报告、Zotero 结果 CSV 与 batch state；审查证据更新至 `.superpowers/sdd/task-8-report.md`。
+- 如何检查是否成功：确认最终 PDF 哈希集合含两个不同预期哈希、manifest 恰有三行且 task ID 重数一致、五份稳定报告/state/PDF bytes 在第二次 finalize 后完全相同、XLSX 工作表值一致，并确认 focused/full/diff check 通过。
+- 注意事项或潜在风险：真实 Zotero 未验收不是本离线测试缺陷，保留给后续手工步骤。本次未联网、未操作真实 Zotero、未读取 Cookie/密码、未安装 Skill、未打包，也未修改原始输入或实际 PDF。

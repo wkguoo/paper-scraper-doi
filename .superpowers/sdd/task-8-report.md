@@ -68,3 +68,34 @@ library selection, attachment availability, institutional entitlement, or
 login/CAPTCHA interaction. Those remain the Task 8 manual Zotero acceptance
 steps and require the user to authorize external application access. No Skill
 installation or packaging was performed.
+
+## Offline acceptance review repair
+
+The follow-up review tightened the same end-to-end fixture without changing
+product code:
+
+- The two delivered PDF SHA-256 values must equal the distinct project and
+  Zotero fixture hashes, so two copies of one source cannot satisfy the test.
+- The CSV manifest must contain exactly three rows, and `assertCountEqual`
+  requires each expected task ID exactly once.
+- The first and second `finalize` calls snapshot all six report files, batch
+  state, and delivered PDFs. `final_manifest.csv`, `failed.csv`,
+  `run_summary.txt`, `batch_status.csv`, `batch_status.json`, state, and PDF
+  files must remain byte-for-byte identical.
+- A diagnostic run separated the two finalizations by 2.1 seconds and showed
+  that only `final_manifest.xlsx` changed at the ZIP/package metadata level.
+  This is expected from a newly created `openpyxl` workbook and is not a
+  project-state change. The final test retains both XLSX byte snapshots and
+  compares all worksheet values instead of claiming unsupported byte-level
+  determinism.
+
+Review verification:
+
+- Diagnostic strict-byte run: one expected failure at the aggregate report
+  byte comparison, caused by XLSX package metadata.
+- Focused final run: `Ran 1 test in 0.632s`, `OK`.
+- Full offline run: `Ran 288 tests in 14.350s`, `OK (skipped=2)`.
+- The isolated worktree had no pre-existing uncommitted files before this
+  review repair began.
+- Live Zotero acceptance remains a later manual step; it is outside this
+  offline fixture and was not treated as a test defect.
