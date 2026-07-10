@@ -873,3 +873,19 @@
 - 生成的输出文件：空 fallback 且 canonical 无效时，新建 `working\\zotero_results_retry_YYYYMMDD_HHMMSS.csv`；同秒冲突依次使用 `_2`、`_3` 等后缀。canonical 与其他已有结果文件保持不变。本次仅生成测试临时文件，无真实 PDF/Zotero 输出。
 - 如何检查是否成功：CLI RED 为 16 项中 stale、物理空白行、同秒冲突 3 项失败；合法 header-only canonical 测试保持通过。Skill RED 为 20 项中的新增合同产生 15 个缺失断言。修复后 CLI 16 项、Skill 20 项通过，全量离线测试 287 项通过（跳过 2 项）。
 - 注意事项或潜在风险：严格复用有意拒绝无 BOM、附加空白行或任何数据行的 canonical；它们不会被删除或覆盖，而会留存供审计。时间戳冲突后缀没有固定上限，会持续使用排他创建直到获得安全文件名。未联网、未调用真实 Zotero、未读取 Cookie、未自动处理 CAPTCHA、未打包。
+## 2026-07-11 05:33:13 +08:00 — Task 8 离线端到端验收
+
+- 本次任务目标：为批处理工作流补充离线端到端验收，覆盖 `start`、唯一一次 `resume`、Zotero 结果导入和重复 `finalize` 的安全行为。
+- 新增、修改或删除的文件：修改 `tests/test_batch_workflow.py`（新增 `FakeBatchGateway.retry_calls` 只读测试辅助属性和 `BatchEndToEndTests.test_start_resume_finalize_produces_one_manifest_and_valid_pdfs`）；新增 `.superpowers/sdd/task-8-report.md`；追加本 `CHANGELOG.md`。未修改产品代码，未删除文件。
+- 具体修改内容：测试使用 3 条确定性规范化输入；第 1 条由项目流程复制有效 PDF，后两条经同一次 `resume` 后进入 Zotero 回退。模拟 Zotero 对第 2 条提供有效附件、对第 3 条提供 `no_pdf/no_available_pdf`。断言重试次数为 1、成功/失败数为 2/1、`pdfs/` 恰有 2 个有效 PDF、`final_manifest.xlsx` 存在、摘要含 `no_available_pdf`、最终 CSV 清单含全部 3 个 `task_id`，并以 SHA-256 校验项目/Zotero 源 PDF 字节未变。第二次 `finalize` 后再次比较最终 PDF 名称和字节，确认不重复且不覆盖。
+- 修改原因：将 Task 4/5/7 的单元与协议验证串联为可重复执行的离线验收证据，并防止未来变更破坏恢复、汇总和非破坏性复制边界。
+- 如何运行：
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchEndToEndTests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_batch.py paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `rg -n "Sci-Hub|scihub|Anna's Archive|annas_archive|LibGen|apply_auto_fallback" paper_batch.py paper_automation sd_institutional_skill.py paper_skill.py doi_batch_utils.py skills/paper-download/SKILL.md`
+  - `git diff --check`
+- 测试输出：focused 验收为 `Ran 1 test in 0.629s`、`OK`；完整离线套件为 `Ran 288 tests in 14.492s`、`OK (skipped=2)`；`compileall` 与 `git diff --check` 均退出码 0；影子来源扫描无匹配（`rg` 退出码 1）。
+- 生成的输出文件：仅创建测试临时目录内的模拟批次 `pdfs/`、`reports/final_manifest.csv/.xlsx`、`run_summary.txt` 和状态文件，退出测试后自动清理；审计证据写入 `.superpowers/sdd/task-8-report.md`。
+- 如何检查是否成功：focused 测试全部断言通过，并且完整离线测试套件、语法检查和差异检查均成功；查看 `task-8-report.md` 可追溯每项证据。
+- 注意事项或潜在风险：本次严格离线，未联网、未调用真实 Zotero、未读取 Cookie/密码、未安装 Skill、未打包。真实 Zotero 的个人文库、PDF 可用性、机构授权、登录/CAPTCHA 与手工验收仍需用户在授权的应用环境中完成；未修改原始输入或实际 PDF。

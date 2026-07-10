@@ -1835,6 +1835,10 @@ class FakeBatchGateway:
             return self.retry_updates(rows)
         return [{**row, "status": "no_entitlement", "source": "institutional", "file": "", "reason": "retry_exhausted"} for row in rows]
 
+    @property
+    def retry_calls(self) -> int:
+        return len(self.retry_rows)
+
 
 class BatchRunTests(unittest.TestCase):
     def _normalized_rows(self, pdf: Path) -> list[dict]:
@@ -3972,6 +3976,172 @@ class BatchFinalizeTests(unittest.TestCase):
         self.assertEqual(after, old_bytes)
         self.assertEqual(absent_after, set(names) - old_names)
         self.assertEqual(transient, [])
+
+
+class BatchEndToEndTests(unittest.TestCase):
+    def test_start_resume_finalize_produces_one_manifest_and_valid_pdfs(self) -> None:
+        import csv
+
+        from paper_automation.batch_workflow import (
+            finalize_batch,
+            is_valid_pdf,
+            resume_batch,
+            start_batch,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_pdf = root / "project.pdf"
+            project_payload = b"%PDF-1.7\nproject fixture"
+            project_pdf.write_bytes(project_payload)
+            zotero_pdf = root / "zotero.pdf"
+            zotero_payload = b"%PDF-1.7\nzotero fixture"
+            zotero_pdf.write_bytes(zotero_payload)
+            source_hashes = {
+                project_pdf: hashlib.sha256(project_payload).hexdigest(),
+                zotero_pdf: hashlib.sha256(zotero_payload).hexdigest(),
+            }
+            normalized = [
+                {
+                    "task_id": "paper-0001",
+                    "source_index": "1",
+                    "input_doi": "10.1000/a",
+                    "doi": "10.1000/a",
+                    "title": "A",
+                    "fixture_pdf": str(project_pdf),
+                },
+                {
+                    "task_id": "paper-0002",
+                    "source_index": "2",
+                    "input_doi": "10.1000/b",
+                    "doi": "10.1000/b",
+                    "title": "B",
+                },
+                {
+                    "task_id": "paper-0003",
+                    "source_index": "3",
+                    "input_doi": "10.1000/c",
+                    "doi": "10.1000/c",
+                    "title": "C",
+                },
+            ]
+
+            def initial_updates(rows):
+                return [
+                    {
+                        **rows[0],
+                        "status": "oa_downloaded",
+                        "source": "oa",
+                        "file": rows[0]["fixture_pdf"],
+                        "reason": "",
+                    },
+                    *[
+                        {
+                            **row,
+                            "status": "captcha_required",
+                            "source": "institutional",
+                            "file": "",
+                            "reason": "captcha_required",
+                        }
+                        for row in rows[1:]
+                    ],
+                ]
+
+            gateway = FakeBatchGateway(
+                initial_updates=initial_updates,
+                retry_updates=lambda rows: [
+                    {
+                        **row,
+                        "status": "no_entitlement",
+                        "source": "institutional",
+                        "file": "",
+                        "reason": "retry_exhausted",
+                    }
+                    for row in rows
+                ],
+            )
+            started = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=root,
+                gateway=gateway,
+                normalizer=lambda **_kwargs: normalized,
+                now=datetime(2026, 7, 11, 6, 0, 0),
+            )
+            resume_batch(started.paths.root, gateway=gateway)
+
+            with started.paths.zotero_results.open("w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "task_id",
+                        "zotero_item_id",
+                        "attachment_path",
+                        "status",
+                        "reason",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "task_id": "paper-0002",
+                        "zotero_item_id": "42",
+                        "attachment_path": str(zotero_pdf),
+                        "status": "downloaded",
+                        "reason": "",
+                    }
+                )
+                writer.writerow(
+                    {
+                        "task_id": "paper-0003",
+                        "zotero_item_id": "43",
+                        "attachment_path": "",
+                        "status": "no_pdf",
+                        "reason": "no_available_pdf",
+                    }
+                )
+
+            finalized = finalize_batch(started.paths.root, started.paths.zotero_results)
+            delivered_before_rerun = {
+                path.name: path.read_bytes() for path in started.paths.pdfs.glob("*.pdf")
+            }
+            rerun = finalize_batch(started.paths.root, started.paths.zotero_results)
+            delivered_after_rerun = {
+                path.name: path.read_bytes() for path in started.paths.pdfs.glob("*.pdf")
+            }
+            with (started.paths.reports / "final_manifest.csv").open(
+                "r",
+                newline="",
+                encoding="utf-8-sig",
+            ) as handle:
+                final_rows = list(csv.DictReader(handle))
+
+            self.assertEqual(gateway.retry_calls, 1)
+            self.assertEqual(finalized.success_count, 2)
+            self.assertEqual(finalized.failed_count, 1)
+            self.assertEqual(rerun.success_count, 2)
+            self.assertEqual(rerun.failed_count, 1)
+            delivered = list(started.paths.pdfs.glob("*.pdf"))
+            self.assertEqual(len(delivered), 2)
+            self.assertTrue(all(is_valid_pdf(path) for path in delivered))
+            self.assertTrue((started.paths.reports / "final_manifest.xlsx").exists())
+            self.assertIn(
+                "no_available_pdf",
+                (started.paths.reports / "run_summary.txt").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                {row["task_id"] for row in final_rows},
+                {"paper-0001", "paper-0002", "paper-0003"},
+            )
+            self.assertEqual(delivered_before_rerun, delivered_after_rerun)
+            self.assertEqual(
+                hashlib.sha256(project_pdf.read_bytes()).hexdigest(),
+                source_hashes[project_pdf],
+            )
+            self.assertEqual(
+                hashlib.sha256(zotero_pdf.read_bytes()).hexdigest(),
+                source_hashes[zotero_pdf],
+            )
 
 
 class BatchCliTests(unittest.TestCase):
