@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 import shutil
+import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 
 _WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
@@ -16,7 +27,16 @@ _WINDOWS_RESERVED_NAMES = {
     "NUL",
     *(f"COM{number}" for number in range(1, 10)),
     *(f"LPT{number}" for number in range(1, 10)),
+    "COM¹",
+    "COM²",
+    "COM³",
+    "LPT¹",
+    "LPT²",
+    "LPT³",
 }
+
+_LOCK_POLL_SECONDS = 0.05
+_STATE_REPLACE_TIMEOUT_SECONDS = 2.0
 
 
 @dataclass(frozen=True)
@@ -98,16 +118,150 @@ def create_batch_paths(
     )
 
 
+def _state_path(run_dir: str | Path) -> Path:
+    return Path(run_dir).expanduser().resolve() / "working" / "batch_state.json"
+
+
+def _replace_state_file(temporary: Path, destination: Path) -> None:
+    deadline = time.monotonic() + _STATE_REPLACE_TIMEOUT_SECONDS
+    while True:
+        try:
+            os.replace(temporary, destination)
+        except OSError as exc:
+            retryable = os.name == "nt" and (
+                isinstance(exc, PermissionError)
+                or getattr(exc, "winerror", None) in {5, 32, 33}
+            )
+            remaining = deadline - time.monotonic()
+            if not retryable or remaining <= 0:
+                raise
+            time.sleep(min(_LOCK_POLL_SECONDS, remaining))
+        else:
+            return
+
+
+def _write_batch_state_file(path: Path, payload: dict) -> Path:
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    descriptor_open = True
+    try:
+        handle = os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n")
+        descriptor_open = False
+        with handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_state_file(temporary, path)
+    finally:
+        if descriptor_open:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                pass
+        temporary.unlink(missing_ok=True)
+    return path
+
+
 def save_batch_state(paths: BatchPaths, payload: dict) -> Path:
-    temporary = paths.state.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(paths.state)
-    return paths.state
+    """Durably replace one snapshot; read-modify-write callers must hold the lock."""
+
+    return _write_batch_state_file(paths.state, payload)
 
 
 def load_batch_state(run_dir: str | Path) -> dict:
-    path = Path(run_dir) / "working" / "batch_state.json"
+    """Read one snapshot; read-modify-write callers must hold ``batch_state_lock``."""
+
+    path = _state_path(run_dir)
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _try_file_lock(handle) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _release_file_lock(handle) -> None:
+    handle.seek(0)
+    if os.name == "nt":
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _is_lock_contention(exc: OSError) -> bool:
+    return (
+        isinstance(exc, BlockingIOError)
+        or exc.errno in {errno.EACCES, errno.EAGAIN}
+        or getattr(exc, "winerror", None) in {32, 33}
+    )
+
+
+@contextmanager
+def batch_state_lock(
+    run_dir: str | Path,
+    *,
+    timeout: float = 10.0,
+) -> Iterator[None]:
+    """Exclusively lock one run's state; this context manager is not re-entrant."""
+
+    timeout_seconds = float(timeout)
+    if timeout_seconds < 0:
+        raise ValueError("invalid_batch_state_lock_timeout")
+    lock_path = _state_path(run_dir).with_suffix(".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    acquired = False
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                _try_file_lock(handle)
+            except OSError as exc:
+                if not _is_lock_contention(exc):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("batch_state_lock_timeout") from exc
+                time.sleep(min(_LOCK_POLL_SECONDS, remaining))
+            else:
+                acquired = True
+                break
+        yield
+    finally:
+        try:
+            if acquired:
+                _release_file_lock(handle)
+        finally:
+            handle.close()
+
+
+def claim_manual_retry(
+    run_dir: str | Path,
+    *,
+    timeout: float = 10.0,
+) -> tuple[bool, dict]:
+    """Atomically claim a run's one allowed manual retry and return its state."""
+
+    with batch_state_lock(run_dir, timeout=timeout):
+        state = load_batch_state(run_dir)
+        if state.get("manual_retry_used"):
+            return False, state
+        state["manual_retry_used"] = True
+        _write_batch_state_file(_state_path(run_dir), state)
+        return True, state
 
 
 def is_valid_pdf(path: str | Path, minimum_size: int = 12) -> bool:
@@ -153,34 +307,69 @@ def _copy_exclusively(source: Path, target: Path) -> bool:
     return True
 
 
+def _snapshot_pdf_source(source: Path, destination: Path) -> tuple[Path, str]:
+    file_descriptor, snapshot_name = tempfile.mkstemp(
+        prefix=".pdf_snapshot_",
+        suffix=".tmp",
+        dir=destination,
+    )
+    snapshot = Path(snapshot_name)
+    digest = hashlib.sha256()
+    descriptor_open = True
+    try:
+        snapshot_handle = os.fdopen(file_descriptor, "wb")
+        descriptor_open = False
+        with snapshot_handle:
+            with source.open("rb") as source_handle:
+                for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+                    snapshot_handle.write(chunk)
+                    digest.update(chunk)
+            snapshot_handle.flush()
+            os.fsync(snapshot_handle.fileno())
+        if not is_valid_pdf(snapshot):
+            raise ValueError("not_pdf_response")
+        return snapshot, digest.hexdigest()
+    except BaseException:
+        snapshot.unlink(missing_ok=True)
+        raise
+    finally:
+        if descriptor_open:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                pass
+
+
 def copy_pdf_safely(source: str | Path, destination_dir: str | Path, filename: str) -> Path:
-    source_path = Path(source).expanduser().resolve()
-    if not is_valid_pdf(source_path):
-        raise ValueError("not_pdf_response")
     safe_filename = _validate_path_component(filename, error="invalid_filename")
+    source_path = Path(source).expanduser().resolve()
+    if not source_path.is_file():
+        raise ValueError("not_pdf_response")
     destination = Path(destination_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    target = destination / safe_filename
-    source_hash = _sha256(source_path)
-
-    while True:
-        if _path_exists(target):
-            if _same_pdf_content(target, source_hash):
+    snapshot, source_hash = _snapshot_pdf_source(source_path, destination)
+    try:
+        target = destination / safe_filename
+        while True:
+            if _path_exists(target):
+                if _same_pdf_content(target, source_hash):
+                    return target
+                break
+            if _copy_exclusively(snapshot, target):
                 return target
-            break
-        if _copy_exclusively(source_path, target):
-            return target
 
-    counter = 1
-    while True:
-        suffix = "" if counter == 1 else f"_{counter}"
-        candidate = target.with_name(
-            f"{target.stem}_{source_hash[:8]}{suffix}{target.suffix}"
-        )
-        if _path_exists(candidate):
-            if _same_pdf_content(candidate, source_hash):
+        counter = 1
+        while True:
+            suffix = "" if counter == 1 else f"_{counter}"
+            candidate = target.with_name(
+                f"{target.stem}_{source_hash[:8]}{suffix}{target.suffix}"
+            )
+            if _path_exists(candidate):
+                if _same_pdf_content(candidate, source_hash):
+                    return candidate
+                counter += 1
+                continue
+            if _copy_exclusively(snapshot, candidate):
                 return candidate
-            counter += 1
-            continue
-        if _copy_exclusively(source_path, candidate):
-            return candidate
+    finally:
+        snapshot.unlink(missing_ok=True)
