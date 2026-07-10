@@ -53,6 +53,7 @@ session-summary-*.md
 # Codex isolated worktrees and local test scratch
 .worktrees/
 .codex-test-tmp/
+.superpowers/
 
 # Unrelated project files
 gen_outlines.py
