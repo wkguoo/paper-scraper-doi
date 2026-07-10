@@ -304,16 +304,22 @@ def claim_manual_retry(
     run_dir: str | Path,
     *,
     timeout: float = 10.0,
-    validate_before_claim: Callable[[dict], None] | None = None,
+    validate_state: Callable[[dict], object] | None = None,
+    validate_before_claim: Callable[[dict], object] | None = None,
 ) -> tuple[bool, dict]:
     """Atomically claim a run's one allowed manual retry and return its state."""
 
     with batch_state_lock(run_dir, timeout=timeout):
         state = load_batch_state(run_dir)
+        if validate_state is not None:
+            validate_state(state)
         if state.get("manual_retry_used"):
             return False, state
-        if validate_before_claim is not None:
-            validate_before_claim(state)
+        if (
+            validate_before_claim is not None
+            and validate_before_claim(state) is False
+        ):
+            return False, state
         state["manual_retry_used"] = True
         _write_batch_state_file(_state_path(run_dir), state)
         return True, state
@@ -531,6 +537,21 @@ def _write_csv_rows(path: Path, rows: list[dict]) -> Path:
     return path
 
 
+def _tabular_doi_cells(input_path: Path) -> dict[str, str] | None:
+    if input_path.suffix.lower() not in {".csv", ".tsv", ".xlsx", ".xlsm"}:
+        return None
+    from doi_batch_utils import COLUMN_ALIASES, find_column
+    from sd_institutional_skill import load_tabular_records, read_tabular_headers
+
+    headers = read_tabular_headers(input_path)
+    has_doi_column = find_column(headers, COLUMN_ALIASES["doi"]) is not None
+    records = load_tabular_records(input_path)
+    return {
+        str(record.row_number): str(record.raw_value or "") if has_doi_column else ""
+        for record in records
+    }
+
+
 def normalize_input(
     *,
     input_text: str | None,
@@ -546,6 +567,7 @@ def normalize_input(
     from sd_institutional_skill import build_intake
 
     path_values = [] if input_path is None else [Path(input_path).expanduser().resolve()]
+    tabular_doi_cells = None if not path_values else _tabular_doi_cells(path_values[0])
     intake = build_intake(
         texts=[] if input_text is None else [input_text],
         input_paths=path_values,
@@ -567,8 +589,23 @@ def normalize_input(
         if intake_status == "duplicate":
             continue
         extracted_dois: list[str] = []
-        for field in ("raw_value", "input_doi", "doi"):
-            for doi in extract_dois(raw.get(field, "")):
+        source_index = str(raw.get("row_number", "") or "")
+        explicit_doi_cell = "" if tabular_doi_cells is None else tabular_doi_cells.get(source_index, "")
+        doi_not_from_column = bool(
+            tabular_doi_cells is not None
+            and not explicit_doi_cell.strip()
+            and str(raw.get("input_doi", "") or "").strip()
+        )
+        if tabular_doi_cells is None:
+            doi_sources = (raw.get("raw_value", ""), raw.get("input_doi", ""), raw.get("doi", ""))
+        elif explicit_doi_cell.strip():
+            doi_sources = (explicit_doi_cell,)
+        elif intake_status == "valid" and not doi_not_from_column:
+            doi_sources = (raw.get("doi", ""),)
+        else:
+            doi_sources = ()
+        for value in doi_sources:
+            for doi in extract_dois(value):
                 normalized_doi = _normalise_doi(doi)
                 if normalized_doi and normalized_doi not in extracted_dois:
                     extracted_dois.append(normalized_doi)
@@ -589,8 +626,8 @@ def normalize_input(
             is_pending = intake_status == "valid" and bool(doi)
             row = _empty_normalized_row()
             row.update({
-                "source_index": str(raw.get("row_number", "") or ""),
-                "input_doi": str(raw.get("input_doi", "") or ""),
+                "source_index": source_index,
+                "input_doi": explicit_doi_cell if explicit_doi_cell else str(raw.get("input_doi", "") or ""),
                 "input_title": str(raw.get("input_title", "") or ""),
                 "doi": doi,
                 "title": title,
@@ -599,7 +636,12 @@ def normalize_input(
                 "year": str(raw.get("year", "") or ""),
                 "status": "pending" if is_pending else "metadata_uncertain",
                 "source": str(raw.get("source", "") or "input"),
-                "reason": "" if is_pending else str(raw.get("reason", "") or "metadata_uncertain"),
+                "reason": (
+                    "doi_not_from_doi_column"
+                    if doi_not_from_column
+                    else "" if is_pending
+                    else str(raw.get("reason", "") or "metadata_uncertain")
+                ),
             })
             rows.append(row)
 
@@ -764,11 +806,16 @@ def _run_gateway_with_state(
 ) -> None:
     method = getattr(runner, method_name)
     callback_error: Exception | None = None
+    callback_applied_ids: set[str] = set()
 
     def persist_updates(updates: list[dict]) -> None:
         nonlocal callback_error
         try:
-            _apply_stage_updates(state, updates, paths)
+            normalized_updates = _validate_stage_updates(state["rows"], updates)
+            _apply_stage_updates(state, normalized_updates, paths)
+            callback_applied_ids.update(
+                update["task_id"] for update in normalized_updates
+            )
         except Exception as exc:
             callback_error = exc
             raise
@@ -791,7 +838,7 @@ def _run_gateway_with_state(
     normalized_updates = _validate_stage_updates(state["rows"], returned_updates)
     _apply_stage_updates(state, normalized_updates, paths)
     returned_ids = {update["task_id"] for update in normalized_updates}
-    missing_ids = required_ids - returned_ids
+    missing_ids = required_ids - returned_ids - callback_applied_ids
     if missing_ids:
         _mark_required_failures(
             state,
@@ -886,7 +933,11 @@ def _options_from_state(state: dict):
     return _batch_options_type()(**validated)
 
 
-def _validate_state(state: object) -> dict:
+def _validate_state(
+    state: object,
+    *,
+    expected_run_dir: str | Path | None = None,
+) -> dict:
     if not isinstance(state, dict):
         raise ValueError("invalid_batch_state")
     if state.get("version") != 1 or not isinstance(state.get("run_dir"), str):
@@ -895,6 +946,17 @@ def _validate_state(state: object) -> dict:
         raise ValueError("invalid_batch_state")
     _validate_stage_updates([_normalise_row_mapping(row) for row in state["rows"]], [])
     _options_from_state(state)
+    if expected_run_dir is not None:
+        saved_run_dir = Path(state["run_dir"]).expanduser()
+        if not saved_run_dir.is_absolute():
+            raise ValueError("invalid_batch_state_run_dir")
+        try:
+            saved_root = saved_run_dir.resolve()
+            expected_root = Path(expected_run_dir).expanduser().resolve()
+        except OSError as exc:
+            raise ValueError("invalid_batch_state_run_dir") from exc
+        if saved_root != expected_root:
+            raise ValueError("invalid_batch_state_run_dir")
     return state
 
 
@@ -922,7 +984,6 @@ def _read_csv_rows(path: Path) -> list[dict]:
 
 
 def _validate_manual_retry_preclaim(state: dict, paths: BatchPaths) -> list[dict]:
-    _validate_state(state)
     if not paths.manual_retry.is_file():
         raise ValueError("manual_retry_file_missing")
     with paths.manual_retry.open("r", newline="", encoding="utf-8-sig") as handle:
@@ -933,6 +994,11 @@ def _validate_manual_retry_preclaim(state: dict, paths: BatchPaths) -> list[dict
         rows = [{key: str(value or "") for key, value in row.items()} for row in reader]
 
     state_by_id = {str(row.get("task_id", "")): row for row in state["rows"]}
+    state_manual_ids = {
+        task_id
+        for task_id, row in state_by_id.items()
+        if _needs_manual_retry(row.get("status", ""), row.get("reason", ""))
+    }
     seen_ids: set[str] = set()
     for row in rows:
         task_id = row.get("task_id", "")
@@ -946,6 +1012,12 @@ def _validate_manual_retry_preclaim(state: dict, paths: BatchPaths) -> list[dict
             raise ValueError("manual_retry_status_invalid")
         if not _needs_manual_retry(state_row.get("status", ""), state_row.get("reason", "")):
             raise ValueError("manual_retry_state_not_pending")
+        if str(row.get("status", "")).strip().lower() != str(
+            state_row.get("status", "")
+        ).strip().lower():
+            raise ValueError("manual_retry_status_mismatch")
+    if seen_ids != state_manual_ids:
+        raise ValueError("manual_retry_task_ids_mismatch")
     return rows
 
 
@@ -1108,13 +1180,21 @@ def resume_batch(
     paths = _paths_from_run_dir(run_dir)
     retry_csv_rows: list[dict] = []
 
-    def validate_before_claim(state: dict) -> None:
-        retry_csv_rows.extend(_validate_manual_retry_preclaim(state, paths))
+    def validate_state(state: dict) -> None:
+        _validate_state(state, expected_run_dir=paths.root)
+
+    def validate_before_claim(state: dict) -> bool:
+        validated_rows = _validate_manual_retry_preclaim(state, paths)
         if options is not None:
             _serialize_options(options)
+        if not validated_rows:
+            return False
+        retry_csv_rows.extend(validated_rows)
+        return True
 
     claimed, state = claim_manual_retry(
         run_dir,
+        validate_state=validate_state,
         validate_before_claim=validate_before_claim,
     )
     if not claimed:

@@ -721,3 +721,23 @@
 - 生成的输出文件：测试只在忽略的 `.codex-test-tmp` 生成临时输入、批次状态、pending CSV、报告和 PDF 副本；正式运行仍生成 `working/normalized_input.csv`、`batch_state.json`、`manual_retry.csv`、`zotero_fallback.csv`、`reports/batch_status.*` 与 `pdfs/*.pdf`。
 - 如何检查是否成功：聚焦测试覆盖真实 CSV/XLSX/XLSM/TXT/MD 多 DOI及原文件字节不变、低置信路由、成功状态、invalid PDF、空/漏更新、异常与 OA 断点、preclaim 失败不消耗、并发单领取、Cookie/数值安全和状态拒绝 NaN；最终测试计数见 Task 4 report。
 - 注意事项或潜在风险：PDF 有效性仍沿用 Task 2 的最小大小与 `%PDF-` 文件头校验，不是完整 PDF 结构解析；真实机构登录、Cookie 文件读取、网络下载和 Zotero 对账均未在本轮离线测试中执行；Cookie 路径要求 `.json` 后缀但不要求文件当前已存在。
+
+## 2026-07-10 23:41:28 +08:00
+
+- 本次任务目标：完成 Task 4 第三修复波次，仅修复表格 DOI 来源隔离、callback-only 状态持久化、manual retry 严格集合与空清单语义，以及已使用 retry 后仍必须执行的批次状态校验。
+- 新增、修改或删除的文件：
+  - 修改 `paper_automation/batch_workflow.py`。
+  - 修改 `tests/test_batch_workflow.py`，仅扩展 `BatchRunTests`。
+  - 追加 `CHANGELOG.md` 和被 Git 忽略的 `.superpowers/sdd/task-4-report.md`。
+  - 未修改 `paper_automation/batch_stages.py`，未实现 Task 5，也未修改原始输入、PDF 或打包产物。
+- 具体修改内容：
+  - CSV/TSV/XLSX/XLSM 在调用 intake 前读取表头和表格记录，按原始 `row_number` 绑定明确 DOI 单元格；仅从该单元格展开 DOI，空 DOI 单元格或无 DOI 列时不再从 title/authors/raw_value 提取引用 DOI。合法的 title-only 元数据解析结果仍可在 `input_doi` 为空且 intake 为 `valid` 时进入下载。
+  - 对 title 引用 DOI 被 intake 误认成 `input_doi` 的表格行写入 `metadata_uncertain / doi_not_from_doi_column`，不送入 OA 或机构阶段；明确 DOI 单元格的多 DOI 仍在全局去重后生成确定的 `paper-0001...`。
+  - 网关执行器记录 callback 已成功持久化的 `task_id`，最终返回空列表时不再把 callback-only 的 captcha、no-open 或机构成功结果覆盖成 `missing_stage_update`。
+  - `claim_manual_retry()` 向后兼容新增总是执行的 `validate_state` callback，并允许 `validate_before_claim` 返回 `False` 原子取消 claim。`resume_batch()` 即使 retry 已使用也校验 state、保存配置和规范 `run_dir`；未使用时才校验 manual CSV 和 override options。
+  - manual CSV 的 task ID 集合必须与 state 中当前全部 manual 条件行完全相等，且每行 status 必须匹配；缺失、额外、重复、状态不符或 captcha state 对应空 CSV 均不消耗 retry。state 与 CSV 均为空时不 claim、不改 pending 文件、不调用网关。
+- 修改原因：复审确认表格题名中的参考 DOI 可能被误当目标下载，callback-only 非终态会被缺失更新覆盖，且旧 claim 早退顺序无法保证已使用 retry 的损坏 state 被诊断；manual CSV 子集校验也可能漏重试或错误消耗一次性 claim。
+- 如何运行：先在隔离 worktree 中设置 `$env:TEMP=(Resolve-Path .codex-test-tmp); $env:TMP=$env:TEMP`，再运行 `python -m unittest tests.test_batch_workflow.BatchRunTests -v`、`python -m unittest discover -s tests -v`、`python -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation` 和 `git diff --check`。
+- 生成的输出文件：测试只在被忽略的 `.codex-test-tmp` 下生成临时 CSV、XLSX/XLSM、批次 state、pending 文件、报告与 PDF fixture；正式流程输出接口未变化，未生成真实下载或 Zotero 对账结果。
+- 如何检查是否成功：严格 TDD 红灯阶段新增用例出现 11 个预期失败和 1 个缺失签名错误，status 精确匹配反例另行先红；修复后聚焦测试 `Ran 38 tests ... OK`，全套离线测试 `Ran 244 tests ... OK (skipped=2)`，全项目 `compileall` 退出码 0，最终 `git diff --check` 应无空白错误。
+- 注意事项或潜在风险：title-only DOI 的接受依赖现有 intake 契约（`input_doi` 为空、`status=valid`、解析 `doi` 非空）；PDF 有效性仍沿用 Task 2 的最小大小与 `%PDF-` 文件头校验；本轮未访问网络、机构登录、Cookie 内容或 Zotero，未重新打包项目。
