@@ -3323,3 +3323,216 @@ class BatchFinalizeTests(unittest.TestCase):
             with patch.object(workflow, "_write_final_manifest_xlsx", side_effect=OSError("disk full")):
                 with self.assertRaisesRegex(RuntimeError, "final_report_write_failed:OSError:disk full"):
                     workflow.write_final_reports(paths, [self._row("paper-0001")])
+
+    def test_zotero_status_whitelist_rejects_internal_and_unknown_before_state_change(self) -> None:
+        from paper_automation.batch_workflow import finalize_batch
+
+        invalid_statuses = [
+            "oa_downloaded",
+            "institutional_downloaded",
+            "zotero_existing_pdf",
+            "zotero_downloaded",
+            "duplicate",
+            "success",
+            "anything_else",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index, status in enumerate(invalid_statuses):
+                with self.subTest(status=status):
+                    paths = self._paths_with_state(root / str(index), [self._row("paper-0001")])
+                    zotero_csv = paths.working / "zotero_results.csv"
+                    self._write_zotero_csv(
+                        zotero_csv,
+                        [{"task_id": "paper-0001", "zotero_item_id": "", "attachment_path": "", "status": status, "reason": "invalid"}],
+                    )
+                    before = paths.state.read_bytes()
+                    with self.assertRaisesRegex(ValueError, "^zotero_result_status_invalid$"):
+                        finalize_batch(paths.root, zotero_csv)
+                    self.assertEqual(paths.state.read_bytes(), before)
+
+    def test_zotero_failure_status_whitelist_is_preserved(self) -> None:
+        from paper_automation.batch_workflow import finalize_batch, load_batch_state
+
+        statuses = [
+            "no_pdf",
+            "not_found",
+            "metadata_uncertain",
+            "zotero_unavailable",
+            "no_attachment",
+            "download_failed",
+            "zotero_api_unavailable",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._paths_with_state(
+                Path(tmp),
+                [self._row(f"paper-{index:04d}") for index in range(1, len(statuses) + 1)],
+            )
+            zotero_csv = paths.working / "zotero_results.csv"
+            self._write_zotero_csv(
+                zotero_csv,
+                [
+                    {
+                        "task_id": f"paper-{index:04d}",
+                        "zotero_item_id": "",
+                        "attachment_path": "",
+                        "status": status,
+                        "reason": f"reason-{status}",
+                    }
+                    for index, status in enumerate(statuses, start=1)
+                ],
+            )
+            finalize_batch(paths.root, zotero_csv)
+            state = load_batch_state(paths.root)
+
+        self.assertEqual([row["status"] for row in state["rows"]], statuses)
+        self.assertTrue(all(row["source"] == "zotero" for row in state["rows"]))
+
+    def test_zotero_csv_requires_exact_order_and_rejects_blank_or_malformed_rows_atomically(self) -> None:
+        from paper_automation.batch_workflow import ZOTERO_RESULT_FIELDS, finalize_batch
+
+        exact = list(ZOTERO_RESULT_FIELDS)
+        cases = [
+            ("extra_header", [*exact, "extra"], [{"task_id": "paper-0001", "status": "not_found", "reason": "x", "extra": "x"}], None, "zotero_results_fields_invalid"),
+            ("reordered_header", [exact[1], exact[0], *exact[2:]], [{"task_id": "paper-0001", "status": "not_found", "reason": "x"}], None, "zotero_results_fields_invalid"),
+            ("blank_line", None, None, ",".join(exact) + "\n\n", "zotero_results_row_invalid"),
+            ("whitespace_row", None, None, ",".join(exact) + "\n , , , , \n", "zotero_results_row_invalid"),
+            ("too_few_cells", None, None, ",".join(exact) + "\npaper-0001,,,not_found\n", "zotero_results_row_invalid"),
+            ("too_many_cells", None, None, ",".join(exact) + "\npaper-0001,,,not_found,x,extra\n", "zotero_results_row_invalid"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, fieldnames, rows, raw_csv, error in cases:
+                with self.subTest(name=name):
+                    paths = self._paths_with_state(root / name, [self._row("paper-0001")])
+                    zotero_csv = paths.working / "zotero_results.csv"
+                    if raw_csv is None:
+                        self._write_zotero_csv(zotero_csv, rows, fieldnames)
+                    else:
+                        zotero_csv.write_text(raw_csv, encoding="utf-8-sig")
+                    before = paths.state.read_bytes()
+                    with self.assertRaisesRegex(ValueError, f"^{error}$"):
+                        finalize_batch(paths.root, zotero_csv)
+                    self.assertEqual(paths.state.read_bytes(), before)
+
+    def test_xlsx_closes_then_fsyncs_before_replace_and_remains_readable(self) -> None:
+        import openpyxl
+
+        from paper_automation import batch_workflow as workflow
+
+        events = []
+        real_workbook = openpyxl.Workbook
+        real_fsync = workflow.os.fsync
+        real_replace = workflow.os.replace
+
+        class TrackingWorkbook:
+            def __init__(self, *args, **kwargs):
+                self.inner = real_workbook(*args, **kwargs)
+
+            def create_sheet(self, *args, **kwargs):
+                return self.inner.create_sheet(*args, **kwargs)
+
+            def save(self, path):
+                events.append("save")
+                return self.inner.save(path)
+
+            def close(self):
+                events.append("close")
+                return self.inner.close()
+
+        def tracking_fsync(descriptor):
+            events.append("fsync")
+            return real_fsync(descriptor)
+
+        def tracking_replace(source, destination):
+            events.append("replace")
+            return real_replace(source, destination)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "final_manifest.xlsx"
+            with patch.object(openpyxl, "Workbook", TrackingWorkbook), patch.object(
+                workflow.os, "fsync", side_effect=tracking_fsync
+            ), patch.object(workflow.os, "replace", side_effect=tracking_replace):
+                workflow._write_final_manifest_xlsx(target, [self._row("paper-0001")])
+            workbook = openpyxl.load_workbook(target, read_only=True)
+            header = tuple(cell.value for cell in next(workbook.active.iter_rows()))
+            workbook.close()
+
+        self.assertEqual(events, ["save", "close", "fsync", "replace"])
+        self.assertEqual(header, tuple(workflow.FINAL_MANIFEST_FIELDS))
+
+    def test_xlsx_closes_workbook_when_save_raises(self) -> None:
+        import openpyxl
+
+        from paper_automation import batch_workflow as workflow
+
+        events = []
+        real_workbook = openpyxl.Workbook
+
+        class FailingWorkbook:
+            def __init__(self, *args, **kwargs):
+                self.inner = real_workbook(*args, **kwargs)
+
+            def create_sheet(self, *args, **kwargs):
+                return self.inner.create_sheet(*args, **kwargs)
+
+            def save(self, path):
+                events.append("save")
+                self.inner.save(path)
+                raise OSError("synthetic save failure")
+
+            def close(self):
+                events.append("close")
+                return self.inner.close()
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(openpyxl, "Workbook", FailingWorkbook):
+            with self.assertRaisesRegex(OSError, "synthetic save failure"):
+                workflow._write_final_manifest_xlsx(Path(tmp) / "final_manifest.xlsx", [])
+
+        self.assertEqual(events, ["save", "close"])
+
+    def test_zotero_attachment_requires_absolute_path_and_accepts_unicode_spaces(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        with self.assertRaisesRegex(ValueError, "^zotero_attachment_not_absolute$"):
+            workflow._local_zotero_attachment("relative folder/paper.pdf")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "中文 附件" / "论文 文件.pdf"
+            source.parent.mkdir()
+            source.write_bytes(b"%PDF-1.7\nunicode path fixture")
+            before = hashlib.sha256(source.read_bytes()).hexdigest()
+            resolved = workflow._local_zotero_attachment(str(source))
+            source_unchanged = hashlib.sha256(source.read_bytes()).hexdigest() == before
+
+        self.assertTrue(resolved.is_absolute())
+        self.assertEqual(resolved, source.resolve())
+        self.assertTrue(source_unchanged)
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
+    def test_zotero_attachment_rejects_real_junction_ancestor(self) -> None:
+        import subprocess
+
+        from paper_automation import batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target_dir = root / "real target"
+            target_dir.mkdir()
+            source = target_dir / "paper.pdf"
+            source.write_bytes(b"%PDF-1.7\njunction fixture")
+            junction_dir = root / "junction alias"
+            created = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction_dir), str(target_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if created.returncode != 0:
+                self.skipTest("current Windows environment cannot create a directory junction")
+            try:
+                with self.assertRaisesRegex(ValueError, "^zotero_attachment_reparse_point$"):
+                    workflow._local_zotero_attachment(str(junction_dir / "paper.pdf"))
+            finally:
+                if junction_dir.exists():
+                    junction_dir.rmdir()

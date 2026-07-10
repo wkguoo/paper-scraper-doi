@@ -753,3 +753,24 @@
 - Outputs: final reports are inside each batch `reports/` directory; test artifacts remain in ignored `.codex-test-tmp/`.
 - Verification: Task 5 focus `Ran 7 tests ... OK`; suite `Ran 251 tests ... OK (skipped=2)`; compile and diff checks exit 0.
 - Risks: PDF validation remains the Task 2 magic-header/minimum-size test, not full PDF parsing. No network, institutional login, Cookie read, live Zotero operation, source-file mutation, or repackaging was performed.
+
+## 2026-07-11 03:17:52 +08:00 — Task 5 P1/P2 修复波次
+
+- 本次任务目标：修复 Task 5 审查发现的全部 P1/P2，包括 Zotero 输入状态注入、宽松 CSV、XLSX 未显式关闭/同步、附件路径链 reparse 风险，以及内部报告误入 Git 索引。
+- 新增、修改或删除的文件：修改 `paper_automation/batch_workflow.py`、`tests/test_batch_workflow.py`、`CHANGELOG.md`；`.superpowers/sdd/task-5-report.md` 仅从 Git 索引移除，磁盘文件保留且内容未修改；未修改 Task 6 CLI 或 Task 7 MCP。
+- 具体修改内容：
+  - 为 Zotero 输入增加固定白名单：成功仅允许 `existing_pdf`/`downloaded`；失败允许 `no_pdf`、`not_found`、`metadata_uncertain`、`zotero_unavailable`、`no_attachment`、`download_failed`、`zotero_api_unavailable`。内部状态和未知状态在整体验证阶段统一报 `zotero_result_status_invalid`。
+  - Zotero CSV 表头必须与 `ZOTERO_RESULT_FIELDS` 顺序和数量完全一致；额外列、乱序、重复表头、空白行和畸形行在状态变更前整体拒绝。
+  - XLSX 在 `save()` 后通过 `finally` 显式 `close()`，随后以 `r+b` 打开临时文件并执行 `flush()`/`os.fsync()`，最后才原子替换正式报告。
+  - Zotero 附件路径必须是绝对本地路径；解析前逐级 `lstat()` 检查原始路径链，Windows 拒绝 `FILE_ATTRIBUTE_REPARSE_POINT`，POSIX 拒绝任一 symlink ancestor；通过后返回规范绝对路径并进行普通 PDF 校验。
+- 修改原因：旧实现允许任意非空 status 进入内部状态，CSV 只要求包含必要列，XLSX 未保证关闭及持久化顺序，附件只检查最终节点且相对路径语义不稳定。
+- 如何运行：
+  - `$env:TEMP=(Resolve-Path .codex-test-tmp); $env:TMP=$env:TEMP`
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchFinalizeTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchRunTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`
+  - `git diff --check`
+- 生成的输出文件：正式流程仍输出 `reports/final_manifest.csv`、`final_manifest.xlsx`、`failed.csv` 和 `run_summary.txt`；测试临时产物仅位于忽略的 `.codex-test-tmp/`，未覆盖原输入或 Zotero 附件。
+- 如何检查是否成功：Task 5 聚焦测试显示 `Ran 14 tests ... OK`，其中真实 Windows junction 测试实际通过；全套离线测试显示 `Ran 258 tests ... OK (skipped=2)`；编译和差异检查退出码为 0。
+- 注意事项或潜在风险：PDF 内容验证仍沿用 Task 2 的 `%PDF-` 文件头和最小大小规则，并非完整结构解析；路径链检查与复制之间仍存在操作系统级极短 TOCTOU 窗口，但复制阶段会再次从源快照校验 PDF。未联网、未访问真实 Zotero、未读取 Cookie、未打包项目。

@@ -7,6 +7,7 @@ import inspect
 import json
 import math
 import os
+import stat
 import tempfile
 import time
 from contextlib import contextmanager
@@ -88,6 +89,16 @@ ZOTERO_SUCCESS = {
     "existing_pdf": "zotero_existing_pdf",
     "downloaded": "zotero_downloaded",
 }
+ZOTERO_FAILURE_STATUSES = {
+    "no_pdf",
+    "not_found",
+    "metadata_uncertain",
+    "zotero_unavailable",
+    "no_attachment",
+    "download_failed",
+    "zotero_api_unavailable",
+}
+ZOTERO_INPUT_STATUSES = set(ZOTERO_SUCCESS) | ZOTERO_FAILURE_STATUSES
 FINAL_MANIFEST_FIELDS = [*NORMALIZED_FIELDS, "zotero_item_id"]
 _STAGE_SUCCESS_STATUSES = {"downloaded", "oa_downloaded", "institutional_downloaded"}
 _INSTITUTIONAL_SOURCES = {"sciencedirect", "non_elsevier", "institutional"}
@@ -607,17 +618,23 @@ def _write_final_manifest_xlsx(path: Path, rows: list[dict]) -> Path:
         from openpyxl.cell import WriteOnlyCell
 
         workbook = Workbook(write_only=True)
-        worksheet = workbook.create_sheet("final_manifest")
-        for values in [FINAL_MANIFEST_FIELDS, *(
-            [row[field] for field in FINAL_MANIFEST_FIELDS] for row in manifest_rows
-        )]:
-            cells = []
-            for value in values:
-                cell = WriteOnlyCell(worksheet, value=str(value or ""))
-                cell.data_type = "s"
-                cells.append(cell)
-            worksheet.append(cells)
-        workbook.save(temporary)
+        try:
+            worksheet = workbook.create_sheet("final_manifest")
+            for values in [FINAL_MANIFEST_FIELDS, *(
+                [row[field] for field in FINAL_MANIFEST_FIELDS] for row in manifest_rows
+            )]:
+                cells = []
+                for value in values:
+                    cell = WriteOnlyCell(worksheet, value=str(value or ""))
+                    cell.data_type = "s"
+                    cells.append(cell)
+                worksheet.append(cells)
+            workbook.save(temporary)
+        finally:
+            workbook.close()
+        with temporary.open("r+b") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
 
     return _atomic_report_file(path, ".xlsx.tmp", write)
 
@@ -1074,27 +1091,27 @@ def _read_zotero_results(path: Path, state_rows: list[dict]) -> list[dict[str, s
     if not path.is_file():
         raise ValueError("zotero_results_file_missing")
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        fieldnames = reader.fieldnames or []
-        if (
-            not set(ZOTERO_RESULT_FIELDS).issubset(fieldnames)
-            or len(fieldnames) != len(set(fieldnames))
-            or any(not str(field or "").strip() for field in fieldnames)
-        ):
+        try:
+            records = list(csv.reader(handle, strict=True))
+        except csv.Error as exc:
+            raise ValueError("zotero_results_row_invalid") from exc
+        if not records or records[0] != ZOTERO_RESULT_FIELDS:
             raise ValueError("zotero_results_fields_invalid")
-        raw_rows = list(reader)
+        raw_rows = records[1:]
 
     known_ids = {str(row.get("task_id", "") or "") for row in state_rows}
     if not known_ids or "" in known_ids or len(known_ids) != len(state_rows):
         raise ValueError("invalid_state_task_ids")
     results: list[dict[str, str]] = []
     seen_ids: set[str] = set()
-    for raw_row in raw_rows:
-        if None in raw_row:
+    for values in raw_rows:
+        if len(values) != len(ZOTERO_RESULT_FIELDS) or not any(
+            str(value or "").strip() for value in values
+        ):
             raise ValueError("zotero_results_row_invalid")
         result = {
-            field: str(raw_row.get(field, "") or "").strip()
-            for field in ZOTERO_RESULT_FIELDS
+            field: str(value or "").strip()
+            for field, value in zip(ZOTERO_RESULT_FIELDS, values)
         }
         result["status"] = result["status"].lower()
         task_id = result["task_id"]
@@ -1104,8 +1121,8 @@ def _read_zotero_results(path: Path, state_rows: list[dict]) -> list[dict[str, s
             raise ValueError("zotero_result_task_id_duplicate")
         if task_id not in known_ids:
             raise ValueError("zotero_result_task_id_unknown")
-        if not result["status"]:
-            raise ValueError("zotero_result_status_missing")
+        if result["status"] not in ZOTERO_INPUT_STATUSES:
+            raise ValueError("zotero_result_status_invalid")
         seen_ids.add(task_id)
         results.append(result)
     return results
@@ -1116,12 +1133,28 @@ def _local_zotero_attachment(path_value: str) -> Path:
     if not value or "://" in value or value.lower().startswith(("zotero:", "file:")):
         raise ValueError("zotero_attachment_not_local")
     source = Path(value).expanduser()
+    if not source.is_absolute():
+        raise ValueError("zotero_attachment_not_absolute")
+
+    current = Path(source.anchor)
     try:
-        if source.is_symlink() or not source.is_file() or not is_valid_pdf(source):
+        for component in source.parts[1:]:
+            if component in {"", "."}:
+                continue
+            current = current.parent if component == ".." else current / component
+            details = current.lstat()
+            is_reparse_point = bool(
+                os.name == "nt"
+                and details.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            )
+            if current.is_symlink() or stat.S_ISLNK(details.st_mode) or is_reparse_point:
+                raise ValueError("zotero_attachment_reparse_point")
+        resolved = source.resolve(strict=True)
+        if not stat.S_ISREG(resolved.stat().st_mode) or not is_valid_pdf(resolved):
             raise ValueError("not_pdf_response")
     except OSError as exc:
         raise ValueError("not_pdf_response") from exc
-    return source
+    return resolved
 
 
 def _filename_for_batch_row(row: dict) -> str:
