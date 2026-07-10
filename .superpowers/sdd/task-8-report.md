@@ -99,3 +99,16 @@ Review verification:
   review repair began.
 - Live Zotero acceptance remains a later manual step; it is outside this
   offline fixture and was not treated as a test defect.
+
+## Skill installation and live availability check
+
+- The updated personal `paper-download` Skill was installed after a dry run.
+- The previous installed Skill was preserved under
+  `C:\Users\wkguopro\.codex\skill-backups\paper-download\20260711_055044`.
+- The installed and source SHA-256 values both equal
+  `83339B36E5B6ADBA3F214187C47CF18AF56B830D107C90EBDF47C06C0036303E`.
+- `PAPER_SCRAPER_DOI_ROOT` now points to this verified isolated worktree.
+- The first read-only `library_search(entity:"libraries", mode:"list")` call
+  returned `No active library available`. No collection, item, tag, attachment,
+  or PDF write was attempted. Live acceptance remains safely resumable after
+  the user opens Zotero and activates a personal library.

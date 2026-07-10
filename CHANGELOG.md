@@ -903,3 +903,15 @@
 - 生成的输出文件：测试仅在临时目录生成并自动清理两份源 PDF、两个最终 PDF、六份报告、Zotero 结果 CSV 与 batch state；审查证据更新至 `.superpowers/sdd/task-8-report.md`。
 - 如何检查是否成功：确认最终 PDF 哈希集合含两个不同预期哈希、manifest 恰有三行且 task ID 重数一致、五份稳定报告/state/PDF bytes 在第二次 finalize 后完全相同、XLSX 工作表值一致，并确认 focused/full/diff check 通过。
 - 注意事项或潜在风险：真实 Zotero 未验收不是本离线测试缺陷，保留给后续手工步骤。本次未联网、未操作真实 Zotero、未读取 Cookie/密码、未安装 Skill、未打包，也未修改原始输入或实际 PDF。
+
+## 2026-07-11 05:51:00 +08:00 — 安装 Skill 并检查 Zotero 可用性
+
+- 本次任务目标：把已验证的 `paper-download` Skill 安装到个人 Codex Skills，并在任何 Zotero 写入前检查活动文库是否可用。
+- 新增、修改或删除的文件：项目内仅追加 `CHANGELOG.md` 和 `.superpowers/sdd/task-8-report.md`；项目外备份旧版 `C:\Users\wkguopro\.codex\skills\paper-download\SKILL.md`，再只替换该 Skill 文件，未改动另外两个已安装 Skill。
+- 具体修改内容：先运行 `install_codex_skills.ps1 -DryRun` 确认目标；正式安装时把旧 Skill 备份到 `C:\Users\wkguopro\.codex\skill-backups\paper-download\20260711_055044\SKILL.md`，复制新 Skill，并把用户环境变量 `PAPER_SCRAPER_DOI_ROOT` 指向隔离工作树。
+- 修改原因：让新 Codex 任务能够使用项目优先、一次重试、仅失败项进入 Zotero 的统一协议，同时用备份避免丢失旧版 Skill。
+- 如何运行：`powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1 -DryRun`；安装后调用 `library_search(entity:"libraries", mode:"list")` 做只读可用性检查。
+- 测试输出：安装源和目标 SHA-256 均为 `83339B36E5B6ADBA3F214187C47CF18AF56B830D107C90EBDF47C06C0036303E`；Zotero 检查返回 `No active library available`。
+- 生成的输出文件：生成一份个人 Skill 备份并更新个人 `paper-download/SKILL.md`；未生成或下载 PDF，未创建 Zotero 集合或条目。
+- 如何检查是否成功：目标 Skill 哈希与项目源文件一致；环境变量指向当前隔离工作树；Zotero 不可用时未发起任何写入、导入或附件检索。
+- 注意事项或潜在风险：需要打开 Zotero 并激活个人文库后才能继续真实验收。当前批次保持未完成且可恢复；未读取密码/Cookie，未自动处理 CAPTCHA，未打包。
