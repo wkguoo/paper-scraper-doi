@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import csv
 import hashlib
 import json
 import math
@@ -8,10 +9,10 @@ import os
 import tempfile
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 if os.name == "nt":
     import msvcrt
@@ -50,6 +51,34 @@ class BatchPaths:
     manual_retry: Path
     zotero_fallback: Path
     zotero_results: Path
+
+
+NORMALIZED_FIELDS = [
+    "task_id",
+    "source_index",
+    "input_doi",
+    "input_title",
+    "doi",
+    "title",
+    "authors",
+    "journal",
+    "year",
+    "publisher",
+    "status",
+    "source",
+    "file",
+    "reason",
+]
+
+
+@dataclass(frozen=True)
+class BatchRunResult:
+    paths: BatchPaths
+    total_count: int
+    success_count: int
+    failed_count: int
+    manual_retry_count: int
+    zotero_fallback_count: int
 
 
 def _validate_path_component(value: str, *, error: str, clean_spaces: bool = False) -> str:
@@ -409,3 +438,439 @@ def copy_pdf_safely(
         finally:
             if snapshot is not None:
                 snapshot.unlink(missing_ok=True)
+
+
+def run_oa_stage(rows: list[dict], output_dir: Path, options: Any):
+    """Late import keeps the Task 2 PDF helper free of a circular import."""
+
+    from .batch_stages import run_oa_stage as stage
+
+    return stage(rows, output_dir, options)
+
+
+def run_sciencedirect_stage(input_path: Path, output_dir: Path, options: Any):
+    from .batch_stages import run_sciencedirect_stage as stage
+
+    return stage(input_path, output_dir, options)
+
+
+def run_non_elsevier_stage(input_path: Path, output_dir: Path, options: Any):
+    from .batch_stages import run_non_elsevier_stage as stage
+
+    return stage(input_path, output_dir, options)
+
+
+def _batch_options_type():
+    from .batch_stages import BatchOptions
+
+    return BatchOptions
+
+
+def _stage_input_writer(rows: list[dict], path: Path) -> Path:
+    from .batch_stages import write_stage_input
+
+    return write_stage_input(rows, path)
+
+
+def _split_institutional_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    from .batch_stages import split_institutional_rows
+
+    return split_institutional_rows(rows)
+
+
+def _needs_manual_retry(status: str, reason: str) -> bool:
+    from .batch_stages import needs_manual_retry
+
+    return needs_manual_retry(status, reason)
+
+
+def _normalise_doi(value: object) -> str:
+    from doi_batch_utils import clean_doi
+
+    return clean_doi(str(value or "")).lower()
+
+
+def _empty_normalized_row() -> dict[str, str]:
+    return {field: "" for field in NORMALIZED_FIELDS}
+
+
+def _normalise_row_mapping(row: object) -> dict:
+    if is_dataclass(row):
+        raw = asdict(row)
+    elif isinstance(row, dict):
+        raw = dict(row)
+    else:
+        raise ValueError("invalid_batch_row")
+    result = _empty_normalized_row()
+    result.update({key: value for key, value in raw.items() if key in result or key.startswith("_") or key == "fixture_pdf"})
+    for field in NORMALIZED_FIELDS:
+        result[field] = str(result.get(field, "") or "")
+    return result
+
+
+def _write_csv_rows(path: Path, rows: list[dict]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=NORMALIZED_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in NORMALIZED_FIELDS})
+    return path
+
+
+def normalize_input(
+    *,
+    input_text: str | None,
+    input_path: str | Path | None,
+    paths: BatchPaths,
+    options: Any,
+) -> list[dict]:
+    """Use the existing intake contract without ever modifying the source input."""
+
+    if (input_text is None) == (input_path is None):
+        raise ValueError("exactly_one_input_required")
+    from sd_institutional_skill import build_intake
+
+    path_values = [] if input_path is None else [Path(input_path).expanduser().resolve()]
+    intake = build_intake(
+        texts=[] if input_text is None else [input_text],
+        input_paths=path_values,
+        folder_paths=[],
+        output_dir=paths.working / "intake",
+        resolve_metadata=True,
+        resolve_title_only_files=True,
+        min_confidence=0.65,
+        email=str(getattr(options, "email", "") or ""),
+    )
+
+    rows: list[dict] = []
+    seen_dois: set[str] = set()
+    seen_titles: set[str] = set()
+    for intake_row in intake.all_rows:
+        raw = asdict(intake_row)
+        doi = _normalise_doi(raw.get("doi", ""))
+        title = str(raw.get("title", "") or "").strip()
+        status = str(raw.get("status", "") or "")
+        if status == "duplicate":
+            continue
+        if doi:
+            if doi in seen_dois:
+                continue
+            seen_dois.add(doi)
+        elif title:
+            title_key = " ".join(title.lower().split())
+            if title_key in seen_titles:
+                continue
+            seen_titles.add(title_key)
+        else:
+            continue
+
+        row = _empty_normalized_row()
+        row.update({
+            "source_index": str(raw.get("row_number", "") or ""),
+            "input_doi": str(raw.get("input_doi", "") or ""),
+            "input_title": str(raw.get("input_title", "") or ""),
+            "doi": doi,
+            "title": title,
+            "authors": str(raw.get("authors", "") or ""),
+            "journal": str(raw.get("journal", "") or ""),
+            "year": str(raw.get("year", "") or ""),
+            "status": "pending" if doi else "metadata_uncertain",
+            "source": str(raw.get("source", "") or "input"),
+            "reason": "" if doi else str(raw.get("reason", "") or "metadata_uncertain"),
+        })
+        rows.append(row)
+
+    if not rows:
+        raise ValueError("empty_input")
+    for index, row in enumerate(rows, start=1):
+        row["task_id"] = f"paper-{index:04d}"
+    _write_csv_rows(paths.normalized_input, rows)
+    return rows
+
+
+def _is_successful_status(status: object) -> bool:
+    value = str(status or "").strip().lower()
+    return value == "downloaded" or value.endswith("_downloaded")
+
+
+def _is_terminal_status(status: object) -> bool:
+    return _is_successful_status(status) or str(status or "").strip().lower() == "duplicate"
+
+
+def _update_as_mapping(update: object) -> dict:
+    result = _normalise_row_mapping(update)
+    if not result["task_id"]:
+        raise ValueError("gateway_task_id_missing")
+    return result
+
+
+def _validate_stage_updates(rows: list[dict], updates: object) -> list[dict]:
+    if not isinstance(updates, list):
+        raise ValueError("invalid_gateway_updates")
+    known_ids = {str(row.get("task_id", "")) for row in rows}
+    if len(known_ids) != len(rows) or "" in known_ids:
+        raise ValueError("invalid_state_task_ids")
+    normalized_updates: list[dict] = []
+    seen_ids: set[str] = set()
+    for update in updates:
+        normalized = _update_as_mapping(update)
+        task_id = normalized["task_id"]
+        if task_id not in known_ids:
+            raise ValueError("gateway_task_id_unknown")
+        if task_id in seen_ids:
+            raise ValueError("gateway_task_id_duplicate")
+        seen_ids.add(task_id)
+        normalized_updates.append(normalized)
+    return normalized_updates
+
+
+def _copy_successful_pdf(row: dict, paths: BatchPaths) -> dict:
+    status = row.get("status", "")
+    if not _is_successful_status(status):
+        return row
+    source_file = str(row.get("file", "") or "").strip()
+    if not source_file or not is_valid_pdf(source_file):
+        raise ValueError("invalid_pdf")
+    copied = copy_pdf_safely(source_file, paths.pdfs, f"{row['task_id']}.pdf")
+    result = dict(row)
+    result["status"] = "downloaded"
+    result["file"] = str(copied)
+    result["reason"] = ""
+    return result
+
+
+def _merge_stage_rows(rows: list[dict], updates: object, paths: BatchPaths) -> list[dict]:
+    normalized_updates = _validate_stage_updates(rows, updates)
+    updates_by_id = {update["task_id"]: update for update in normalized_updates}
+    merged_rows: list[dict] = []
+    for existing in rows:
+        task_id = str(existing.get("task_id", ""))
+        update = updates_by_id.get(task_id)
+        if update is None:
+            merged_rows.append(dict(existing))
+            continue
+        merged = dict(existing)
+        merged.update(update)
+        merged["task_id"] = task_id
+        merged_rows.append(_copy_successful_pdf(merged, paths))
+    return merged_rows
+
+
+def _apply_stage_updates(state: dict, updates: object, paths: BatchPaths) -> None:
+    normalized_updates = _validate_stage_updates(state["rows"], updates)
+    for update in normalized_updates:
+        state["rows"] = _merge_stage_rows(state["rows"], [update], paths)
+        save_batch_state(paths, state)
+
+
+def _pending_rows(rows: list[dict], *, manual_retry_used: bool) -> tuple[list[dict], list[dict]]:
+    manual_rows: list[dict] = []
+    fallback_rows: list[dict] = []
+    for row in rows:
+        if _is_terminal_status(row.get("status", "")):
+            continue
+        if not manual_retry_used and _needs_manual_retry(row.get("status", ""), row.get("reason", "")):
+            manual_rows.append(row)
+        else:
+            fallback_rows.append(row)
+    return manual_rows, fallback_rows
+
+
+def _write_pending_files(paths: BatchPaths, rows: list[dict], *, manual_retry_used: bool = False) -> None:
+    manual_rows, fallback_rows = _pending_rows(rows, manual_retry_used=manual_retry_used)
+    _write_csv_rows(paths.manual_retry, manual_rows)
+    _write_csv_rows(paths.zotero_fallback, fallback_rows)
+
+
+def _serialize_options(options: Any) -> dict[str, object]:
+    if not is_dataclass(options):
+        raise ValueError("invalid_batch_options")
+    data = asdict(options)
+    cookie_path = str(data.get("cookies", "") or "").strip()
+    if cookie_path.lstrip().startswith(("{", "[")) or "\n" in cookie_path or "\r" in cookie_path:
+        raise ValueError("cookies_must_be_path")
+    return {
+        "email": str(data.get("email", "") or ""),
+        "cookies": cookie_path,
+        "browser_exe": str(data.get("browser_exe", "") or ""),
+        "login_wait_seconds": int(data.get("login_wait_seconds", 0) or 0),
+        "debug_port": int(data.get("debug_port", 9333) or 9333),
+        "throttle_seconds": float(data.get("throttle_seconds", 1.0) or 0.0),
+    }
+
+
+def _options_from_state(state: dict):
+    saved = state.get("options")
+    if not isinstance(saved, dict):
+        raise ValueError("invalid_batch_state_options")
+    return _batch_options_type()(**_serialize_options(_batch_options_type()(**saved)))
+
+
+def _validate_state(state: object) -> dict:
+    if not isinstance(state, dict):
+        raise ValueError("invalid_batch_state")
+    if state.get("version") != 1 or not isinstance(state.get("run_dir"), str):
+        raise ValueError("invalid_batch_state")
+    if not isinstance(state.get("manual_retry_used"), bool) or not isinstance(state.get("rows"), list):
+        raise ValueError("invalid_batch_state")
+    _validate_stage_updates([_normalise_row_mapping(row) for row in state["rows"]], [])
+    if not isinstance(state.get("options"), dict):
+        raise ValueError("invalid_batch_state_options")
+    return state
+
+
+def _paths_from_run_dir(run_dir: str | Path) -> BatchPaths:
+    root = Path(run_dir).expanduser().resolve()
+    working = root / "working"
+    return BatchPaths(
+        root=root,
+        pdfs=root / "pdfs",
+        reports=root / "reports",
+        working=working,
+        state=working / "batch_state.json",
+        normalized_input=working / "normalized_input.csv",
+        manual_retry=working / "manual_retry.csv",
+        zotero_fallback=working / "zotero_fallback.csv",
+        zotero_results=working / "zotero_results.csv",
+    )
+
+
+def _read_csv_rows(path: Path) -> list[dict]:
+    if not path.is_file():
+        raise ValueError("pending_file_missing")
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        return [{key: str(value or "") for key, value in row.items()} for row in csv.DictReader(handle)]
+
+
+def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
+    """Minimal Task 4 reports; Task 5 may extend this interface for Zotero reconciliation."""
+
+    _write_csv_rows(paths.reports / "batch_status.csv", rows)
+    summary = {
+        "total_count": len(rows),
+        "success_count": sum(1 for row in rows if _is_successful_status(row.get("status", ""))),
+        "failed_count": sum(1 for row in rows if not _is_terminal_status(row.get("status", ""))),
+    }
+    (paths.reports / "batch_status.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _result_from_state(paths: BatchPaths, state: dict) -> BatchRunResult:
+    rows = state["rows"]
+    manual_rows, fallback_rows = _pending_rows(
+        rows,
+        manual_retry_used=bool(state.get("manual_retry_used")),
+    )
+    return BatchRunResult(
+        paths=paths,
+        total_count=len(rows),
+        success_count=sum(1 for row in rows if _is_successful_status(row.get("status", ""))),
+        failed_count=sum(1 for row in rows if not _is_terminal_status(row.get("status", ""))),
+        manual_retry_count=len(manual_rows),
+        zotero_fallback_count=len(fallback_rows),
+    )
+
+
+class DefaultStageGateway:
+    def run_initial(self, rows: list[dict], paths: BatchPaths, options: Any) -> list[dict]:
+        runnable = [dict(row) for row in rows if str(row.get("status", "")).lower() != "duplicate"]
+        oa_updates = [_update_as_mapping(row) for row in run_oa_stage(runnable, paths.reports, options)]
+        after_oa = _merge_stage_rows(rows, oa_updates, paths)
+        unresolved = [row for row in after_oa if not _is_terminal_status(row.get("status", ""))]
+        science_direct, other = _split_institutional_rows(unresolved)
+        unresolved_ids = {str(row.get("task_id", "")) for row in unresolved}
+        updates = [
+            update for update in oa_updates
+            if update["task_id"] not in unresolved_ids
+        ]
+        if science_direct:
+            stage_input = _stage_input_writer(science_direct, paths.working / "sciencedirect_input.csv")
+            updates.extend(_update_as_mapping(row) for row in run_sciencedirect_stage(stage_input, paths.reports, options))
+        if other:
+            stage_input = _stage_input_writer(other, paths.working / "non_elsevier_input.csv")
+            updates.extend(_update_as_mapping(row) for row in run_non_elsevier_stage(stage_input, paths.reports, options))
+        return updates
+
+    def run_retry(self, rows: list[dict], paths: BatchPaths, options: Any) -> list[dict]:
+        manual_rows = [
+            row for row in rows
+            if _needs_manual_retry(row.get("status", ""), row.get("reason", ""))
+        ]
+        science_direct, other = _split_institutional_rows(manual_rows)
+        updates: list[dict] = []
+        if science_direct:
+            stage_input = _stage_input_writer(science_direct, paths.working / "sciencedirect_retry_input.csv")
+            updates.extend(_update_as_mapping(row) for row in run_sciencedirect_stage(stage_input, paths.reports, options))
+        if other:
+            stage_input = _stage_input_writer(other, paths.working / "non_elsevier_retry_input.csv")
+            updates.extend(_update_as_mapping(row) for row in run_non_elsevier_stage(stage_input, paths.reports, options))
+        return updates
+
+
+def start_batch(
+    *,
+    input_text: str | None,
+    input_path: str | Path | None,
+    output_root: str | Path,
+    run_name: str | None = None,
+    options: Any | None = None,
+    gateway=None,
+    normalizer=None,
+    now: datetime | None = None,
+) -> BatchRunResult:
+    if (input_text is None) == (input_path is None):
+        raise ValueError("exactly_one_input_required")
+    selected_options = options or _batch_options_type()()
+    paths = create_batch_paths(output_root, run_name=run_name, now=now)
+    normalize = normalizer or normalize_input
+    rows = [_normalise_row_mapping(row) for row in normalize(
+        input_text=input_text,
+        input_path=input_path,
+        paths=paths,
+        options=selected_options,
+    )]
+    _validate_stage_updates(rows, [])
+    _write_csv_rows(paths.normalized_input, rows)
+    state = {
+        "version": 1,
+        "run_dir": str(paths.root),
+        "manual_retry_used": False,
+        "options": _serialize_options(selected_options),
+        "rows": rows,
+    }
+    save_batch_state(paths, state)
+    runner = gateway or DefaultStageGateway()
+    updates = runner.run_initial(rows, paths, selected_options)
+    _apply_stage_updates(state, updates, paths)
+    _write_pending_files(paths, state["rows"])
+    write_final_reports(paths, state["rows"])
+    return _result_from_state(paths, state)
+
+
+def resume_batch(
+    run_dir: str | Path,
+    *,
+    gateway=None,
+    options: Any | None = None,
+) -> BatchRunResult:
+    paths = _paths_from_run_dir(run_dir)
+    claimed, state = claim_manual_retry(run_dir)
+    _validate_state(state)
+    if not claimed:
+        return _result_from_state(paths, state)
+    selected_options = options or _options_from_state(state)
+    retry_ids = {row.get("task_id", "") for row in _read_csv_rows(paths.manual_retry)}
+    state_ids = {str(row.get("task_id", "")) for row in state["rows"]}
+    if not retry_ids.issubset(state_ids):
+        raise ValueError("manual_retry_unknown_task_id")
+    retry_rows = [row for row in state["rows"] if str(row.get("task_id", "")) in retry_ids]
+    if retry_rows:
+        runner = gateway or DefaultStageGateway()
+        updates = runner.run_retry(retry_rows, paths, selected_options)
+        _apply_stage_updates(state, updates, paths)
+    _write_pending_files(paths, state["rows"], manual_retry_used=True)
+    write_final_reports(paths, state["rows"])
+    return _result_from_state(paths, state)

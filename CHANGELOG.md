@@ -692,3 +692,14 @@
   - Task 2 `is_valid_pdf()` 仍只检查最小字节数和 `%PDF-` 文件头，不执行完整 PDF 结构解析。
   - 当前 Windows 账户创建 file symlink 返回 `WinError 1314`；因此真实 file-symlink 测试按条件跳过。junction 端到端测试会实际尝试创建目录 junction，失败时跳过；另有不依赖权限且始终运行的 mocked `resolve()` 最终目标语义测试。
   - Task 3 只负责把多 DOI 单行显式标记失败；Task 4 必须在标准化阶段将它展开为独立 `task_id`，并把 `duplicate` 当作不进入人工重试或 Zotero 回退的终态。
+
+## 2026-07-10 22:45:37 +08:00
+
+- 本次任务目标：实现 Task 4 的批次启动与一次性人工重试工作流，连接既有输入整理、OA、ScienceDirect 和非 Elsevier 阶段，同时保持 PDF、状态和待处理清单可追溯。
+- 新增、修改或删除的文件：`paper_automation/batch_workflow.py`、`tests/test_batch_workflow.py`、`CHANGELOG.md`，以及 Git 忽略的 `.superpowers/sdd/task-4-report.md`；未修改 `paper_automation/batch_stages.py`、Task 5+ 文件、原始输入、既有 PDF 或打包内容。
+- 具体修改内容：新增 `BatchRunResult`、`NORMALIZED_FIELDS`、输入标准化、默认阶段网关、`start_batch()`、`resume_batch()` 和最小 CSV/JSON 状态报告。输入通过 `build_intake(resolve_metadata=True, resolve_title_only_files=True, min_confidence=0.65)` 支持文本与 TXT/MD/CSV/XLSX/XLSM；多 DOI 在阶段前展开为独立 `paper-0001...`，未解析题名保持 `metadata_uncertain`。CSV 统一 UTF-8-SIG 固定字段顺序；阶段只按 `task_id` 合并，成功 PDF 使用 `copy_pdf_safely()` 复制。状态持久化安全的 `BatchOptions` 值（Cookie 仅路径）；恢复使用 `claim_manual_retry()` 原子领取且不在网络重试期间持锁。
+- 修改原因：提供不覆盖原始输入、可恢复、对机构登录/验证码失败可诊断且只重试一次的工作流，避免以 DOI 或题名猜测任务对应关系。
+- 如何运行：设置 `TEMP`/`TMP` 为 `.codex-test-tmp` 后执行 `..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchRunTests -v`、`..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`、`..\\..\\.venv\\Scripts\\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation` 和 `git diff --check`。
+- 生成的输出文件：实际批次生成 `working/normalized_input.csv`、`working/batch_state.json`、`working/manual_retry.csv`、`working/zotero_fallback.csv`、`pdfs/*.pdf` 与最小 `reports/batch_status.csv`/`batch_status.json`；测试临时文件仅位于忽略的 `.codex-test-tmp`。
+- 如何检查是否成功：聚焦测试覆盖 OA 优先路由、多 DOI 展开、重复项排除、绝对 PDF 安全复制、配置恢复、原子领取、未知任务拒绝和原文件不变；全套测试、编译和差异检查结果见 Task 4 report。
+- 注意事项或潜在风险：PDF 有效性沿用 Task 2 的最小大小与 `%PDF-` 文件头检查，不做完整 PDF 结构解析；未在离线测试中访问真实机构权限、浏览器登录或 Cookie 内容；Task 4 仅生成最小状态报告，未提前实现 Task 5 Zotero 对账。
