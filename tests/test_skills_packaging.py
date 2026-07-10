@@ -59,8 +59,8 @@ class SkillPackagingTests(unittest.TestCase):
             "zotero_fallback.csv",
             "zotero_results.csv",
             'library_search(entity:"libraries", mode:"list")',
-            "library_import(kind:\"identifiers\")",
-            "library_update(kind:\"collections\")",
+            "library_import",
+            "library_update",
             "Codex下载回退_YYYYMMDD_HHMMSS",
             "Zotero.Attachments.addAvailablePDF",
             "env.addUndoStep",
@@ -88,6 +88,49 @@ class SkillPackagingTests(unittest.TestCase):
         for forbidden in ("Sci-Hub", "Anna's Archive", "LibGen"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
+
+    def test_paper_download_skill_has_unambiguous_zotero_forward_protocol(self) -> None:
+        skill_text = (
+            PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        cli_text = (PROJECT_ROOT / "paper_batch.py").read_text(encoding="utf-8")
+
+        required_skill_text = (
+            'collection_update(action:"create", name:"Codex下载回退_YYYYMMDD_HHMMSS", '
+            'libraryID:<libraryID>)',
+            'library_update(kind:"collections", action:"add", assignments:'
+            '[{itemId:<id>, targetCollectionId:<collectionId>}, ...], libraryID:<libraryID>)',
+            'library_import(kind:"identifiers", identifiers:[...], '
+            'targetCollectionId:<collectionId>, libraryID:<libraryID>)',
+            'library_search(entity:"items", mode:"search", text:"<normalized DOI>", '
+            'include:["metadata","attachments"], libraryID:<libraryID>)',
+            'library_update(kind:"tags", action:"add", assignments:'
+            '[{itemId:<id>, tags:["codex-download-success"]}, ...], libraryID:<libraryID>)',
+            'library_update(kind:"tags", action:"add", assignments:'
+            '[{itemId:<id>, tags:["codex-download-failed"]}, ...], libraryID:<libraryID>)',
+            "Python `csv` semantics",
+            "UTF-8-SIG",
+            "at least one field is non-empty",
+            "exact header",
+            "current task IDs",
+            "active personal library",
+            "group library",
+            "Unicode NFKC",
+            "casefold",
+            "Unicode whitespace, punctuation, or symbol",
+            "zotero_results_retry_YYYYMMDD_HHMMSS.csv",
+            "exclusive creation",
+            "not_found",
+            "no_attachment",
+            "download_failed",
+            "This protocol generates only",
+            "批次未完成且可恢复",
+        )
+        for required in required_skill_text:
+            with self.subTest(required=required):
+                self.assertIn(required, skill_text)
+
+        self.assertIn("批次未完成且可恢复", cli_text)
 
     def test_install_script_supports_dry_run_and_repo_root_env(self) -> None:
         text = (PROJECT_ROOT / "install_codex_skills.ps1").read_text(encoding="utf-8")

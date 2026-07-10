@@ -851,3 +851,14 @@
 - 生成的输出文件：真实使用时由 `paper_batch.py` 在 `results\\paper_batch_YYYYMMDD_HHMMSS\\` 生成 `pdfs\\`、`reports\\` 和 `working\\zotero_fallback.csv/zotero_results.csv`；本次仅产生测试临时目录，未生成真实下载文件。
 - 如何检查是否成功：严格 TDD 的 RED 阶段中新增合同测试因旧 Skill 缺少 `paper_batch`/Zotero 协议而失败 25 项；实现后聚焦测试 18 项通过，全量离线测试 281 项通过（跳过 2 项）；文本扫描确认关键协议字段存在且 Skill 不含三项禁止字符串。
 - 注意事项或潜在风险：未联网、未调用真实 Zotero、未读取 Cookie、未处理真实 CAPTCHA、未打包。真实 Zotero 可用 PDF 的结果仍取决于用户的本地文库、连接状态和合法可访问来源；不可用时必须保持批次可恢复，不能报为完成。
+
+## 2026-07-11 05:05:27 +08:00 — Task 7 独立审查修复
+
+- 本次任务目标：修复 Task 7 独立审查和 Skill 前向测试发现的完成状态误报及 Zotero 协议歧义，保持兼容解析状态不收紧。
+- 新增、修改或删除的文件：修改 `paper_batch.py`、`tests/test_batch_workflow.py`、`skills/paper-download/SKILL.md`、`tests/test_skills_packaging.py`、`CHANGELOG.md` 和 `.superpowers/sdd/task-7-report.md`；未修改 README/MANUAL_QA，未删除文件。
+- 具体修改内容：CLI 仅在 `failed_count == 0` 且 `zotero_fallback_count == 0` 时打印“批次已完成”；否则打印“报告已更新/批次未完成且可恢复”、未解决数量和最终 PDF 目录，且不输出 resume 命令。Skill 明确 UTF-8-SIG/Python CSV 数据行规则、活动个人文库选择、固定 `libraryID`、collection/search/import/tag 完整参数、NFKC 题名与作者规范化、排他结果文件及时间戳重试文件恢复策略，并区分协议生成的六状态与解析器兼容的三状态。
+- 修改原因：旧 CLI 对任意 finalize 结果无条件报完成；旧 Skill 未给出可直接执行的 MCP 参数形状，多文库、题名匹配、CSV 空白行和已有结果文件恢复行为不明确，且状态说明与 Task 5 兼容白名单不一致。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchCliTests -v`；`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_skills_packaging -v`；`..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`；`git diff --check`；使用 `rg` 扫描 Skill 禁止字符串和关键协议参数。
+- 生成的输出文件：真实流程仍只在批次目录生成 `pdfs\\`、`reports\\`、`working\\zotero_results.csv` 或 `working\\zotero_results_retry_YYYYMMDD_HHMMSS.csv`；本次仅生成系统临时测试文件，没有真实下载或 Zotero 写入。
+- 如何检查是否成功：CLI RED 为 `BatchCliTests` 13 项中 1 项失败，明确捕获未解决 finalize 误报；Skill review RED 为 19 项测试中的新合同产生 23 个缺失断言。修复后 CLI 13 项、Skill 19 项均通过，全量离线测试 283 项通过（跳过 2 项）。
+- 注意事项或潜在风险：CLI 退出码仍为 0，表示报告成功生成而非全部论文成功；调用方必须读取输出和报告判断是否仍可恢复。Skill 是编排合同，真实 Zotero 工具返回结构仍需在用户环境中按协议校验。未联网、未调用真实 Zotero、未读取 Cookie、未自动处理 CAPTCHA、未打包。

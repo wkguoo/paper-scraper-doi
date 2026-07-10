@@ -47,3 +47,30 @@ The baseline agent could only route to `sd_institutional_skill.py` or `paper_ski
 - Added English and Chinese beginner instructions plus seven manual QA cases.
 - No network, real Zotero, credentials, CAPTCHA automation, original data
   changes, or packaging were used.
+
+## Independent review repair cycle
+
+### Review RED
+
+- CLI: `BatchCliTests` reproduced the false completion message with
+  `failed_count=3` and `zotero_fallback_count=2`; 1 of 13 tests failed because
+  the old finalize branch always printed `批次已完成`.
+- Skill: the forward contract test produced 23 missing assertions covering
+  exact collection/search/import/tag parameters, CSV row semantics, personal
+  library selection, Unicode normalization, retry result files, compatibility
+  statuses, and recoverable incomplete wording.
+
+### Review GREEN
+
+- `paper_batch.py` now reports completion only when both unresolved counters
+  are zero. Incomplete finalize still returns 0 after publishing reports, but
+  prints `批次未完成且可恢复`, the unresolved count, and the final PDF directory
+  without a resume command.
+- The Skill now fixes one `libraryID` per attempt, documents exact Zotero calls,
+  NFKC/casefold matching, exclusive canonical/retry result files, and the
+  distinction between six generated statuses and three parser-only compatible
+  statuses.
+- Focused results: `BatchCliTests` 13/13 and skill packaging 19/19.
+- Full offline result: 283 tests passed, 2 skipped.
+- No network, real Zotero, credentials, CAPTCHA automation, source-data changes,
+  or packaging were used.

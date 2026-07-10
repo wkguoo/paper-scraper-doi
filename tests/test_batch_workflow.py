@@ -3979,7 +3979,15 @@ class BatchCliTests(unittest.TestCase):
     def _ps_quote(value: object) -> str:
         return "'" + str(value).replace("'", "''") + "'"
 
-    def _result(self, root: Path, *, manual: int = 0, fallback: int = 0):
+    def _result(
+        self,
+        root: Path,
+        *,
+        success: int = 2,
+        failed: int = 3,
+        manual: int = 0,
+        fallback: int = 0,
+    ):
         from paper_automation.batch_workflow import BatchPaths, BatchRunResult
 
         paths = BatchPaths(
@@ -3996,8 +4004,8 @@ class BatchCliTests(unittest.TestCase):
         return BatchRunResult(
             paths=paths,
             total_count=5,
-            success_count=2,
-            failed_count=3,
+            success_count=success,
+            failed_count=failed,
             manual_retry_count=manual,
             zotero_fallback_count=fallback,
         )
@@ -4168,7 +4176,7 @@ class BatchCliTests(unittest.TestCase):
         self.assertNotIn(secret, stdout.getvalue())
         self.assertNotIn(secret, stderr.getvalue())
 
-    def test_finalize_prints_completion_without_retry_command(self) -> None:
+    def test_finalize_with_unresolved_rows_prints_recoverable_not_complete(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
 
@@ -4177,7 +4185,7 @@ class BatchCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "final run"
             results_csv = root / "working" / "zotero_results.csv"
-            result = self._result(root)
+            result = self._result(root, fallback=2)
             stdout = StringIO()
             with patch("paper_batch.finalize_batch", return_value=result) as finalize:
                 with redirect_stdout(stdout):
@@ -4187,9 +4195,35 @@ class BatchCliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(finalize.call_args.args, (str(root), str(results_csv)))
-        self.assertIn("批次已完成", stdout.getvalue())
-        self.assertIn(f"最终 PDF 目录：{root / 'pdfs'}", stdout.getvalue())
-        self.assertNotIn("'resume' '--run-dir'", stdout.getvalue())
+        output = stdout.getvalue()
+        self.assertNotIn("批次已完成", output)
+        self.assertIn("报告已更新", output)
+        self.assertIn("批次未完成且可恢复", output)
+        self.assertIn("未解决数量：3", output)
+        self.assertIn(f"最终 PDF 目录：{root / 'pdfs'}", output)
+        self.assertNotIn("'resume' '--run-dir'", output)
+
+    def test_finalize_without_unresolved_rows_prints_completion(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "complete final run"
+            results_csv = root / "working" / "zotero_results.csv"
+            result = self._result(root, success=5, failed=0, fallback=0)
+            stdout = StringIO()
+            with patch("paper_batch.finalize_batch", return_value=result):
+                with redirect_stdout(stdout):
+                    exit_code = main([
+                        "finalize", "--run-dir", str(root), "--zotero-results", str(results_csv),
+                    ])
+
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("批次已完成", output)
+        self.assertNotIn("批次未完成且可恢复", output)
 
     def test_start_rejects_both_input_sources(self) -> None:
         from contextlib import redirect_stderr

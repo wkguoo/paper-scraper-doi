@@ -205,7 +205,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _print_summary(result)
         if args.command == "finalize":
-            print(f"批次已完成。最终 PDF 目录：{result.paths.pdfs}")
+            if result.failed_count == 0 and result.zotero_fallback_count == 0:
+                print(f"批次已完成。最终 PDF 目录：{result.paths.pdfs}")
+            else:
+                unresolved_count = max(
+                    result.failed_count,
+                    result.zotero_fallback_count,
+                )
+                print("报告已更新。批次未完成且可恢复。")
+                print(f"未解决数量：{unresolved_count}")
+                print(f"最终 PDF 目录：{result.paths.pdfs}")
         else:
             _print_next_step(result)
     except (ValueError, OSError, RuntimeError) as error:
