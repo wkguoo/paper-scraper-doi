@@ -926,3 +926,15 @@
 - 生成的输出文件：本次只修改上述文档和离线合同测试；真实运行时，若 Zotero-origin 回合仍无法写入，将按既有恢复规则在 `<run-dir>\working\zotero_results.csv` 或时间戳 retry 文件写入 `zotero_unavailable` 行，不覆盖原有结果。
 - 如何检查是否成功：RED 阶段该 focused 测试因缺少 11 个合同片段失败；补充协议后同一 focused 测试通过。完整测试与差异检查结果见本次提交前验证；`MANUAL_QA.md` 的第 8 项可在授权的 Zotero 面板中复核一次提示、零后续写入和可恢复结果。
 - 注意事项或潜在风险：本回合未联网、未调用 Zotero、未读写 Cookie、未下载论文、未打包，也没有以 `zotero_script` 绕过普通写确认。必须从 Zotero 的 Codex 面板发起新回合；若该回合仍没有确认 UI，不能反复请求新回合，应生成可恢复的 `zotero_unavailable` 结果。
+
+## 2026-07-11 07:34:00 +08:00 — 写确认恢复协议前向验证
+
+- 本次任务目标：验证 Skill 遇到 Zotero 写确认 UI 不可用时，代理实际会停止写入并按一次提示规则恢复，而不只是包含相关文字。
+- 新增、修改或删除的文件：仅追加 `CHANGELOG.md` 和 `.superpowers/sdd/task-8-report.md`；未修改产品代码、Skill 协议或测试代码。
+- 具体修改内容：全新代理仅读取更新后的 `paper-download/SKILL.md`，模拟第一次和 Zotero-origin 新回合第二次都收到相同确认 UI 错误。
+- 修改原因：独立审查指出静态字符串测试不能单独证明执行行为，需要 Skill 前向测试补充行为证据。
+- 如何运行：向全新代理提供确认 UI 错误场景，要求列出后续工具调用、提示次数、保留文件和第二次失败后的结果状态。
+- 测试输出：前向测试 `PASS`；第一次错误后后续 Zotero 写入为 0，不调用 collection membership/import/search/script/tag；整批只提示一次。第二次错误后写 3 行 `zotero_unavailable`，执行一次 `finalize`，状态为未完成且可恢复，不输出第二次 `resume`。
+- 生成的输出文件：仅记录审计证据；模拟测试未创建真实集合、条目、标签、附件或 PDF。
+- 如何检查是否成功：核对前向测试明确列出 0 次后续写入、不绕过确认、保留 `run-dir`/fallback/结果文件、不重跑项目或第二次 `resume`。
+- 注意事项或潜在风险：真实写确认仍必须由用户从 Zotero Codex 面板发起下一回合验证；本次未联网、未调用真实 Zotero 写入、未打包。

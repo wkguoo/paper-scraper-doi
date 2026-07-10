@@ -135,4 +135,15 @@ preserves the run directory and fallback evidence. It asks once for a new turn
 started from Zotero; that turn restarts at library check and collection
 creation, without rerunning project downloads or a second `resume`. If the
 Zotero-origin turn remains unable to write, it produces recoverable
-`zotero_unavailable` results.
+  `zotero_unavailable` results.
+
+## Confirmation-gate forward test
+
+A fresh agent read only the updated Skill and simulated the exact confirmation
+UI error twice. It passed the behavioral contract: after the first error it
+scheduled zero further Zotero calls, did not substitute `zotero_script`, kept
+the run directory and handoff files, and prompted once for a Zotero-origin
+turn. That turn restarted at library check/collection creation without rerunning
+project downloads or `resume`. On the second identical error it produced three
+`zotero_unavailable` rows, finalized one recoverable unfinished report, and did
+not request another turn. No live Zotero write occurred in this forward test.
