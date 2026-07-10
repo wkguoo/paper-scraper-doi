@@ -3620,6 +3620,114 @@ class BatchFinalizeTests(unittest.TestCase):
         self.assertEqual(caller_state["rows"][0]["status"], "oa_downloaded")
         self.assertEqual(copied_hash, project_hash)
 
+    def test_latest_locked_state_wins_when_finalize_report_overlaps_stage_update(self) -> None:
+        import csv
+        import threading
+        from contextlib import contextmanager
+
+        from paper_automation import batch_workflow as workflow
+
+        finalize_in_report = threading.Event()
+        release_finalize = threading.Event()
+        stage_attempting_lock = threading.Event()
+        stage_finished = threading.Event()
+        state_mutex = threading.Lock()
+        finalize_report_holds_state_lock = []
+        errors = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_pdf = root / "project-latest.pdf"
+            project_pdf.write_bytes(b"%PDF-1.7\nlatest project success")
+            paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
+            zotero_csv = paths.working / "zotero_results.csv"
+            self._write_zotero_csv(
+                zotero_csv,
+                [{"task_id": "paper-0001", "zotero_item_id": "", "attachment_path": "", "status": "not_found", "reason": "stale zotero view"}],
+            )
+            real_writer = workflow.write_final_reports
+
+            def controlled_writer(report_paths, rows):
+                if threading.current_thread().name == "finalize-F1":
+                    finalize_report_holds_state_lock.append(state_mutex.locked())
+                    finalize_in_report.set()
+                    if not release_finalize.wait(10.0):
+                        raise TimeoutError("release_finalize_timeout")
+                return real_writer(report_paths, rows)
+
+            @contextmanager
+            def tracking_state_lock(*args, **kwargs):
+                if threading.current_thread().name == "stage-F2":
+                    stage_attempting_lock.set()
+                with state_mutex:
+                    yield
+
+            def run_finalize():
+                try:
+                    workflow.finalize_batch(paths.root, zotero_csv)
+                except BaseException as exc:
+                    errors.append(exc)
+
+            def run_stage_update():
+                try:
+                    caller_state = workflow.load_batch_state(paths.root)
+                    workflow._apply_stage_updates(
+                        caller_state,
+                        [{**caller_state["rows"][0], "status": "oa_downloaded", "source": "oa", "file": str(project_pdf), "reason": ""}],
+                        paths,
+                    )
+                    workflow._write_latest_state_outputs(
+                        paths,
+                        caller_state,
+                        pending_manual_retry_used=None,
+                    )
+                except BaseException as exc:
+                    errors.append(exc)
+                finally:
+                    stage_finished.set()
+
+            with patch.object(workflow, "write_final_reports", side_effect=controlled_writer), patch.object(
+                workflow, "batch_state_lock", side_effect=tracking_state_lock
+            ):
+                finalizer = threading.Thread(target=run_finalize, name="finalize-F1")
+                finalizer.start()
+                self.assertTrue(finalize_in_report.wait(10.0))
+                stage = threading.Thread(target=run_stage_update, name="stage-F2")
+                stage.start()
+                self.assertTrue(stage_attempting_lock.wait(10.0))
+                if finalize_report_holds_state_lock == [True]:
+                    release_finalize.set()
+                    self.assertTrue(stage_finished.wait(10.0))
+                else:
+                    self.assertTrue(stage_finished.wait(10.0))
+                    release_finalize.set()
+                finalizer.join(10.0)
+                stage.join(10.0)
+
+            self.assertFalse(finalizer.is_alive())
+            self.assertFalse(stage.is_alive())
+            disk_state = workflow.load_batch_state(paths.root)
+            with (paths.reports / "final_manifest.csv").open(
+                "r", newline="", encoding="utf-8-sig"
+            ) as handle:
+                manifest_rows = list(csv.DictReader(handle))
+            with (paths.reports / "batch_status.csv").open(
+                "r", newline="", encoding="utf-8-sig"
+            ) as handle:
+                status_rows = list(csv.DictReader(handle))
+
+        self.assertEqual(errors, [])
+        self.assertEqual(finalize_report_holds_state_lock, [True])
+        self.assertEqual(disk_state["rows"][0]["status"], "oa_downloaded")
+        expected_manifest = {
+            field: str(disk_state["rows"][0].get(field, "") or "")
+            for field in workflow.FINAL_MANIFEST_FIELDS
+        }
+        self.assertEqual(manifest_rows[0], expected_manifest)
+        self.assertEqual(
+            {field: manifest_rows[0][field] for field in workflow.NORMALIZED_FIELDS},
+            status_rows[0],
+        )
+
     def test_zotero_attachment_change_after_first_hash_is_rejected(self) -> None:
         from paper_automation import batch_workflow as workflow
 
@@ -3673,6 +3781,118 @@ class BatchFinalizeTests(unittest.TestCase):
 
         self.assertEqual(validation_calls, 2)
         self.assertEqual(published, [])
+
+    def test_zotero_attachment_replaced_after_second_hash_is_not_published(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "attachment.pdf"
+            original_bytes = b"%PDF-1.7\noriginal second-check attachment"
+            replacement_bytes = b"%PDF-1.7\nreplacement after second check"
+            source.write_bytes(original_bytes)
+            paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
+            real_sha256 = workflow._sha256
+            hash_calls = 0
+
+            def replace_after_second_hash(path):
+                nonlocal hash_calls
+                digest = real_sha256(path)
+                hash_calls += 1
+                if hash_calls == 2:
+                    source.write_bytes(replacement_bytes)
+                return digest
+
+            with patch.object(workflow, "_sha256", side_effect=replace_after_second_hash):
+                with self.assertRaisesRegex(ValueError, "^zotero_attachment_changed$"):
+                    workflow._copy_zotero_attachment(self._row("paper-0001"), str(source), paths)
+            published_payloads = [candidate.read_bytes() for candidate in paths.pdfs.glob("*.pdf")]
+
+        self.assertGreaterEqual(hash_calls, 2)
+        self.assertNotIn(replacement_bytes, published_payloads)
+        self.assertEqual(published_payloads, [])
+
+    def test_zotero_attachment_changed_to_symlink_after_second_hash_is_rejected(self) -> None:
+        from contextlib import nullcontext
+
+        from paper_automation import batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "attachment.pdf"
+            external = root / "external.pdf"
+            source.write_bytes(b"%PDF-1.7\noriginal before symlink")
+            external_bytes = b"%PDF-1.7\nexternal symlink target"
+            external.write_bytes(external_bytes)
+            probe = root / "symlink-probe.pdf"
+            real_is_symlink = workflow.Path.is_symlink
+            try:
+                probe.symlink_to(external)
+            except OSError:
+                real_symlink_supported = False
+            else:
+                real_symlink_supported = True
+                probe.unlink()
+            paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
+            real_sha256 = workflow._sha256
+            hash_calls = 0
+            mocked_symlink_active = False
+
+            def replace_with_symlink_after_second_hash(path):
+                nonlocal hash_calls, mocked_symlink_active
+                digest = real_sha256(path)
+                hash_calls += 1
+                if hash_calls == 2:
+                    if real_symlink_supported:
+                        source.unlink()
+                        source.symlink_to(external)
+                    else:
+                        mocked_symlink_active = True
+                return digest
+
+            def injected_is_symlink(path):
+                return (
+                    mocked_symlink_active
+                    and Path(path) == source
+                ) or real_is_symlink(path)
+
+            symlink_patch = (
+                nullcontext()
+                if real_symlink_supported
+                else patch.object(workflow.Path, "is_symlink", new=injected_is_symlink)
+            )
+            with symlink_patch, patch.object(
+                workflow, "_sha256", side_effect=replace_with_symlink_after_second_hash
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "^(zotero_attachment_reparse_point|zotero_attachment_changed)$"
+                ):
+                    workflow._copy_zotero_attachment(self._row("paper-0001"), str(source), paths)
+            published_payloads = [candidate.read_bytes() for candidate in paths.pdfs.glob("*.pdf")]
+
+        self.assertGreaterEqual(hash_calls, 2)
+        self.assertNotIn(external_bytes, published_payloads)
+        self.assertEqual(published_payloads, [])
+
+    def test_zotero_attachment_same_handle_snapshot_preserves_source(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "stable attachment.pdf"
+            source_bytes = b"%PDF-1.7\nstable same-handle attachment"
+            source.write_bytes(source_bytes)
+            source_hash = hashlib.sha256(source_bytes).hexdigest()
+            paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
+
+            published = workflow._copy_zotero_attachment(
+                self._row("paper-0001"), str(source), paths
+            )
+
+            self.assertEqual(published.read_bytes(), source_bytes)
+            self.assertTrue(source.exists())
+            self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), source_hash)
+            self.assertFalse(list(paths.pdfs.glob(".pdf_snapshot_*.tmp")))
 
     def test_report_generation_failure_leaves_existing_six_file_set_unchanged(self) -> None:
         from paper_automation import batch_workflow as workflow

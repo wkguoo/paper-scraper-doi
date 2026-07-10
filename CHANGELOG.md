@@ -796,3 +796,24 @@
 - 生成的输出文件：正式流程仍发布 `final_manifest.csv/.xlsx`、`failed.csv`、`run_summary.txt`、`batch_status.csv/.json`；事务临时目录成功或可回滚失败后均清理。测试产物仅位于 ignored `.codex-test-tmp/`，未修改原始输入或 Zotero 附件。
 - 如何检查是否成功：Task 5 聚焦测试 `Ran 20 tests ... OK`；Task 4 `Ran 38 tests ... OK`；全套离线测试 `Ran 264 tests ... OK (skipped=2)`；compileall 和 diff-check 退出码为 0。
 - 注意事项或潜在风险：六文件发布依赖逐文件 `os.replace()` 加回滚，无法提供跨六个文件的操作系统原生单指令原子可见性，但失败后会恢复一致旧集合；附件第二次哈希与 `copy_pdf_safely()` 打开源文件之间仍存在极短竞态窗口，最终快照会再次执行 PDF 校验。未联网、未操作真实 Zotero、未读取 Cookie、未打包。
+
+## 2026-07-11 03:58:01 +08:00 — Task 5 最终 P1 修复
+
+- 本次任务目标：修复最终报告可能由旧内存 state 覆盖最新磁盘 state，以及 Zotero 附件在最终校验后被按路径重新打开的两个 P1 竞态窗口。
+- 新增、修改或删除的文件：修改 `paper_automation/batch_workflow.py`、`tests/test_batch_workflow.py`、`CHANGELOG.md`；追加本地 ignored `.superpowers/sdd/task-5-report.md`。未修改 Task 6、Task 7、原始输入、真实 PDF/Zotero 附件或打包文件。
+- 具体修改内容：
+  - 新增 `_write_latest_state_outputs()`：使用与阶段更新相同的 `batch_state_lock`，锁内重新加载并验证最新 state，按 start/resume 语义写 pending 文件，发布六个最终报告，再同步调用者 state。`finalize_batch()` 在既有 state lock 内完成逐行保存后直接调用无嵌套锁路径；start/resume 末尾不再使用旧内存 rows 直接写报告。
+  - 抽取 `_snapshot_pdf_handle()` 与 `_publish_verified_pdf_snapshot()`，让 Task 2 与 Zotero 共用“已验证私有 snapshot 去重 + 硬链接原子发布”逻辑。Zotero 在目标 PDF 目录锁内检查完整绝对路径/reparse 链，打开一次 `rb` 句柄，对比 `fstat`/`lstat` 的设备号、inode、普通文件和 reparse 标识，复制前后复查祖先链与大小/mtime/标识，并从同一句柄复制、哈希、fsync、验证 PDF。snapshot hash 不等于先前 verified hash 时抛出 `zotero_attachment_changed` 并清理 snapshot；发布阶段不再重新打开源附件。
+  - 保留全 `pdfs/` 目录同 SHA-256 内容复用；源 Zotero 附件不移动、不删除、不修改。
+- 修改原因：旧 finalize 会在释放 state lock 后用旧 rows 发布报告，可能覆盖并发阶段更新后的新报告；旧 Zotero 流程在二次哈希后仍把路径传给 `copy_pdf_safely()` 重新打开，路径被替换时可能发布未被该次验证覆盖的内容。
+- 如何运行：
+  - `$env:TEMP=(Resolve-Path .codex-test-tmp); $env:TMP=$env:TEMP`
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchFinalizeTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchRunTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchFileTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`
+  - `git diff --check`
+- 生成的输出文件：正式批次仍在 `reports/` 发布 `final_manifest.csv/.xlsx`、`failed.csv`、`run_summary.txt`、`batch_status.csv/.json`，PDF 输出仍位于批次 `pdfs/`；测试临时输出仅位于 ignored `.codex-test-tmp/`。
+- 如何检查是否成功：Task 5 `Ran 24 tests ... OK`；Task 4 `Ran 38 tests ... OK`；Task 2 文件/PDF `Ran 26 tests ... OK (skipped=1)`；全套 `Ran 268 tests ... OK (skipped=2)`；compileall 退出码 0。新增交错测试逐字段确认最终 CSV 等于磁盘最新 state；第二次哈希后替换为另一有效 PDF 或 symlink/reparse 均不得发布外部内容。
+- 注意事项或潜在风险：同句柄方案消除了应用层“最终验证后按路径重新打开”的窗口，并在复制后再次核对路径身份；仍无法对抗具备更高权限、可在多个系统调用之间持续快速切换路径且最终恢复原身份的操作系统级对抗。PDF 内容有效性仍沿用 Task 2 的最小尺寸和 `%PDF-` 文件头检查，不是完整 PDF 结构解析。未联网、未访问真实 Zotero、未读取 Cookie、未打包。

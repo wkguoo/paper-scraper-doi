@@ -412,7 +412,7 @@ def _publish_pdf_snapshot(snapshot: Path, target: Path) -> bool:
     return True
 
 
-def _snapshot_pdf_source(source: Path, destination: Path) -> tuple[Path, str]:
+def _snapshot_pdf_handle(source_handle, destination: Path) -> tuple[Path, str]:
     file_descriptor, snapshot_name = tempfile.mkstemp(
         prefix=".pdf_snapshot_",
         suffix=".tmp",
@@ -425,10 +425,9 @@ def _snapshot_pdf_source(source: Path, destination: Path) -> tuple[Path, str]:
         snapshot_handle = os.fdopen(file_descriptor, "wb")
         descriptor_open = False
         with snapshot_handle:
-            with source.open("rb") as source_handle:
-                for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
-                    snapshot_handle.write(chunk)
-                    digest.update(chunk)
+            for chunk in iter(lambda: source_handle.read(1024 * 1024), b""):
+                snapshot_handle.write(chunk)
+                digest.update(chunk)
             snapshot_handle.flush()
             os.fsync(snapshot_handle.fileno())
         if not is_valid_pdf(snapshot):
@@ -443,6 +442,50 @@ def _snapshot_pdf_source(source: Path, destination: Path) -> tuple[Path, str]:
                 os.close(file_descriptor)
             except OSError:
                 pass
+
+
+def _snapshot_pdf_source(source: Path, destination: Path) -> tuple[Path, str]:
+    with source.open("rb") as source_handle:
+        return _snapshot_pdf_handle(source_handle, destination)
+
+
+def _publish_verified_pdf_snapshot(
+    snapshot: Path,
+    destination: Path,
+    filename: str,
+    source_hash: str,
+    *,
+    reuse_any_hash: bool = False,
+) -> Path:
+    """Publish an already validated private snapshot without reopening its source."""
+
+    if reuse_any_hash:
+        for candidate in sorted(destination.glob("*.pdf"), key=lambda path: path.name.casefold()):
+            if _same_pdf_content(candidate, source_hash):
+                return candidate
+
+    target = destination / filename
+    while True:
+        if _path_exists(target):
+            if _same_pdf_content(target, source_hash):
+                return target
+            break
+        if _publish_pdf_snapshot(snapshot, target):
+            return target
+
+    counter = 1
+    while True:
+        suffix = "" if counter == 1 else f"_{counter}"
+        candidate = target.with_name(
+            f"{target.stem}_{source_hash[:8]}{suffix}{target.suffix}"
+        )
+        if _path_exists(candidate):
+            if _same_pdf_content(candidate, source_hash):
+                return candidate
+            counter += 1
+            continue
+        if _publish_pdf_snapshot(snapshot, candidate):
+            return candidate
 
 
 def copy_pdf_safely(
@@ -463,28 +506,12 @@ def copy_pdf_safely(
         snapshot = None
         try:
             snapshot, source_hash = _snapshot_pdf_source(source_path, destination)
-            target = destination / safe_filename
-            while True:
-                if _path_exists(target):
-                    if _same_pdf_content(target, source_hash):
-                        return target
-                    break
-                if _publish_pdf_snapshot(snapshot, target):
-                    return target
-
-            counter = 1
-            while True:
-                suffix = "" if counter == 1 else f"_{counter}"
-                candidate = target.with_name(
-                    f"{target.stem}_{source_hash[:8]}{suffix}{target.suffix}"
-                )
-                if _path_exists(candidate):
-                    if _same_pdf_content(candidate, source_hash):
-                        return candidate
-                    counter += 1
-                    continue
-                if _publish_pdf_snapshot(snapshot, candidate):
-                    return candidate
+            return _publish_verified_pdf_snapshot(
+                snapshot,
+                destination,
+                safe_filename,
+                source_hash,
+            )
         finally:
             if snapshot is not None:
                 snapshot.unlink(missing_ok=True)
@@ -1210,13 +1237,26 @@ def _read_zotero_results(path: Path, state_rows: list[dict]) -> list[dict[str, s
     return results
 
 
-def _local_zotero_attachment(path_value: str) -> Path:
+def _zotero_attachment_absolute_path(path_value: str) -> Path:
     value = str(path_value or "").strip()
     if not value or "://" in value or value.lower().startswith(("zotero:", "file:")):
         raise ValueError("zotero_attachment_not_local")
     source = Path(value).expanduser()
     if not source.is_absolute():
         raise ValueError("zotero_attachment_not_absolute")
+    return source
+
+
+def _stat_is_reparse_point(details: os.stat_result) -> bool:
+    return bool(
+        os.name == "nt"
+        and getattr(details, "st_file_attributes", 0)
+        & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    )
+
+
+def _validate_zotero_attachment_chain(source: Path) -> tuple[Path, os.stat_result]:
+    """Validate every lexical path component without following a reparse point."""
 
     current = Path(source.anchor)
     try:
@@ -1225,18 +1265,101 @@ def _local_zotero_attachment(path_value: str) -> Path:
                 continue
             current = current.parent if component == ".." else current / component
             details = current.lstat()
-            is_reparse_point = bool(
-                os.name == "nt"
-                and details.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT
-            )
-            if current.is_symlink() or stat.S_ISLNK(details.st_mode) or is_reparse_point:
+            if (
+                current.is_symlink()
+                or stat.S_ISLNK(details.st_mode)
+                or _stat_is_reparse_point(details)
+            ):
                 raise ValueError("zotero_attachment_reparse_point")
         resolved = source.resolve(strict=True)
-        if not stat.S_ISREG(resolved.stat().st_mode) or not is_valid_pdf(resolved):
+        final_details = current.lstat()
+        if (
+            current.is_symlink()
+            or stat.S_ISLNK(final_details.st_mode)
+            or _stat_is_reparse_point(final_details)
+        ):
+            raise ValueError("zotero_attachment_reparse_point")
+        if not stat.S_ISREG(final_details.st_mode):
             raise ValueError("not_pdf_response")
     except OSError as exc:
         raise ValueError("not_pdf_response") from exc
+    return resolved, final_details
+
+
+def _local_zotero_attachment(path_value: str) -> Path:
+    source = _zotero_attachment_absolute_path(path_value)
+    resolved, _ = _validate_zotero_attachment_chain(source)
+    if not is_valid_pdf(resolved):
+        raise ValueError("not_pdf_response")
     return resolved
+
+
+def _same_file_identity(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _stable_open_file(before: os.stat_result, after: os.stat_result) -> bool:
+    return (
+        _same_file_identity(before, after)
+        and stat.S_ISREG(before.st_mode)
+        and stat.S_ISREG(after.st_mode)
+        and not _stat_is_reparse_point(before)
+        and not _stat_is_reparse_point(after)
+        and before.st_size == after.st_size
+        and before.st_mtime_ns == after.st_mtime_ns
+    )
+
+
+def _revalidate_open_zotero_path(
+    source: Path,
+    expected_resolved: Path,
+    opened_details: os.stat_result,
+) -> None:
+    try:
+        resolved, path_details = _validate_zotero_attachment_chain(source)
+    except ValueError as exc:
+        if str(exc) == "zotero_attachment_reparse_point":
+            raise
+        raise ValueError("zotero_attachment_changed") from exc
+    if (
+        resolved != expected_resolved
+        or not _same_file_identity(opened_details, path_details)
+        or not stat.S_ISREG(opened_details.st_mode)
+        or _stat_is_reparse_point(opened_details)
+    ):
+        raise ValueError("zotero_attachment_changed")
+
+
+def _snapshot_zotero_attachment(
+    path_value: str,
+    destination: Path,
+    expected_source: Path,
+    verified_hash: str,
+) -> tuple[Path, str]:
+    """Copy from one validated source handle into a private, fsynced snapshot."""
+
+    source = _zotero_attachment_absolute_path(path_value)
+    resolved, _ = _validate_zotero_attachment_chain(source)
+    if resolved != expected_source:
+        raise ValueError("zotero_attachment_changed")
+
+    snapshot = None
+    try:
+        with resolved.open("rb") as source_handle:
+            opened_before = os.fstat(source_handle.fileno())
+            _revalidate_open_zotero_path(source, resolved, opened_before)
+            snapshot, snapshot_hash = _snapshot_pdf_handle(source_handle, destination)
+            opened_after = os.fstat(source_handle.fileno())
+            if not _stable_open_file(opened_before, opened_after):
+                raise ValueError("zotero_attachment_changed")
+            _revalidate_open_zotero_path(source, resolved, opened_after)
+        if snapshot_hash != verified_hash:
+            raise ValueError("zotero_attachment_changed")
+        return snapshot, snapshot_hash
+    except BaseException:
+        if snapshot is not None:
+            snapshot.unlink(missing_ok=True)
+        raise
 
 
 def _filename_for_batch_row(row: dict) -> str:
@@ -1272,10 +1395,32 @@ def _copy_zotero_attachment(row: dict, attachment_path: str, paths: BatchPaths) 
     verified_hash = _sha256(verified_source)
     if source != verified_source or source_hash != verified_hash:
         raise ValueError("zotero_attachment_changed")
-    for candidate in paths.pdfs.glob("*.pdf"):
-        if _same_pdf_content(candidate, verified_hash):
-            return candidate
-    return copy_pdf_safely(verified_source, paths.pdfs, _filename_for_batch_row(row))
+    safe_filename = _validate_path_component(
+        _filename_for_batch_row(row),
+        error="invalid_filename",
+    )
+    destination = paths.pdfs.expanduser().resolve()
+    destination.mkdir(parents=True, exist_ok=True)
+    with _pdf_publish_lock(destination, timeout=10.0):
+        _cleanup_stale_pdf_snapshots(destination)
+        snapshot = None
+        try:
+            snapshot, snapshot_hash = _snapshot_zotero_attachment(
+                attachment_path,
+                destination,
+                verified_source,
+                verified_hash,
+            )
+            return _publish_verified_pdf_snapshot(
+                snapshot,
+                destination,
+                safe_filename,
+                snapshot_hash,
+                reuse_any_hash=True,
+            )
+        finally:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)
 
 
 def _metadata_uncertain_audit(reason: object) -> str:
@@ -1394,6 +1539,38 @@ def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
         raise RuntimeError(f"final_report_write_failed:{type(exc).__name__}:{exc}") from exc
 
 
+def _write_latest_state_outputs(
+    paths: BatchPaths,
+    state: dict,
+    *,
+    pending_manual_retry_used: bool | None,
+    assume_locked: bool = False,
+) -> None:
+    """Publish pending/final reports from the latest disk state under its writer lock."""
+
+    if not assume_locked:
+        with batch_state_lock(paths.root):
+            _write_latest_state_outputs(
+                paths,
+                state,
+                pending_manual_retry_used=pending_manual_retry_used,
+                assume_locked=True,
+            )
+        return
+
+    latest = load_batch_state(paths.root)
+    _validate_state(latest, expected_run_dir=paths.root)
+    if pending_manual_retry_used is not None:
+        _write_pending_files(
+            paths,
+            latest["rows"],
+            manual_retry_used=pending_manual_retry_used,
+        )
+    write_final_reports(paths, latest["rows"])
+    state.clear()
+    state.update(latest)
+
+
 def finalize_batch(
     run_dir: str | Path,
     zotero_results: str | Path,
@@ -1459,8 +1636,12 @@ def finalize_batch(
                 )
             state["rows"][index] = updated
             save_batch_state(paths, state)
-        report_rows = [dict(row) for row in state["rows"]]
-    write_final_reports(paths, report_rows)
+        _write_latest_state_outputs(
+            paths,
+            state,
+            pending_manual_retry_used=None,
+            assume_locked=True,
+        )
     return _result_from_state(paths, state)
 
 
@@ -1595,8 +1776,11 @@ def start_batch(
         state=state,
         required_ids=set(_required_task_ids(rows)),
     )
-    _write_pending_files(paths, state["rows"])
-    write_final_reports(paths, state["rows"])
+    _write_latest_state_outputs(
+        paths,
+        state,
+        pending_manual_retry_used=False,
+    )
     return _result_from_state(paths, state)
 
 
@@ -1642,6 +1826,9 @@ def resume_batch(
             state=state,
             required_ids=set(retry_ids),
         )
-    _write_pending_files(paths, state["rows"], manual_retry_used=True)
-    write_final_reports(paths, state["rows"])
+    _write_latest_state_outputs(
+        paths,
+        state,
+        pending_manual_retry_used=True,
+    )
     return _result_from_state(paths, state)
