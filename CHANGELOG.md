@@ -613,3 +613,28 @@
   - 当前 Windows 环境创建真实 file symlink 返回 `WinError 1314`，因此端到端 symlink 测试按要求跳过；mocked 核心逻辑测试始终执行并通过。
   - symlink 占位不会被删除、改写或作为交付路径返回；这可能使已有旧命名被跳过并产生哈希/数字后缀，这是预期安全行为。
   - PDF 仍只按最小大小和 `%PDF-` 文件头校验；硬链接支持、同目录串行复制与断电持久性风险保持第三波次记录不变。
+
+## 2026-07-10 19:36:57 +08:00
+
+- 本次任务目标：完成 Task 3，将合法 OA、ScienceDirect 和非 Elsevier 机构访问下载阶段归一化为一致的批次结果接口。
+- 新增、修改或删除的文件：
+  - 新增 `paper_automation/batch_stages.py`。
+  - 修改 `tests/test_batch_workflow.py`（仅增加 `BatchStageTests`）。
+  - 修改 `CHANGELOG.md`；新增忽略的 `.superpowers/sdd/task-3-report.md`。
+- 具体修改内容：
+  - 新增 `BatchOptions`、`StageResult`、`split_institutional_rows()`、`needs_manual_retry()` 和 UTF-8-SIG 的 `write_stage_input()`。
+  - 新增三个薄适配器：OA 直接调用 `workflow.run_workflow()`；ScienceDirect 直接调用可 patch 的 `sd_institutional_skill.main()`，固定 `--run-name sciencedirect` 与 `--no-download-supplements`；非 Elsevier 直接调用 `institutional.run_institutional_workflow()`。
+  - 按现有 OA manifest、`pdf_download_report.csv` 和 `institutional_pdf_download_report.csv` 映射报告，保持输入顺序和 `task_id`；缺失报告、缺失行、返回码和异常均生成可诊断的失败结果。
+  - 只有存在、非 symlink、可读且通过 Task 2 `is_valid_pdf()` 校验的本地 PDF 才映射为 `downloaded`；HTML、空文件、缺失文件或 symlink 会记录 `invalid_pdf`，且不移动、不删除源文件。
+  - 实现 `10.1016/` 路由至 ScienceDirect，空 DOI 和其他出版社路由至非 Elsevier；人工重试仅识别明确的 auth/login/captcha/turnstile 信号。
+- 修改原因：为 Task 4 批次恢复流程提供一个无网络副作用、可追踪且不会将登录页误报为 PDF 成功的统一边界。
+- 如何运行：在本隔离 worktree 中设置 `TEMP`/`TMP` 为 `.codex-test-tmp`，然后运行：
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchStageTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_automation`
+  - `git diff --check`
+- 生成的输出文件：测试仅在忽略的 `.codex-test-tmp` 中产生临时 CSV/PDF 固件；未联网下载，未读取或记录 cookie 内容，未修改原始文献或已有 PDF，也未打包项目。
+- 如何检查是否成功：聚焦测试显示 `Ran 12 tests ... OK (skipped=1)`；完整套件显示 `Ran 189 tests ... OK (skipped=2)`；`compileall` 和 `git diff --check` 退出码应为 0。
+- 注意事项或潜在风险：
+  - 当前 `sd_institutional_skill` CLI 没有 `debug-port` 或 `throttle` 参数，适配器不传递未被支持的参数，以避免真实 ScienceDirect 调用因 argparse 失败；这两个参数已正确传给支持它们的非 Elsevier 工作流。
+  - 本机 Windows 未授予创建 file symlink 的权限（`WinError 1314`），所以端到端 symlink 测试被跳过；适配器仍在逻辑上显式拒绝 symlink。

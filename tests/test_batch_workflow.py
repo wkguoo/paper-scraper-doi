@@ -856,3 +856,318 @@ class BatchFileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not_pdf_response"):
                 copy_pdf_safely(source, root / "pdfs", "paper.pdf")
             self.assertFalse(list((root / "pdfs").glob(".pdf_snapshot_*.tmp")))
+
+
+class BatchStageTests(unittest.TestCase):
+    def test_stage_result_keeps_normalized_fields(self) -> None:
+        from paper_automation.batch_stages import StageResult
+
+        result = StageResult(
+            task_id="paper-0001",
+            doi="10.1016/example",
+            title="Example",
+            status="downloaded",
+            file="paper.pdf",
+            reason="",
+            source="oa",
+        )
+
+        self.assertEqual(result.source, "oa")
+        self.assertEqual(result.task_id, "paper-0001")
+
+    def test_route_splits_sciencedirect_from_other_publishers(self) -> None:
+        from paper_automation.batch_stages import split_institutional_rows
+
+        rows = [
+            {"task_id": "paper-0001", "doi": "10.1016/j.actamat.2024.1"},
+            {"task_id": "paper-0002", "doi": "10.1038/s41467-020-1"},
+            {"task_id": "paper-0003", "doi": ""},
+        ]
+
+        science_direct, other = split_institutional_rows(rows)
+
+        self.assertEqual([row["task_id"] for row in science_direct], ["paper-0001"])
+        self.assertEqual([row["task_id"] for row in other], ["paper-0002", "paper-0003"])
+
+    def test_manual_retry_statuses_are_explicit(self) -> None:
+        from paper_automation.batch_stages import needs_manual_retry
+
+        self.assertTrue(needs_manual_retry("auth_required", ""))
+        self.assertTrue(needs_manual_retry("failed", "captcha_required"))
+        self.assertTrue(needs_manual_retry("failed", "turnstile_detected"))
+        self.assertTrue(needs_manual_retry("failed", "institutional login required"))
+        self.assertFalse(needs_manual_retry("unsupported_publisher", ""))
+
+    def test_write_stage_input_preserves_rows_as_utf8_sig_csv(self) -> None:
+        import csv
+
+        from paper_automation.batch_stages import write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_stage_input(
+                [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "中文标题"}],
+                Path(tmp) / "working" / "input.csv",
+            )
+
+            self.assertTrue(path.read_bytes().startswith(b"\xef\xbb\xbf"))
+            with path.open("r", newline="", encoding="utf-8-sig") as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(rows, [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "中文标题", "authors": "", "journal": "", "year": ""}])
+
+    def test_oa_adapter_maps_manifest_rows_in_input_order(self) -> None:
+        import csv
+        from types import SimpleNamespace
+
+        from paper_automation.batch_stages import BatchOptions, run_oa_stage
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            valid_pdf = root / "oa.pdf"
+            valid_pdf.write_bytes(b"%PDF-1.7\nvalid fixture")
+            manifest = root / "manifest.csv"
+            with manifest.open("w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["source_index", "doi", "title", "download_status", "file", "reason"])
+                writer.writeheader()
+                writer.writerow({"source_index": "2", "doi": "10.1000/b", "title": "B", "download_status": "failed", "reason": "no_legal_open_pdf"})
+                writer.writerow({"source_index": "1", "doi": "10.1000/a", "title": "A", "download_status": "downloaded", "file": str(valid_pdf)})
+
+            with patch("paper_automation.batch_stages.run_workflow", return_value=SimpleNamespace(manifest_csv=str(manifest))) as mocked:
+                results = run_oa_stage(
+                    [
+                        {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A"},
+                        {"task_id": "paper-0002", "doi": "10.1000/b", "title": "B"},
+                    ],
+                    root,
+                    BatchOptions(email="researcher@example.edu"),
+                )
+
+        self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
+        self.assertEqual([result.status for result in results], ["downloaded", "failed"])
+        self.assertEqual(results[1].reason, "no_legal_open_pdf")
+        self.assertEqual(mocked.call_args.kwargs["email"], "researcher@example.edu")
+
+    def test_sciencedirect_adapter_maps_success_auth_and_cli_options(self) -> None:
+        import csv
+
+        from paper_automation.batch_stages import BatchOptions, run_sciencedirect_stage, write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            valid_pdf = root / "download.pdf"
+            valid_pdf.write_bytes(b"%PDF-1.7\nfixture")
+            input_path = write_stage_input(
+                [
+                    {"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"},
+                    {"task_id": "paper-0002", "doi": "10.1016/b", "title": "B"},
+                ],
+                root / "input.csv",
+            )
+
+            def fake_sd_main(argv: list[str]) -> int:
+                report_dir = Path(argv[argv.index("--out") + 1]) / "sciencedirect"
+                report_dir.mkdir(parents=True, exist_ok=True)
+                with (report_dir / "pdf_download_report.csv").open("w", newline="", encoding="utf-8-sig") as handle:
+                    fields = ["doi", "pii", "title", "status", "file", "reason", "manual_pdf_url", "manual_status", "manual_reason"]
+                    writer = csv.DictWriter(handle, fieldnames=fields)
+                    writer.writeheader()
+                    writer.writerow({"doi": "10.1016/a", "title": "A", "status": "success", "file": str(valid_pdf)})
+                    writer.writerow({"doi": "10.1016/b", "title": "B", "status": "failed", "reason": "auth_required"})
+                return 0
+
+            with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main) as mocked:
+                results = run_sciencedirect_stage(
+                    input_path,
+                    root,
+                    BatchOptions(
+                        email="researcher@example.edu",
+                        cookies="cookies.json",
+                        browser_exe="C:/Browser/browser.exe",
+                        login_wait_seconds=30,
+                    ),
+                )
+
+        argv = mocked.call_args.args[0]
+        self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
+        self.assertEqual(results[0].status, "downloaded")
+        self.assertEqual(results[1].reason, "auth_required")
+        self.assertIn("--run-name", argv)
+        self.assertEqual(argv[argv.index("--run-name") + 1], "sciencedirect")
+        self.assertIn("--no-download-supplements", argv)
+        self.assertEqual(argv[argv.index("--cookies") + 1], "cookies.json")
+        self.assertEqual(argv[argv.index("--browser-exe") + 1], "C:/Browser/browser.exe")
+        self.assertEqual(argv[argv.index("--login-wait-seconds") + 1], "30")
+
+    def test_sciencedirect_adapter_rejects_invalid_pdf_and_missing_stage_rows(self) -> None:
+        import csv
+
+        from paper_automation.batch_stages import BatchOptions, run_sciencedirect_stage, write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            invalid_pdf = root / "login.pdf"
+            invalid_pdf.write_text("<html>login</html>", encoding="utf-8")
+            input_path = write_stage_input(
+                [
+                    {"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"},
+                    {"task_id": "paper-0002", "doi": "10.1016/b", "title": "B"},
+                ],
+                root / "input.csv",
+            )
+
+            def fake_sd_main(argv: list[str]) -> int:
+                report_dir = Path(argv[argv.index("--out") + 1]) / "sciencedirect"
+                report_dir.mkdir(parents=True, exist_ok=True)
+                with (report_dir / "pdf_download_report.csv").open("w", newline="", encoding="utf-8-sig") as handle:
+                    fields = ["doi", "pii", "title", "status", "file", "reason", "manual_pdf_url", "manual_status", "manual_reason"]
+                    writer = csv.DictWriter(handle, fieldnames=fields)
+                    writer.writeheader()
+                    writer.writerow({"doi": "10.1016/a", "title": "A", "status": "success", "file": str(invalid_pdf)})
+                return 0
+
+            with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
+                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+
+        self.assertEqual(results[0].status, "failed")
+        self.assertEqual(results[0].reason, "invalid_pdf")
+        self.assertEqual(results[1].status, "failed")
+        self.assertEqual(results[1].reason, "missing_stage_report_row")
+
+    def test_sciencedirect_adapter_reports_nonzero_exit_without_report(self) -> None:
+        from paper_automation.batch_stages import BatchOptions, run_sciencedirect_stage, write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = write_stage_input(
+                [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"}],
+                root / "input.csv",
+            )
+            with patch("paper_automation.batch_stages.sd_main", return_value=3):
+                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+
+        self.assertEqual(results[0].status, "failed")
+        self.assertEqual(results[0].reason, "stage_exit_code_3")
+
+    def test_sciencedirect_adapter_reports_missing_report(self) -> None:
+        from paper_automation.batch_stages import BatchOptions, run_sciencedirect_stage, write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = write_stage_input(
+                [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"}],
+                root / "input.csv",
+            )
+            with patch("paper_automation.batch_stages.sd_main", return_value=0):
+                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+
+        self.assertEqual(results[0].status, "failed")
+        self.assertEqual(results[0].reason, "stage_report_missing")
+
+    def test_non_elsevier_adapter_maps_report_and_options(self) -> None:
+        import csv
+        from types import SimpleNamespace
+
+        from paper_automation.batch_stages import BatchOptions, run_non_elsevier_stage, write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            valid_pdf = root / "institutional.pdf"
+            valid_pdf.write_bytes(b"%PDF-1.7\ninstitutional fixture")
+            input_path = write_stage_input(
+                [
+                    {"task_id": "paper-0001", "doi": "10.1038/a", "title": "A"},
+                    {"task_id": "paper-0002", "doi": "", "title": "Unknown"},
+                ],
+                root / "input.csv",
+            )
+
+            def fake_workflow(*args, **kwargs):
+                report = root / "non_elsevier_institutional" / "institutional_pdf_download_report.csv"
+                report.parent.mkdir(parents=True, exist_ok=True)
+                with report.open("w", newline="", encoding="utf-8-sig") as handle:
+                    fields = ["row_number", "doi", "title", "journal", "year", "publisher", "adapter", "status", "file", "reason", "landing_url", "final_landing_url", "pdf_url", "metadata_source"]
+                    writer = csv.DictWriter(handle, fieldnames=fields)
+                    writer.writeheader()
+                    writer.writerow({"row_number": "2", "doi": "", "title": "Unknown", "status": "unsupported_publisher", "reason": "no_supported_adapter"})
+                    writer.writerow({"row_number": "1", "doi": "10.1038/a", "title": "A", "status": "pdf_downloaded", "file": str(valid_pdf)})
+                return SimpleNamespace(report_path=str(report))
+
+            with patch("paper_automation.batch_stages.run_institutional_workflow", side_effect=fake_workflow) as mocked:
+                results = run_non_elsevier_stage(
+                    input_path,
+                    root,
+                    BatchOptions(browser_exe="C:/Browser/browser.exe", debug_port=9444, login_wait_seconds=20, throttle_seconds=0.0),
+                )
+
+        self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
+        self.assertEqual([result.status for result in results], ["downloaded", "unsupported_publisher"])
+        self.assertEqual(results[1].reason, "no_supported_adapter")
+        self.assertEqual(mocked.call_args.kwargs["browser_exe"], "C:/Browser/browser.exe")
+        self.assertEqual(mocked.call_args.kwargs["debug_port"], 9444)
+        self.assertEqual(mocked.call_args.kwargs["login_wait_seconds"], 20)
+        self.assertEqual(mocked.call_args.kwargs["throttle_seconds"], 0.0)
+
+    def test_stage_rejects_external_symlink_pdf_when_supported(self) -> None:
+        import csv
+
+        from paper_automation.batch_stages import BatchOptions, run_sciencedirect_stage, write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            external = root / "external.pdf"
+            external.write_bytes(b"%PDF-1.7\nexternal fixture")
+            linked = root / "linked.pdf"
+            try:
+                os.symlink(external, linked)
+            except OSError as exc:
+                self.skipTest(f"symlink_not_available: {exc}")
+            input_path = write_stage_input(
+                [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"}],
+                root / "input.csv",
+            )
+
+            def fake_sd_main(argv: list[str]) -> int:
+                report_dir = Path(argv[argv.index("--out") + 1]) / "sciencedirect"
+                report_dir.mkdir(parents=True, exist_ok=True)
+                with (report_dir / "pdf_download_report.csv").open("w", newline="", encoding="utf-8-sig") as handle:
+                    fields = ["doi", "pii", "title", "status", "file", "reason", "manual_pdf_url", "manual_status", "manual_reason"]
+                    writer = csv.DictWriter(handle, fieldnames=fields)
+                    writer.writeheader()
+                    writer.writerow({"doi": "10.1016/a", "title": "A", "status": "success", "file": str(linked)})
+                return 0
+
+            with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
+                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+
+        self.assertEqual(results[0].status, "failed")
+        self.assertEqual(results[0].reason, "invalid_pdf")
+
+    def test_non_elsevier_adapter_keeps_missing_blank_rows_in_place(self) -> None:
+        import csv
+        from types import SimpleNamespace
+
+        from paper_automation.batch_stages import BatchOptions, run_non_elsevier_stage, write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = write_stage_input(
+                [{"task_id": "paper-0001"}, {"task_id": "paper-0002"}],
+                root / "input.csv",
+            )
+
+            def fake_workflow(*args, **kwargs):
+                report = root / "non_elsevier_institutional" / "institutional_pdf_download_report.csv"
+                report.parent.mkdir(parents=True, exist_ok=True)
+                with report.open("w", newline="", encoding="utf-8-sig") as handle:
+                    fields = ["row_number", "doi", "title", "journal", "year", "publisher", "adapter", "status", "file", "reason", "landing_url", "final_landing_url", "pdf_url", "metadata_source"]
+                    writer = csv.DictWriter(handle, fieldnames=fields)
+                    writer.writeheader()
+                    writer.writerow({"row_number": "3", "status": "unsupported_publisher", "reason": "no_supported_adapter"})
+                return SimpleNamespace(report_path=str(report))
+
+            with patch("paper_automation.batch_stages.run_institutional_workflow", side_effect=fake_workflow):
+                results = run_non_elsevier_stage(input_path, root, BatchOptions())
+
+        self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
+        self.assertEqual(results[0].reason, "missing_stage_report_row")
+        self.assertEqual(results[1].status, "unsupported_publisher")
