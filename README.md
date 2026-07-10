@@ -102,6 +102,26 @@ Use this workflow for mixed publisher lists when you only want to search public 
 
 This workflow does not read `cookies.json` and does not use institutional login state.
 
+### Unified Batch With Zotero Fallback
+
+Use this Codex-guided workflow for a mixed DOI/title list when the project
+should try its documented routes first and only remaining failures may be
+checked through Zotero. Zotero must already be open and connected to Codex.
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
+.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
+.\.venv\Scripts\python.exe paper_batch.py finalize --run-dir "<run-dir>" --zotero-results "<run-dir>\working\zotero_results.csv"
+```
+
+Run `resume` only once, and only after `working\manual_retry.csv` contains
+rows and you have completed the required browser action. The batch output is
+`results\paper_batch_YYYYMMDD_HHMMSS\`, with final PDFs in `pdfs\`, reports in
+`reports\`, and resumable handoff files in `working\` (including
+`zotero_fallback.csv` and `zotero_results.csv`). Codex preserves the temporary
+Zotero collection for review. Finalization copies valid PDFs only; it never
+moves Zotero attachments or overwrites an existing PDF.
+
 ## Outputs
 
 ScienceDirect batch runs create a timestamped result folder containing reports such as:

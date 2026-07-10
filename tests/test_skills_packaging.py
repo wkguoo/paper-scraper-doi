@@ -46,6 +46,49 @@ class SkillPackagingTests(unittest.TestCase):
                 for term in required_terms:
                     self.assertIn(term, description)
 
+    def test_paper_download_skill_documents_batch_zotero_fallback_contract(self) -> None:
+        text = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        for required in (
+            "paper_batch.py start",
+            "paper_batch.py resume",
+            "paper_batch.py finalize",
+            "manual_retry.csv",
+            "zotero_fallback.csv",
+            "zotero_results.csv",
+            'library_search(entity:"libraries", mode:"list")',
+            "library_import(kind:\"identifiers\")",
+            "library_update(kind:\"collections\")",
+            "Codex下载回退_YYYYMMDD_HHMMSS",
+            "Zotero.Attachments.addAvailablePDF",
+            "env.addUndoStep",
+            "metadata_uncertain",
+            "zotero_unavailable",
+            "zotero_api_unavailable",
+            "existing_pdf",
+            "downloaded",
+            "no_pdf",
+            "codex-download-success",
+            "codex-download-failed",
+            "task_id,zotero_item_id,attachment_path,status,reason",
+            "run exactly one retry",
+            "absolute Windows path",
+            "reparse point",
+            "must not overwrite",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, text)
+
+        self.assertRegex(
+            text,
+            r"(?s)paper_batch\.py start.*paper_batch\.py resume.*paper_batch\.py finalize",
+        )
+        for forbidden in ("Sci-Hub", "Anna's Archive", "LibGen"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, text)
+
     def test_install_script_supports_dry_run_and_repo_root_env(self) -> None:
         text = (PROJECT_ROOT / "install_codex_skills.ps1").read_text(encoding="utf-8")
 

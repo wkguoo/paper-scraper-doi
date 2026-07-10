@@ -1,95 +1,212 @@
 ---
 name: paper-download
-description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or open-access resource discovery and download assistance. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Edge/Chrome login and cookies for ScienceDirect, or find open-access PDF candidates. Failed downloads automatically fall back to third-party data sources.
+description: Use when Codex needs ScienceDirect, institutional, or open-access paper downloads from DOI/title lists, including a project-first batch that may require a connected Zotero fallback.
 ---
 
 # Paper Download
 
-Use this as the single entry point for paper download tasks. Route to the repository CLI that matches the user's intent; keep the two workflows separate.
+Use this as the single entry point for a mixed DOI/title paper list. The project
+workflow always runs first. Zotero is a fallback only for rows that remain in
+the project's `zotero_fallback.csv`; it is not a second downloader for the
+whole input list.
 
-## Repository
+## Repository and prerequisites
 
 Locate the repository in this order:
 
-1. Current directory or parent containing `sd_institutional_skill.py`, `paper_skill.py`, and `paper_automation`.
+1. Current directory or a parent containing `paper_batch.py`,
+   `sd_institutional_skill.py`, `paper_skill.py`, and `paper_automation`.
 2. `$env:PAPER_SCRAPER_DOI_ROOT` when it points to that repository.
-3. A packaged folder containing both CLI scripts.
-4. `E:\desktop\paper-scraper-doi` as the local fallback.
-5. If none exist, ask the user for the repository path.
+3. A packaged folder containing the same scripts.
+4. If none exist, ask the user for the repository path.
 
-Use `.venv\Scripts\python.exe` when it exists; otherwise create the venv and install `requirements.txt`.
+Use `.venv\Scripts\python.exe` when it exists. The full fallback protocol
+requires Zotero to be open and its Codex connection available. Do not start a
+real download, read cookies, request a password, or attempt to handle a CAPTCHA
+without the user's explicit request and interaction.
 
-## Route
+## Batch protocol
 
-Use `sd_institutional_skill.py` for ScienceDirect institutional access when the user mentions ScienceDirect, Elsevier, institution/school access, cookies, Edge/Chrome login, DOI batch download, or when the input is clearly dominated by Elsevier DOI values such as `10.1016/...`.
+Run the following sequence in this order. Keep the CLI's printed run directory
+as `<run-dir>` and do not edit the user's original input file.
 
-Use `paper_skill.py` for open-access resource discovery and download assistance when the user asks for OA/open-access PDFs, public-source PDFs, no login, no cookies, or mixed publisher lists where institutional access is not requested.
+1. Start the project workflow first:
 
-When intent is unclear, infer from wording and input. Ask only if the choice changes safety or expected access path.
+   ```powershell
+   .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
+   ```
 
-For noisy AI recommendations, title-only lists, short citations, or beginner users, route ScienceDirect requests through preflight first:
+2. Inspect `<run-dir>\working\manual_retry.csv`. If it has data rows, pause
+   once for the user to finish the required browser action. After the user says
+   it is ready, run exactly one retry:
 
-```powershell
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<paper list>" --out results --beginner --preflight
-```
+   ```powershell
+   .\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
+   ```
 
-Download only after reporting `doi_intake_preview.csv`, `merged_doi_input.csv`, `00_给研究生查看\paper_index.csv`, and excluding `needs_review` rows.
+   Do not retry a second time. If `manual_retry.csv` has no data rows, do not
+   run `paper_batch.py resume` for this step.
 
-## ScienceDirect Institutional Workflow
+3. Read `<run-dir>\working\zotero_fallback.csv` after the one permitted
+   retry. If it has no data rows, create
+   `<run-dir>\working\zotero_results.csv` with only this header, preserving
+   any existing file and never adding data rows:
 
-Run `sd_institutional_skill.py` with one or more inputs:
+   ```text
+   task_id,zotero_item_id,attachment_path,status,reason
+   ```
 
-```powershell
-Set-Location "<resolved repository root>"
-.\.venv\Scripts\python.exe sd_institutional_skill.py --input "D:\Papers\papers.xlsx" --out "D:\Literature\ScienceDirect"
-```
+   Then run `paper_batch.py finalize` with that header-only file and report the
+   final `pdfs\` directory:
 
-Other input forms:
+   ```powershell
+   .\.venv\Scripts\python.exe paper_batch.py finalize --run-dir "<run-dir>" --zotero-results "<run-dir>\working\zotero_results.csv"
+   ```
 
-```powershell
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<DOI or paper list>" --out results
-.\.venv\Scripts\python.exe sd_institutional_skill.py --folder "D:\PapersToDownload" --out results
-```
+4. When `zotero_fallback.csv` has data rows, check the connection before any
+   Zotero write with `library_search(entity:"libraries", mode:"list")`.
+   If this call cannot list a usable library, write one result row for every
+   fallback `task_id` with status `zotero_unavailable`, an empty item/path, and
+   a concise connection reason. Keep the batch resumable, run
+   `paper_batch.py finalize` to publish the unresolved report, and do not
+   describe the batch as complete.
 
-Use `--beginner --preflight` when the user asks for a safe preview or gives messy recommendations. Preflight writes intake/review outputs and does not download PDFs or supplement files. Use `--dry-run` only when the user specifically wants ScienceDirect DOI metadata/PII resolution without PDF download. Use `--resolve-title-only` only when the user explicitly wants file rows without DOI to be resolved by title.
+5. When a library is available, create one temporary collection named
+   `Codex下载回退_YYYYMMDD_HHMMSS`. Keep this collection and every item in it
+   after reconciliation; never delete either as cleanup.
 
-When PDF downloading is active, ScienceDirect supplementary materials are downloaded by default into `supplements\` and summarized in `supplement_download_report.csv`. These supplement outputs are generated only when PDF download and supplement download are both active. Add `--no-download-supplements` only when the user explicitly wants PDFs without supplementary files. Explain supplement status `not_found` as no detectable supplement links, not as a PDF failure.
+6. Resolve the entire fallback list before importing anything:
 
-Report preflight outputs separately from formal download outputs. Preflight centers on `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, `run_summary.txt`, and `00_给研究生查看\`; do not report `doi_batch_resolved.xlsx` as a preflight output. Formal downloads also report `doi_batch_resolved.xlsx`, `pdf_download_report.csv`, `pdfs\`, `library_index.csv`, and `00_给研究生查看\paper_index.csv/xlsx`. When generated, also report `supplement_download_report.csv` plus `supplements\`.
+   - Search every DOI with `library_search` first. Add already-existing item
+     IDs to the temporary collection in one batch with
+     `library_update(kind:"collections")`.
+   - Gather only DOI values with no existing item, de-duplicate them, then
+     import that batch once with `library_import(kind:"identifiers")` into the
+     temporary collection. Do not import a DOI that was already found.
+   - For a row without a DOI, accept an existing match only when its normalized
+     title is exactly the same and either the year or the first author also
+     matches. Otherwise write `metadata_uncertain` for that task, with no
+     import and no guessed item ID.
 
-Every ScienceDirect institutional run writes a student handoff folder:
+   Confirm Zotero writes by batch (collection creation, batch membership,
+   identifier import, and later tags), never one confirmation per paper.
+
+7. Detect existing PDF attachments for all resolved items. For an item that
+   already has a valid PDF, record `existing_pdf` and do not ask Zotero to
+   search again. For all remaining item IDs, issue one
+   `zotero_script(mode:"write")` operation, one time for the batch, using the
+   compatibility guard and undo operation below. This is the only available-PDF
+   request for each item in the batch.
+
+   ```javascript
+   const createdIds = [];
+   env.addUndoStep(async () => {
+     for (const id of createdIds) {
+       const attachment = await Zotero.Items.getAsync(id);
+       if (attachment && !attachment.deleted) await attachment.eraseTx();
+     }
+   });
+   if (typeof Zotero.Attachments.addAvailablePDF !== "function") {
+     return { ok: false, reason: "zotero_api_unavailable", rows: [] };
+   }
+   const rows = [];
+   for (const itemId of itemIds) {
+     const item = await Zotero.Items.getAsync(itemId);
+     let attachment = null;
+     for (const attachmentId of item.getAttachments()) {
+       const candidate = await Zotero.Items.getAsync(attachmentId);
+       if (candidate.isPDFAttachment() && await candidate.fileExists()) {
+         attachment = candidate;
+         break;
+       }
+     }
+     let status = "existing_pdf";
+     if (!attachment) {
+       attachment = await Zotero.Attachments.addAvailablePDF(item);
+       status = attachment ? "downloaded" : "no_pdf";
+       if (attachment) createdIds.push(attachment.id);
+     }
+     rows.push({
+       itemId,
+       status,
+       attachmentPath: attachment ? attachment.getFilePath() : "",
+       reason: attachment ? "" : "no_available_pdf",
+     });
+   }
+   return { ok: true, rows };
+   ```
+
+   If the compatibility guard returns `zotero_api_unavailable`, write that
+   status for every unresolved item in this Zotero batch, with an empty
+   `attachment_path`; do not claim a PDF was downloaded.
+
+8. Write `<run-dir>\working\zotero_results.csv` with exactly these five fields
+   in this order and no others:
+
+   ```text
+   task_id,zotero_item_id,attachment_path,status,reason
+   ```
+
+   The only statuses are `existing_pdf`, `downloaded`, `metadata_uncertain`,
+   `zotero_unavailable`, `zotero_api_unavailable`, and `no_pdf`. A non-empty
+   `attachment_path` must be an absolute Windows path to an existing ordinary
+   PDF file. Reject a relative path, directory, reparse point, or non-PDF file;
+   record `no_pdf` with the rejection reason instead. Do not move, rename,
+   delete, or modify a Zotero attachment.
+
+9. Batch-apply the `codex-download-success` tag to items with `existing_pdf` or
+   `downloaded`, and `codex-download-failed` to items with `metadata_uncertain`,
+   `zotero_unavailable`, `zotero_api_unavailable`, or `no_pdf`. Preserve the
+   temporary collection and its items.
+
+10. Finalize exactly once after `zotero_results.csv` is ready:
+
+   ```powershell
+   .\.venv\Scripts\python.exe paper_batch.py finalize --run-dir "<run-dir>" --zotero-results "<run-dir>\working\zotero_results.csv"
+   ```
+
+   `finalize` validates and non-destructively copies accepted PDFs into
+   `<run-dir>\pdfs\`. It must not overwrite an existing output: filename
+   conflicts are handled by the project's reconcile rules. Report the final
+   `pdfs\` directory and unresolved reasons separately.
+
+## Output tree
 
 ```text
-00_给研究生查看\
-├── README_先看我.txt
-├── paper_index.csv
-├── paper_index.xlsx
-└── 失败项_下一步处理.csv
+results\paper_batch_YYYYMMDD_HHMMSS\
+├── pdfs\
+├── reports\
+│   ├── final_manifest.csv
+│   ├── final_manifest.xlsx
+│   ├── failed.csv
+│   └── run_summary.txt
+└── working\
+    ├── manual_retry.csv
+    ├── zotero_fallback.csv
+    └── zotero_results.csv
 ```
 
-Explain that this folder indexes PDFs and supplements by relative path and does not copy downloaded files. Use `失败项_下一步处理.csv` before retrying failed DOI values.
+`pdfs\` is the final non-destructive copy destination. `working\` holds the
+resumable handoff files, and `reports\` is the audit trail.
 
-## OA Resource Assistance Workflow
+## ScienceDirect and open-access routes
 
-Run `paper_skill.py` for public metadata and open-access PDF candidates only:
+For a ScienceDirect or Elsevier request that does not need the unified batch,
+use `sd_institutional_skill.py`. For noisy beginner lists, start with
+`--beginner --preflight`; formal PDF runs may produce
+`supplement_download_report.csv` and `supplements\`. Add
+`--no-download-supplements` only when the user explicitly wants PDFs without
+supplementary files.
 
-```powershell
-Set-Location "<resolved repository root>"
-.\.venv\Scripts\python.exe paper_skill.py --input "D:\Papers\papers.txt" --out "D:\Literature\OA" --email "you@example.com"
-```
-
-For noisy copied recommendations, prefer dry-run first:
-
-```powershell
-.\.venv\Scripts\python.exe paper_skill.py --text "<copied paper list>" --out "D:\Literature\OA" --email "you@example.com" --dry-run
-```
-
-Report `metadata\manifest.csv`, `metadata\manifest.json`, `failed\duplicates.csv`, downloaded PDFs, duplicates, and unresolved rows without accessible open-access PDFs.
+For open-access candidate assistance without institutional access, use
+`paper_skill.py` and report unresolved rows honestly. Do not broaden the source
+set beyond the project's documented routes.
 
 ## Safety
 
-- Do not print, paste, summarize, or expose cookie values.
-- Do not ask for passwords; browser login is the only login surface.
-- Do not use institutional cookies or browser sessions in the OA resource assistance workflow.
-- Treat `needs_review`, `response_not_pdf`, CAPTCHA, and no-entitlement rows as real unresolved outcomes.
-- If downloads fail, inspect reports before retrying; do not repeatedly hammer ScienceDirect.
+- Do not expose cookie values, passwords, session data, or credential files.
+- Do not automatically solve or bypass a CAPTCHA; pause only for the one
+  user-handled retry described above.
+- Do not overwrite original inputs, existing PDFs, Zotero attachments, or an
+  existing `zotero_results.csv`.
+- Never report an unavailable Zotero fallback as a completed download batch.

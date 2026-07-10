@@ -149,6 +149,18 @@ Example title copied from a bibliography
 
 这个流程不会读取 `cookies.json`，不会使用机构登录。
 
+## 统一批处理：项目优先，Zotero 仅处理失败项
+
+当 DOI 与题名混合列表需要先走项目已有流程、再把剩余失败项交给 Zotero 时，可在 Codex 中使用这套批处理。开始前必须打开 Zotero，并确认 Codex 连接可用。
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
+.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
+.\.venv\Scripts\python.exe paper_batch.py finalize --run-dir "<run-dir>" --zotero-results "<run-dir>\working\zotero_results.csv"
+```
+
+`start` 创建批次；只有 `working\manual_retry.csv` 出现数据行且你已在浏览器完成所需操作时，才运行一次 `resume`；随后由 Codex 处理 `zotero_fallback.csv`，再用 `finalize` 汇总。输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：最终 PDF 在 `pdfs\`，报告在 `reports\`，可恢复文件在 `working\`，其中包括 `zotero_results.csv`。临时 Zotero 集合会保留供复核；最终流程只复制有效 PDF，不移动原附件，也不覆盖已有 PDF。
+
 ## 图形界面用法
 
 如果你不想使用 Codex 或命令行，可以双击：

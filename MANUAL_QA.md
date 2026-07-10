@@ -143,6 +143,33 @@ Expected:
 - The package contains `skills\sciencedirect-doi-download\references\failure-reasons.md`.
 - `docs\sciencedirect_skill_beginner_guide.md`, `README.md`, `README_zh.md`, `WINDOWS_UI_README.md`, and `MANUAL_QA.md` are included.
 
+## 10. Unified Batch With Zotero Fallback
+
+Do not perform these seven checks as part of the default unittest suite. They
+require a deliberately prepared local Zotero library and, where applicable,
+the user's own authorized access. Do not use this checklist to test network,
+browser, or GUI behavior automatically.
+
+1. **Project-only success:** use rows resolved by the project workflow; verify
+   `zotero_results.csv` has only the required header and `finalize` reports the
+   final `pdfs\` directory.
+2. **One manual retry:** prepare one row in `manual_retry.csv`; verify that the
+   user action is requested once and `resume` is run once, not repeatedly.
+3. **Existing Zotero item and PDF:** use a fallback DOI already in Zotero with
+   a valid attachment; verify a preserved temporary collection, status
+   `existing_pdf`, and one non-destructive final copy.
+4. **Zotero available-PDF request:** use a fallback item without an attachment;
+   verify a single batch available-PDF request and status `downloaded` or
+   `no_pdf`, never a per-paper confirmation loop.
+5. **Uncertain title:** use a no-DOI row whose normalized title does not also
+   agree on year or first author; verify `metadata_uncertain` and no import.
+6. **Unavailable Zotero is resumable:** close or disconnect Zotero before the
+   fallback stage; verify every fallback row is `zotero_unavailable`, reports
+   remain recoverable, and the batch is not described as complete.
+7. **No overwrite and idempotency:** prepare same-name PDFs and rerun the same
+   batch; verify final copies are not overwritten, duplicates are reconciled,
+   and existing Zotero items are not imported again.
+
 ## Cleanup
 
 Run after institutional-access tests if this machine should not keep cached browser state:

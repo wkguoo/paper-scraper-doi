@@ -840,3 +840,14 @@
 - 生成的输出文件：仅在 `fallback_count == 0`、无需先重试且目标不存在时创建 `working/zotero_results.csv`，编码为 UTF-8-SIG，唯一数据行为表头 `task_id,zotero_item_id,attachment_path,status,reason`；不会覆盖已有结果文件。测试临时输出仍位于忽略的 `.codex-test-tmp/`。
 - 如何检查是否成功：严格 TDD 先观察命令格式、错误映射、缺失表头文件和文件写入异常用例失败，再实现至 `BatchCliTests` 12 项通过；PowerShell help 命令从另一临时工作目录执行成功；Task4 38 项、Task5 24 项通过；全套 280 项通过（跳过 2 项）；help 中文正常，compileall 退出码 0。
 - 注意事项或潜在风险：错误提示只允许显示 `ERROR_HINTS` 白名单中的首个安全错误码，绝不回显异常余文；CSV 使用排他创建避免并发覆盖，但磁盘权限或目录错误仍会安全返回错误码 2。未联网、未读取真实 Cookie、未操作真实 Zotero 附件、未重新打包。
+
+## 2026-07-11 04:49:37 +08:00 — Task 7 Zotero 批处理 Skill 协议
+
+- 本次任务目标：为 `paper-download` 增加项目优先、仅对失败项执行 Zotero 回退的可恢复批处理协议，并补齐初学者使用说明、人工 QA 与离线合同测试。
+- 新增、修改或删除的文件：修改 `skills/paper-download/SKILL.md`、`tests/test_skills_packaging.py`、`README.md`、`README_zh.md`、`MANUAL_QA.md`、`CHANGELOG.md`；更新本地 `.superpowers/sdd/task-7-report.md`。未删除文件，未修改原始输入、PDF、Cookie 或打包文件。
+- 具体修改内容：Skill 规定 `paper_batch.py start`、有数据时一次人工暂停与一次 `resume`、读取 `zotero_fallback.csv`、批量 Zotero 查重/导入/集合/标签、一次可用 PDF 请求、五列 `zotero_results.csv` 与 `finalize`；覆盖空回退、连接不可用、元数据不确定、PDF 路径校验和非覆盖复制。双语 README 新增 start/resume/finalize、输出树、临时集合和只复制 PDF 的说明；MANUAL_QA 新增七项离线人工验收场景；测试增加 Skill 合同断言和禁止字符串检查。
+- 修改原因：旧 Skill 不能把项目失败项交给 Zotero，也未定义一次重试、批量确认、结果 CSV 或不可用时的可恢复行为。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_skills_packaging -v`；`..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`；使用 `rg` 检查 Skill、README 和 MANUAL_QA 中的批处理字段及禁止字符串。
+- 生成的输出文件：真实使用时由 `paper_batch.py` 在 `results\\paper_batch_YYYYMMDD_HHMMSS\\` 生成 `pdfs\\`、`reports\\` 和 `working\\zotero_fallback.csv/zotero_results.csv`；本次仅产生测试临时目录，未生成真实下载文件。
+- 如何检查是否成功：严格 TDD 的 RED 阶段中新增合同测试因旧 Skill 缺少 `paper_batch`/Zotero 协议而失败 25 项；实现后聚焦测试 18 项通过，全量离线测试 281 项通过（跳过 2 项）；文本扫描确认关键协议字段存在且 Skill 不含三项禁止字符串。
+- 注意事项或潜在风险：未联网、未调用真实 Zotero、未读取 Cookie、未处理真实 CAPTCHA、未打包。真实 Zotero 可用 PDF 的结果仍取决于用户的本地文库、连接状态和合法可访问来源；不可用时必须保持批次可恢复，不能报为完成。
