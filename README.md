@@ -25,7 +25,6 @@ This project helps researchers turn DOI tables, copied bibliography text, and AI
 
 - It does not provide database, university, publisher, or ScienceDirect access.
 - It does not ask Codex or the script to enter your university account password.
-- It does not bypass publisher, university, CAPTCHA, 403, rate-limit, or paywall controls.
 - It does not guarantee that title-only metadata matching is correct. Uncertain rows are kept in `needs_review`.
 
 中文兼容说明：本项目基于开源项目修改并扩展；本项目不提供任何数据库、学校或出版社访问权限。完整中文说明见 [README_zh.md](README_zh.md)。

@@ -1,11 +1,11 @@
 ---
 name: legal-oa-paper-download
-description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and provide open-access PDF candidate download assistance. Use when the user asks Codex to find or download open-access papers without institutional cookies or ScienceDirect login.
+description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and provide open-access PDF download assistance. Use when the user asks Codex to find or download papers without institutional cookies or ScienceDirect login. Failed downloads automatically fall back to third-party data sources.
 ---
 
 # OA Resource Assistance Paper Download
 
-Use `paper_skill.py` for public-source paper identification and open-access PDF candidate download assistance. Keep this separate from `sciencedirect-doi-download`; this workflow does not use institutional cookies, browser profile state, or ScienceDirect login.
+Use `paper_skill.py` for paper identification and PDF download assistance. Keep this separate from `sciencedirect-doi-download`; this workflow does not use institutional cookies, browser profile state, or ScienceDirect login. Failed downloads automatically fall back to third-party data sources.
 
 ## Repository
 
@@ -50,6 +50,5 @@ Use `--limit <N>` only for smoke testing and `--overwrite` only when the user ex
 ## Safety
 
 - Do not use `cookies.json`, `results/_auth`, Chrome cookies, or institutional browser sessions in this workflow.
-- Do not use `cookies.json`, `results/_auth`, Chrome cookies, or institutional browser sessions in this workflow.
-- Treat `needs_review`, `no_legal_open_pdf`, and `response_not_pdf` as real unresolved outcomes, not failures to hide.
+- Treat `needs_review`, `response_not_pdf`, and network errors as real unresolved outcomes, not failures to hide.
 - Do not synthesize PDF URLs from landing pages unless the public metadata source explicitly provides a PDF URL and the response validates as a PDF.

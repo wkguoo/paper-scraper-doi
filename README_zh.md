@@ -11,7 +11,7 @@
 | 使用场景 | 推荐入口 | 说明 |
 | --- | --- | --- |
 | 你有学校/机构的 ScienceDirect 或 Elsevier 权限，要下载 `10.1016/...` 这类论文 | `paper-download` 或 `sciencedirect-doi-download` | 使用你的机构登录状态或 Cookie 下载有权限访问的 ScienceDirect PDF。 |
-| 你有混合出版社论文列表，只想查找公开开放获取 PDF 候选资源 | `paper-download` 或 `legal-oa-paper-download` | 不使用机构 Cookie，不绕过付费墙，仅尝试识别并下载公开开放获取的 PDF 候选资源。 |
+| 你有混合出版社论文列表，想查找开放获取 PDF 候选资源 | `paper-download` 或 `legal-oa-paper-download` | 不使用机构 Cookie；先尝试公开 OA 下载，失败后自动回退到第三方数据源。 |
 | 你不想写命令，只想点按钮 | `start_paper_scraper_ui.bat` | 打开 Windows Tkinter 图形界面。 |
 
 ## 这个工具能做什么
@@ -26,8 +26,7 @@
 ## 这个工具不能做什么
 
 - 不能替你输入学校账号密码。
-- 不能绕过学校、出版社或 ScienceDirect 的访问权限。
-- 不能自动完成 CAPTCHA、人机验证、403 或限速。
+- 不能自动完成 CAPTCHA 或人机验证。
 - 不能保证题名-only 的模糊匹配 100% 正确；不确定的记录会进入 `needs_review`。
 
 ## 新手最快开始

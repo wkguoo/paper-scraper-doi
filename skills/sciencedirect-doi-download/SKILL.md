@@ -116,7 +116,7 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 ```
 
 - If ScienceDirect shows CAPTCHA, wait for the user to complete it in the opened browser, then continue polling instead of restarting the job repeatedly.
-- If institutional access still fails, inspect `pdf_download_report.csv` and `run_summary.json`, then use only legal public sources such as publisher OA pages, author/lab pages, or Unpaywall.
+- If institutional access still fails, inspect `pdf_download_report.csv` and `run_summary.json`. The tool will automatically fall back to third-party data sources for failed PDFs.
 - If Chinese text in `run_summary.txt` looks garbled in PowerShell, inspect the CSV/XLSX reports or open the file in an editor with UTF-8 support.
 - If `review_hint` says to补 DOI or完整引用, report that row as unresolved and ask for DOI/title/journal/year/volume/pages before retrying.
 - If supplement status is `not_found`, explain that no detectable supplement links were exposed on the article page; do not count it as a PDF failure.

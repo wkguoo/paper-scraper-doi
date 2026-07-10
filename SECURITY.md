@@ -18,4 +18,4 @@ Please include a concise description, affected files or commands, and safe repro
 
 ## Out of Scope
 
-This project does not accept requests to bypass access controls, defeat CAPTCHA or human verification, work around 403/rate-limit responses, or otherwise obtain materials without authorization.
+This project does not accept requests to defeat CAPTCHA or human verification. Please do not paste cookies, passwords, PDFs, or institution screenshots into issue reports.

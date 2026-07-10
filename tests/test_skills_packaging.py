@@ -31,6 +31,7 @@ class SkillPackagingTests(unittest.TestCase):
                 "open-access",
                 "download assistance",
                 "without institutional cookies",
+                "third-party",
             ],
         }
 
