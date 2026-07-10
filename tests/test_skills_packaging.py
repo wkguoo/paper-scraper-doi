@@ -89,6 +89,30 @@ class SkillPackagingTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
+    def test_paper_download_skill_stops_for_unavailable_zotero_write_confirmation(self) -> None:
+        text = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        required = (
+            "Zotero-readable does not imply Zotero writes can show a confirmation UI.",
+            "collection_update(action:\"create\", name:\"Codex下载回退_YYYYMMDD_HHMMSS\", libraryID:<libraryID>)",
+            "Zotero MCP confirmation UI is unavailable for this Codex turn.",
+            "Start a new Codex turn from Zotero and try again.",
+            "stop all remaining Zotero writes",
+            "Do not use `zotero_script` to bypass normal collection, import, or tag confirmation.",
+            "start one new turn from the Zotero Codex panel and say “继续该批次”",
+            "Preserve the run directory, `zotero_fallback.csv`, and every result already written.",
+            "restart at the library check and collection creation",
+            "Do not rerun project downloads or execute a second `resume`.",
+            "`zotero_script(mode:\"write\")` remains limited to the single batch `Zotero.Attachments.addAvailablePDF` action with `env.addUndoStep`.",
+            "write `zotero_unavailable` rows and keep the batch recoverable",
+        )
+        normalized_text = re.sub(r"\s+", " ", text)
+        for phrase in required:
+            with self.subTest(phrase=phrase):
+                self.assertIn(re.sub(r"\s+", " ", phrase), normalized_text)
+
     def test_paper_download_skill_has_unambiguous_zotero_forward_protocol(self) -> None:
         skill_text = (
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md"

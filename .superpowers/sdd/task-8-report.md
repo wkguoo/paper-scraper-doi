@@ -112,3 +112,27 @@ Review verification:
   returned `No active library available`. No collection, item, tag, attachment,
   or PDF write was attempted. Live acceptance remains safely resumable after
   the user opens Zotero and activates a personal library.
+
+## Live Zotero write-confirmation acceptance evidence
+
+The following live evidence was supplied for this acceptance repair; this
+implementation turn did not call Zotero or perform any external write:
+
+- `zotero_script(read)` explicitly reported `envLibraryID=1` and
+  `userLibraryID=1`, so the personal library was readable.
+- `library_search` with explicit `libraryID=1` listed 1,244 records.
+- Candidate item `304` already had a PDF; candidate item `349` had no PDF; the
+  tested PLOS DOI was not in the library.
+- The first normal collection-creation request returned `Zotero MCP
+  confirmation UI is unavailable for this Codex turn. Start a new Codex turn
+  from Zotero and try again.` Zotero did not execute the collection creation,
+  so the acceptance result is zero completed Zotero writes.
+
+This is a confirmation-UI boundary, not a read-access failure. The Skill now
+stops all remaining normal writes at that first collection-create error, does
+not use `zotero_script` to bypass collection/import/tag confirmation, and
+preserves the run directory and fallback evidence. It asks once for a new turn
+started from Zotero; that turn restarts at library check and collection
+creation, without rerunning project downloads or a second `resume`. If the
+Zotero-origin turn remains unable to write, it produces recoverable
+`zotero_unavailable` results.

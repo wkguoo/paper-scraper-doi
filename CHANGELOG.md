@@ -915,3 +915,14 @@
 - 生成的输出文件：生成一份个人 Skill 备份并更新个人 `paper-download/SKILL.md`；未生成或下载 PDF，未创建 Zotero 集合或条目。
 - 如何检查是否成功：目标 Skill 哈希与项目源文件一致；环境变量指向当前隔离工作树；Zotero 不可用时未发起任何写入、导入或附件检索。
 - 注意事项或潜在风险：需要打开 Zotero 并激活个人文库后才能继续真实验收。当前批次保持未完成且可恢复；未读取密码/Cookie，未自动处理 CAPTCHA，未打包。
+
+## 2026-07-11 07:28:10 +08:00 — Zotero 写确认 UI 验收修复
+
+- 本次任务目标：根据真实 Zotero 验收证据，修复 `paper-download` Skill 对“可读但普通写入确认 UI 不可用”的处理，保持批次可恢复且不绕过确认。
+- 新增、修改或删除的文件：修改 `skills/paper-download/SKILL.md`、`tests/test_skills_packaging.py`、`README.md`、`README_zh.md`、`MANUAL_QA.md`、`.superpowers/sdd/task-8-report.md` 和 `CHANGELOG.md`；未新增或删除产品代码文件，未修改原始数据、PDF、Cookie 或打包文件。
+- 具体修改内容：先新增 Skill 包装合同测试，要求精确识别 `Zotero MCP confirmation UI is unavailable for this Codex turn. Start a new Codex turn from Zotero and try again.`；Skill 规定首次普通写入 `collection_update(action:"create", ...)` 出现该错误后立即停止其余 Zotero 写入，不得用 `zotero_script` 绕过 collection/import/tag 确认。它只提示一次：从 Zotero Codex 面板新开回合并说“继续该批次”；保留 `run-dir`、`zotero_fallback.csv` 和已有结果，从 library check/collection creation 继续，不重跑项目下载、不执行第二次 `resume`。`zotero_script(mode:"write")` 仍仅可用于带 `env.addUndoStep` 的单次 `Zotero.Attachments.addAvailablePDF` 批处理；新回合仍不可写时写入 `zotero_unavailable` 结果并保持可恢复。README 英中与 MANUAL_QA 同步加入该边界和验收场景。
+- 修改原因：真实证据显示 `envLibraryID=1`、`userLibraryID=1`，且显式 `libraryID=1` 可列出 1,244 条，说明个人文库可读；候选 item `304` 已有 PDF、`349` 无 PDF、PLOS DOI 未入库。但首次 `collection_update` 返回确认 UI 不可用，Zotero 未执行集合创建，完成写入数为 0。这是普通写确认 UI 的回合来源限制，不是文库读取失败。
+- 如何运行：先运行 `..\..\.venv\Scripts\python.exe -m unittest tests.test_skills_packaging.SkillPackagingTests.test_paper_download_skill_stops_for_unavailable_zotero_write_confirmation -v`；再运行 `..\..\.venv\Scripts\python.exe -m unittest tests.test_skills_packaging -v`、`..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`，最后运行 `git diff --check`。
+- 生成的输出文件：本次只修改上述文档和离线合同测试；真实运行时，若 Zotero-origin 回合仍无法写入，将按既有恢复规则在 `<run-dir>\working\zotero_results.csv` 或时间戳 retry 文件写入 `zotero_unavailable` 行，不覆盖原有结果。
+- 如何检查是否成功：RED 阶段该 focused 测试因缺少 11 个合同片段失败；补充协议后同一 focused 测试通过。完整测试与差异检查结果见本次提交前验证；`MANUAL_QA.md` 的第 8 项可在授权的 Zotero 面板中复核一次提示、零后续写入和可恢复结果。
+- 注意事项或潜在风险：本回合未联网、未调用 Zotero、未读写 Cookie、未下载论文、未打包，也没有以 `zotero_script` 绕过普通写确认。必须从 Zotero 的 Codex 面板发起新回合；若该回合仍没有确认 UI，不能反复请求新回合，应生成可恢复的 `zotero_unavailable` 结果。

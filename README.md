@@ -122,6 +122,12 @@ rows and you have completed the required browser action. The batch output is
 Zotero collection for review. Finalization copies valid PDFs only; it never
 moves Zotero attachments or overwrites an existing PDF.
 
+Zotero reads do not prove that a desktop-origin Codex task can approve writes.
+When Zotero asks for write confirmation, start the task from Zotero's Codex
+panel. If a collection creation reports that its confirmation UI is unavailable,
+start one new Zotero-origin turn and say `继续该批次`; keep the existing run
+directory and do not rerun downloads or `resume`.
+
 ## Outputs
 
 ScienceDirect batch runs create a timestamped result folder containing reports such as:

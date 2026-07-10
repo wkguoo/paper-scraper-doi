@@ -161,6 +161,8 @@ Example title copied from a bibliography
 
 `start` 创建批次；只有 `working\manual_retry.csv` 出现数据行且你已在浏览器完成所需操作时，才运行一次 `resume`；随后由 Codex 处理 `zotero_fallback.csv`，再用 `finalize` 汇总。输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：最终 PDF 在 `pdfs\`，报告在 `reports\`，可恢复文件在 `working\`，其中包括 `zotero_results.csv`。临时 Zotero 集合会保留供复核；最终流程只复制有效 PDF，不移动原附件，也不覆盖已有 PDF。
 
+能读取 Zotero 个人文库，不代表从桌面 Codex 发起的回合能显示写入确认 UI。涉及 Zotero 写入确认时，请从 Zotero 的 Codex 面板发起回合；若创建集合提示确认 UI 不可用，请仅新开一次 Zotero 发起的回合并说“继续该批次”。保留原有 `run-dir`，不要重新下载项目论文，也不要再次运行 `resume`。
+
 ## 图形界面用法
 
 如果你不想使用 Codex 或命令行，可以双击：

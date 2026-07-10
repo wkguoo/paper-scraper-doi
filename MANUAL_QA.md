@@ -169,6 +169,18 @@ browser, or GUI behavior automatically.
 7. **No overwrite and idempotency:** prepare same-name PDFs and rerun the same
    batch; verify final copies are not overwritten, duplicates are reconciled,
    and existing Zotero items are not imported again.
+8. **Write-confirmation UI is unavailable:** begin from desktop Codex with a
+   readable personal library, then let the first
+   `collection_update(action:"create", ...)` return `Zotero MCP confirmation UI
+   is unavailable for this Codex turn. Start a new Codex turn from Zotero and
+   try again.` Verify that the failed attempt performs zero Zotero writes after
+   the error, does not substitute `zotero_script` for collection/import/tag
+   confirmation, and prompts once to start a Zotero-panel turn saying
+   `继续该批次`. Confirm the new turn restarts from library check and collection
+   creation while retaining the run directory and `zotero_fallback.csv`, without
+   rerunning project downloads or a second `resume`. If that new turn is still
+   not writable, verify `zotero_unavailable` result rows and a recoverable,
+   unfinished batch.
 
 ## Cleanup
 

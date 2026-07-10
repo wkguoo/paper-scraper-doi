@@ -103,6 +103,31 @@ input or any project-generated pending CSV.
    Capture the returned `collectionId`. Keep this collection and all its items
    after the task.
 
+   ### Normal-write confirmation gate
+
+   Zotero-readable does not imply Zotero writes can show a confirmation UI.
+   The temporary collection creation above is the first normal Zotero write for
+   this attempt. If it returns this exact message:
+
+   ```text
+   Zotero MCP confirmation UI is unavailable for this Codex turn. Start a new Codex turn from Zotero and try again.
+   ```
+
+   stop all remaining Zotero writes immediately. Do not perform collection
+   assignments, imports, tags, or attachment requests in this turn. Do not use
+   `zotero_script` to bypass normal collection, import, or tag confirmation.
+
+   Prompt the user only once for this batch: start one new turn from the Zotero
+   Codex panel and say “继续该批次”. Preserve the run directory,
+   `zotero_fallback.csv`, and every result already written. The Zotero-origin
+   turn must restart at the library check and collection creation. Do not rerun
+   project downloads or execute a second `resume`.
+
+   If the new Zotero-origin turn receives the same confirmation-UI error, do
+   not request another turn or attempt any further Zotero write. Use the local
+   result-file recovery rules to write `zotero_unavailable` rows and keep the
+   batch recoverable.
+
 7. Resolve every fallback item before requesting PDFs:
 
    - Normalize each DOI by trimming whitespace, removing a DOI URL or `doi:`
@@ -144,6 +169,10 @@ input or any project-generated pending CSV.
    PDF, generate `existing_pdf` and do not request another. For all remaining
    item IDs, make one `zotero_script(mode:"write")` call for the entire batch.
    Keep the compatibility guard and undo step exactly as follows:
+
+   `zotero_script(mode:"write")` remains limited to the single batch
+   `Zotero.Attachments.addAvailablePDF` action with `env.addUndoStep`. It is not
+   a fallback for normal collection, import, or tag writes.
 
    ```javascript
    const createdIds = [];
