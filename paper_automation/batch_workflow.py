@@ -8,6 +8,17 @@ from datetime import datetime
 from pathlib import Path
 
 
+_WINDOWS_INVALID_CHARS = frozenset('<>:"|?*')
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
+
 @dataclass(frozen=True)
 class BatchPaths:
     root: Path
@@ -21,16 +32,59 @@ class BatchPaths:
     zotero_results: Path
 
 
+def _validate_path_component(value: str, *, error: str, clean_spaces: bool = False) -> str:
+    raw = str(value)
+    path = Path(raw)
+    if (
+        not raw
+        or path.is_absolute()
+        or bool(path.drive)
+        or "/" in raw
+        or "\\" in raw
+        or ".." in raw
+        or any(character in _WINDOWS_INVALID_CHARS or ord(character) < 32 for character in raw)
+    ):
+        raise ValueError(error)
+
+    cleaned = "_".join(raw.strip().split()) if clean_spaces else raw
+    if (
+        not cleaned
+        or cleaned in {".", ".."}
+        or cleaned != cleaned.rstrip(". ")
+        or cleaned.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+    ):
+        raise ValueError(error)
+    return cleaned
+
+
 def create_batch_paths(
     output_root: str | Path,
     run_name: str | None = None,
     now: datetime | None = None,
 ) -> BatchPaths:
     stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
-    root = Path(output_root).expanduser().resolve() / (run_name or f"paper_batch_{stamp}")
+    prefix = "paper_batch" if run_name is None else _validate_path_component(
+        run_name,
+        error="invalid_run_name",
+        clean_spaces=True,
+    )
+    output = Path(output_root).expanduser().resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    base_name = f"{prefix}_{stamp}"
+    counter = 1
+    while True:
+        name = base_name if counter == 1 else f"{base_name}_{counter}"
+        root = output / name
+        try:
+            root.mkdir()
+        except FileExistsError:
+            counter += 1
+        else:
+            break
+
     pdfs, reports, working = root / "pdfs", root / "reports", root / "working"
-    for path in (root, pdfs, reports, working):
-        path.mkdir(parents=True, exist_ok=True)
+    for path in (pdfs, reports, working):
+        path.mkdir()
     return BatchPaths(
         root=root,
         pdfs=pdfs,
@@ -72,17 +126,61 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _same_pdf_content(path: Path, expected_hash: str) -> bool:
+    return is_valid_pdf(path) and _sha256(path) == expected_hash
+
+
+def _path_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _copy_exclusively(source: Path, target: Path) -> bool:
+    with source.open("rb") as source_handle:
+        try:
+            target_handle = target.open("xb")
+        except FileExistsError:
+            return False
+        try:
+            with target_handle:
+                shutil.copyfileobj(source_handle, target_handle)
+        except BaseException:
+            target.unlink(missing_ok=True)
+            raise
+    try:
+        shutil.copystat(source, target)
+    except OSError:
+        pass
+    return True
+
+
 def copy_pdf_safely(source: str | Path, destination_dir: str | Path, filename: str) -> Path:
     source_path = Path(source).expanduser().resolve()
     if not is_valid_pdf(source_path):
         raise ValueError("not_pdf_response")
-    destination = Path(destination_dir)
+    safe_filename = _validate_path_component(filename, error="invalid_filename")
+    destination = Path(destination_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    target = destination / filename
+    target = destination / safe_filename
     source_hash = _sha256(source_path)
-    if target.exists():
-        if is_valid_pdf(target) and _sha256(target) == source_hash:
+
+    while True:
+        if _path_exists(target):
+            if _same_pdf_content(target, source_hash):
+                return target
+            break
+        if _copy_exclusively(source_path, target):
             return target
-        target = target.with_name(f"{target.stem}_{source_hash[:8]}{target.suffix}")
-    shutil.copy2(source_path, target)
-    return target
+
+    counter = 1
+    while True:
+        suffix = "" if counter == 1 else f"_{counter}"
+        candidate = target.with_name(
+            f"{target.stem}_{source_hash[:8]}{suffix}{target.suffix}"
+        )
+        if _path_exists(candidate):
+            if _same_pdf_content(candidate, source_hash):
+                return candidate
+            counter += 1
+            continue
+        if _copy_exclusively(source_path, candidate):
+            return candidate
