@@ -532,3 +532,14 @@
 - 生成的输出文件：仅在 `.codex-test-tmp` 中生成临时测试输出；未修改原始实验数据、现有 PDF 或项目打包文件。
 - 如何检查是否成功：聚焦测试 `Ran 3 tests ... OK`；完整套件 `Ran 154 tests ... OK`；`git diff --check` 无输出；代码实现提交为 `432a437`。
 - 注意事项或潜在风险：`copy_pdf_safely()` 的 `filename` 参数应由调用方提供安全的文件名；本 Task 仅按 brief 实现 PDF 头校验、非破坏复制和内容去重，不负责文件名策略。状态文件损坏时会由 JSON 解析异常显式暴露，便于上层报告和恢复流程处理。
+
+## 2026-07-10 18:16:04 +08:00
+
+- 本次任务目标：执行 Task 2 修复波次，封闭批次目录名和 PDF 目标文件名的路径逃逸风险，并保证同时间戳批次及多重文件名冲突永不复用、永不覆盖。
+- 新增、修改或删除的文件：修改 `paper_automation/batch_workflow.py`、`tests/test_batch_workflow.py`、`CHANGELOG.md`，并追加 `.superpowers/sdd/task-2-report.md`；未修改其他模块或 `__init__` 文件。
+- 具体修改内容：将 `run_name` 作为安全前缀处理，清理空白并始终追加 `YYYYMMDD_HHMMSS`；拒绝绝对路径、驱动器、`..`、路径分隔符、控制字符、Windows 非法字符和保留设备名；使用排他目录创建并在同秒冲突时递增 `_2`、`_3`；对 `copy_pdf_safely()` 的 `filename` 应用单路径组件校验；使用排他文件写入，目标冲突时按内容哈希和数字后缀寻找唯一名称，相同内容复用，任何不同内容文件均不覆盖。
+- 修改原因：原实现会直接使用 `run_name` 和 `filename`，可逃逸预期目录；同一时间戳会复用旧批次；首个哈希候选已存在时 `shutil.copy2()` 会覆盖该文件。
+- 如何运行：先设置 `TEMP`/`TMP` 为工作树 `.codex-test-tmp`；聚焦测试运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchFileTests -v`；语法检查运行 `..\\..\\.venv\\Scripts\\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`；完整测试运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`。
+- 生成的输出文件：测试仅在被忽略的 `.codex-test-tmp` 下生成临时目录、PDF、CSV、JSON 和报告；未修改原始文献清单、现有 PDF 或 Zotero 附件，未重新打包项目。
+- 如何检查是否成功：修复前聚焦套件 `Ran 9 tests`，出现 12 个预期断言失败；修复后 `Ran 9 tests in 0.057s ... OK`；compileall 退出码 0；完整套件 `Ran 160 tests in 7.415s ... OK`；`git diff --check` 无空白错误；实现提交为 `41cbcca`。
+- 注意事项或潜在风险：更严格的安全规则会拒绝包含 `..`、分隔符、Windows 非法字符或保留设备名的旧自定义名称；PDF 有效性仍按 Task 2 约定使用最小大小和 `%PDF-` 文件头，而不是完整 PDF 结构解析；本次未执行真实网络、机构登录或 Zotero 下载。
