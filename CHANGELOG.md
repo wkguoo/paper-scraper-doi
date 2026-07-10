@@ -521,3 +521,14 @@
 - 生成的输出文件：测试仅在 `.codex-test-tmp` 下生成临时交接表；未修改原始输入、现有 PDF 或打包产物。
 - 如何检查是否成功：新增测试先 RED（实际“已完成”，期望“可重试 PDF 失败”），修复后焦点套件 3 项通过，完整套件 `Ran 151 tests ... OK`，扩展活跃源码扫描无匹配。
 - 注意事项或潜在风险：旧报告中的 `scihub_downloaded` 记录现在会显示为待处理项，供后续授权 Zotero 阶段复核；本次未重新打包项目。
+
+## 2026-07-10 17:59:47 +08:00
+
+- 本次任务目标：完成 Task 2，建立批量下载工作流的批次路径、可恢复状态、PDF 响应校验和安全复制基础。
+- 新增、修改或删除的文件：新增 `paper_automation/batch_workflow.py`、`tests/test_batch_workflow.py`；修改 `CHANGELOG.md`；补充 `.superpowers/sdd/task-2-report.md`。
+- 具体修改内容：新增 `BatchPaths` 和 `create_batch_paths()` 创建独立的 `paper_batch_YYYYMMDD_HHMMSS` 目录及 `pdfs/reports/working` 子目录；新增原子写入/读取 `batch_state.json`；新增基于最小文件大小和 `%PDF-` 文件头的 PDF 校验；新增 SHA-256 去重复制，避免覆盖不同内容并保留原始源文件。
+- 修改原因：为后续 Task 3–Task 任务提供不依赖临时路径的可复用批次文件系统和 durable state 基础，并拒绝把登录页等 HTML 响应当作 PDF 保存。
+- 如何运行：在本隔离 worktree 中设置 `TEMP`/`TMP` 为 `.codex-test-tmp`，运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchFileTests -v`；再运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`。
+- 生成的输出文件：仅在 `.codex-test-tmp` 中生成临时测试输出；未修改原始实验数据、现有 PDF 或项目打包文件。
+- 如何检查是否成功：聚焦测试 `Ran 3 tests ... OK`；完整套件 `Ran 154 tests ... OK`；`git diff --check` 无输出；代码实现提交为 `432a437`。
+- 注意事项或潜在风险：`copy_pdf_safely()` 的 `filename` 参数应由调用方提供安全的文件名；本 Task 仅按 brief 实现 PDF 头校验、非破坏复制和内容去重，不负责文件名策略。状态文件损坏时会由 JSON 解析异常显式暴露，便于上层报告和恢复流程处理。
