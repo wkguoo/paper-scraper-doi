@@ -554,3 +554,34 @@
 - 生成的输出文件：测试仅在被忽略的 `.codex-test-tmp` 下生成临时锁文件、状态 JSON、PDF 快照和报告；未修改原始文献清单、现有 PDF、Zotero 附件或真实下载结果，未重新打包项目。
 - 如何检查是否成功：修复前聚焦套件 `Ran 17 tests`，出现 18 个预期断言失败；修复后 `Ran 17 tests in 1.191s ... OK`；compileall 退出码 0；完整套件 `Ran 168 tests in 7.633s ... OK`；`git diff --check` 无空白错误；实现提交为 `caed578`。
 - 注意事项或潜在风险：Task 4 的 `resume_batch()` 必须使用 `claim_manual_retry()`，不得自行无锁执行 load→check→save，也不应在网络重试期间长期持有 `batch_state_lock()`；独立 `save_batch_state()` 的并发语义是“每个快照完整、最后写入者生效”，不是多字段合并；锁标记文件会保留但 OS 字节锁会随上下文、异常或进程退出释放；PDF 仍仅做最小大小和 `%PDF-` 文件头校验；本次未执行真实网络、机构登录或 Zotero 测试。
+
+## 2026-07-10 19:03:56 +08:00
+
+- 本次任务目标：执行 Task 2 第三修复波次，消除 `copy_pdf_safely()` 直接写正式 `.pdf` 导致的半成品可见、同内容并发产生重复文件和进程崩溃遗留损坏正式文件问题。
+- 新增、修改或删除的文件：
+  - 修改 `paper_automation/batch_workflow.py`。
+  - 修改 `tests/test_batch_workflow.py`。
+  - 修改 `CHANGELOG.md`，追加本记录。
+  - 追加 `.superpowers/sdd/task-2-report.md`。
+  - 未修改 Task 3+ 文件、`__init__` 文件、原始输入、现有 PDF 或 Zotero 附件。
+- 具体修改内容：
+  - 把现有 Windows `msvcrt.locking` / POSIX `fcntl.flock` 逻辑抽取为共用、不可重入、带超时且异常安全释放的 `_file_lock()`。
+  - 为每个 PDF 目标目录使用非交付物锁标记 `.pdf_publish.lock`；锁覆盖旧快照清理、源文件单次读取、SHA-256 计算、快照 `flush`/`os.fsync`、PDF 校验、候选名复查、去重和发布。
+  - 正式文件只通过同一文件系统内的 `os.link(snapshot, candidate)` 排他发布；不再以 `xb` 向正式 `.pdf` 流式写入，也不使用覆盖式替换或降级路径。
+  - 崩溃最多留下 `.pdf_snapshot_*.tmp` 私有快照；后续调用取得目录锁后清理失去所有者的快照。正常成功或异常退出均清理自身快照。
+  - 新增 `copy_pdf_safely(..., lock_timeout=10.0)` 关键字参数；锁竞争超时抛出 `TimeoutError("pdf_publish_lock_timeout")`，硬链接不支持或失败时抛出包含 `hard_link_publish_failed` 的 `OSError`。
+  - 删除锁标记文件首次创建时写入/刷新占位字节的步骤；Windows 可直接锁定零字节文件，避免两个进程同时初始化新锁文件时发生 `PermissionError`。
+  - 新增 Windows `spawn` 回归测试，覆盖同内容并发只交付一个有效 PDF、发布前终止不遗留正式残件且后续恢复、发布锁超时、硬链接失败不暴露正式 PDF、不同内容并发得到两个安全唯一结果。测试用 `Event`/`Queue` 控制顺序，不依赖任意 `sleep`。
+- 修改原因：旧实现使用 `target.open("xb")` 直接写正式文件；并发进程会把对方的半成品判为无效并生成哈希副本，进程被终止时还可能留下损坏的正式 `.pdf`。完整私有快照加目录锁和硬链接发布把正式名可见性缩短为一次原子、不覆盖的文件系统操作。
+- 如何运行：在隔离工作树中设置 `TEMP`/`TMP` 为 `.codex-test-tmp`，然后运行：
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchFileTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`
+  - `git diff --check`
+- 生成的输出文件：自动测试只在被忽略的 `.codex-test-tmp` 中生成临时锁、私有快照、PDF 和报告；未联网下载论文，未打包项目。
+- 如何检查是否成功：初始 RED 为 `Ran 22 tests ... FAILED (failures=4)`；修复后聚焦测试为 `Ran 22 tests in 2.520s ... OK`，完整套件为 `Ran 173 tests in 11.470s ... OK`，`compileall` 退出码为 0。不同内容并发用例在修正锁初始化竞态后连续 30 次通过。
+- 注意事项或潜在风险：
+  - 目标文件系统必须支持并允许同目录硬链接；不支持时函数会明确失败且不生成正式 PDF，不会回退到不安全的直接写入。
+  - 为保证崩溃清理不误删活跃快照，同一目标目录的快照创建也在目录锁内，因此大 PDF 会串行复制，并可能需要调用方调大 `lock_timeout`。
+  - PDF 有效性仍按 Task 2 约定只检查最小大小和 `%PDF-` 文件头，不执行完整 PDF 结构解析。
+  - 硬链接目录项在突然断电时的持久性由操作系统和文件系统保证；本实现已在发布前 `fsync` 完整快照，但 Windows 没有额外执行目录句柄 `fsync`。

@@ -4,7 +4,6 @@ import errno
 import hashlib
 import json
 import os
-import shutil
 import tempfile
 import time
 from contextlib import contextmanager
@@ -206,25 +205,20 @@ def _is_lock_contention(exc: OSError) -> bool:
 
 
 @contextmanager
-def batch_state_lock(
-    run_dir: str | Path,
+def _file_lock(
+    lock_path: Path,
     *,
-    timeout: float = 10.0,
+    timeout: float,
+    invalid_timeout_error: str,
+    timeout_error: str,
 ) -> Iterator[None]:
-    """Exclusively lock one run's state; this context manager is not re-entrant."""
-
     timeout_seconds = float(timeout)
     if timeout_seconds < 0:
-        raise ValueError("invalid_batch_state_lock_timeout")
-    lock_path = _state_path(run_dir).with_suffix(".lock")
+        raise ValueError(invalid_timeout_error)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
     acquired = False
     try:
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"\0")
-            handle.flush()
         deadline = time.monotonic() + timeout_seconds
         while True:
             try:
@@ -234,7 +228,7 @@ def batch_state_lock(
                     raise
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError("batch_state_lock_timeout") from exc
+                    raise TimeoutError(timeout_error) from exc
                 time.sleep(min(_LOCK_POLL_SECONDS, remaining))
             else:
                 acquired = True
@@ -246,6 +240,24 @@ def batch_state_lock(
                 _release_file_lock(handle)
         finally:
             handle.close()
+
+
+@contextmanager
+def batch_state_lock(
+    run_dir: str | Path,
+    *,
+    timeout: float = 10.0,
+) -> Iterator[None]:
+    """Exclusively lock one run's state; this context manager is not re-entrant."""
+
+    lock_path = _state_path(run_dir).with_suffix(".lock")
+    with _file_lock(
+        lock_path,
+        timeout=timeout,
+        invalid_timeout_error="invalid_batch_state_lock_timeout",
+        timeout_error="batch_state_lock_timeout",
+    ):
+        yield
 
 
 def claim_manual_retry(
@@ -288,22 +300,31 @@ def _path_exists(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
 
-def _copy_exclusively(source: Path, target: Path) -> bool:
-    with source.open("rb") as source_handle:
-        try:
-            target_handle = target.open("xb")
-        except FileExistsError:
-            return False
-        try:
-            with target_handle:
-                shutil.copyfileobj(source_handle, target_handle)
-        except BaseException:
-            target.unlink(missing_ok=True)
-            raise
+@contextmanager
+def _pdf_publish_lock(destination: Path, *, timeout: float) -> Iterator[None]:
+    with _file_lock(
+        destination / ".pdf_publish.lock",
+        timeout=timeout,
+        invalid_timeout_error="invalid_pdf_publish_lock_timeout",
+        timeout_error="pdf_publish_lock_timeout",
+    ):
+        yield
+
+
+def _cleanup_stale_pdf_snapshots(destination: Path) -> None:
+    # Snapshot creation also holds the destination lock, so any snapshot visible
+    # to the current lock owner was abandoned by a process that no longer owns it.
+    for snapshot in destination.glob(".pdf_snapshot_*.tmp"):
+        snapshot.unlink(missing_ok=True)
+
+
+def _publish_pdf_snapshot(snapshot: Path, target: Path) -> bool:
     try:
-        shutil.copystat(source, target)
-    except OSError:
-        pass
+        os.link(snapshot, target)
+    except FileExistsError:
+        return False
+    except OSError as exc:
+        raise OSError(f"hard_link_publish_failed: {exc}") from exc
     return True
 
 
@@ -340,36 +361,46 @@ def _snapshot_pdf_source(source: Path, destination: Path) -> tuple[Path, str]:
                 pass
 
 
-def copy_pdf_safely(source: str | Path, destination_dir: str | Path, filename: str) -> Path:
+def copy_pdf_safely(
+    source: str | Path,
+    destination_dir: str | Path,
+    filename: str,
+    *,
+    lock_timeout: float = 10.0,
+) -> Path:
     safe_filename = _validate_path_component(filename, error="invalid_filename")
     source_path = Path(source).expanduser().resolve()
     if not source_path.is_file():
         raise ValueError("not_pdf_response")
     destination = Path(destination_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
-    snapshot, source_hash = _snapshot_pdf_source(source_path, destination)
-    try:
-        target = destination / safe_filename
-        while True:
-            if _path_exists(target):
-                if _same_pdf_content(target, source_hash):
+    with _pdf_publish_lock(destination, timeout=lock_timeout):
+        _cleanup_stale_pdf_snapshots(destination)
+        snapshot = None
+        try:
+            snapshot, source_hash = _snapshot_pdf_source(source_path, destination)
+            target = destination / safe_filename
+            while True:
+                if _path_exists(target):
+                    if _same_pdf_content(target, source_hash):
+                        return target
+                    break
+                if _publish_pdf_snapshot(snapshot, target):
                     return target
-                break
-            if _copy_exclusively(snapshot, target):
-                return target
 
-        counter = 1
-        while True:
-            suffix = "" if counter == 1 else f"_{counter}"
-            candidate = target.with_name(
-                f"{target.stem}_{source_hash[:8]}{suffix}{target.suffix}"
-            )
-            if _path_exists(candidate):
-                if _same_pdf_content(candidate, source_hash):
+            counter = 1
+            while True:
+                suffix = "" if counter == 1 else f"_{counter}"
+                candidate = target.with_name(
+                    f"{target.stem}_{source_hash[:8]}{suffix}{target.suffix}"
+                )
+                if _path_exists(candidate):
+                    if _same_pdf_content(candidate, source_hash):
+                        return candidate
+                    counter += 1
+                    continue
+                if _publish_pdf_snapshot(snapshot, candidate):
                     return candidate
-                counter += 1
-                continue
-            if _copy_exclusively(snapshot, candidate):
-                return candidate
-    finally:
-        snapshot.unlink(missing_ok=True)
+        finally:
+            if snapshot is not None:
+                snapshot.unlink(missing_ok=True)

@@ -4,8 +4,10 @@ import hashlib
 import json
 import multiprocessing
 import os
+import shutil
 import sys
 import tempfile
+import traceback
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -74,6 +76,72 @@ def _concurrent_state_save_worker(paths, payload, start, replace_barrier, result
         with patch.object(os, "replace", new=coordinated_replace):
             save_batch_state(paths, payload)
         result_queue.put(("ok", payload["writer"], temporary_name))
+    except BaseException as exc:
+        result_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+
+
+def _copy_pdf_worker(source, destination, filename, start, started, result_queue) -> None:
+    try:
+        from paper_automation.batch_workflow import copy_pdf_safely
+
+        if not start.wait(10.0):
+            raise TimeoutError("test_start_timeout")
+        started.set()
+        copied = copy_pdf_safely(source, destination, filename)
+        result_queue.put(("ok", str(copied)))
+    except BaseException as exc:
+        result_queue.put(
+            ("error", f"{type(exc).__name__}: {exc}", traceback.format_exc())
+        )
+
+
+def _controlled_copy_pdf_worker(
+    source,
+    destination,
+    filename,
+    publish_reached,
+    release_publish,
+    phase_queue,
+    result_queue,
+) -> None:
+    """Pause at the old partial write or the new atomic publish boundary."""
+
+    try:
+        from paper_automation.batch_workflow import copy_pdf_safely
+
+        original_copyfileobj = shutil.copyfileobj
+        original_link = os.link
+        phase_reported = False
+
+        def report_phase(phase):
+            nonlocal phase_reported
+            if phase_reported:
+                return
+            phase_reported = True
+            phase_queue.put(phase)
+            publish_reached.set()
+            if not release_publish.wait(10.0):
+                raise TimeoutError("test_publish_release_timeout")
+
+        def controlled_copyfileobj(source_handle, target_handle, length=0):
+            prefix = source_handle.read(5)
+            target_handle.write(prefix)
+            target_handle.flush()
+            os.fsync(target_handle.fileno())
+            report_phase("direct_write")
+            return original_copyfileobj(source_handle, target_handle, length)
+
+        def controlled_link(source_path, target_path, *args, **kwargs):
+            report_phase("hard_link")
+            return original_link(source_path, target_path, *args, **kwargs)
+
+        with patch.object(shutil, "copyfileobj", new=controlled_copyfileobj), patch.object(
+            os,
+            "link",
+            new=controlled_link,
+        ):
+            copied = copy_pdf_safely(source, destination, filename)
+        result_queue.put(("ok", str(copied)))
     except BaseException as exc:
         result_queue.put(("error", f"{type(exc).__name__}: {exc}"))
 
@@ -326,6 +394,184 @@ class BatchFileTests(unittest.TestCase):
             self.assertTrue(source.exists())
             self.assertEqual(len(list(destination.glob("*.pdf"))), 1)
 
+    def test_same_pdf_concurrent_copies_publish_one_complete_target(self) -> None:
+        from paper_automation.batch_workflow import is_valid_pdf
+
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            source.write_bytes(b"%PDF-1.7\nconcurrent identical payload")
+            destination = root / "pdfs"
+            publish_reached = context.Event()
+            release_publish = context.Event()
+            phase_queue = context.Queue()
+            result_queue = context.Queue()
+            second_start = context.Event()
+            second_started = context.Event()
+            first = context.Process(
+                target=_controlled_copy_pdf_worker,
+                args=(
+                    source,
+                    destination,
+                    "paper.pdf",
+                    publish_reached,
+                    release_publish,
+                    phase_queue,
+                    result_queue,
+                ),
+            )
+            second = context.Process(
+                target=_copy_pdf_worker,
+                args=(
+                    source,
+                    destination,
+                    "paper.pdf",
+                    second_start,
+                    second_started,
+                    result_queue,
+                ),
+            )
+            first.start()
+            results = []
+            try:
+                self.assertTrue(
+                    publish_reached.wait(10.0),
+                    "first worker did not reach its publish boundary",
+                )
+                phase = phase_queue.get(timeout=5.0)
+                second.start()
+                second_start.set()
+                self.assertTrue(second_started.wait(10.0), "second worker did not start")
+                if phase == "direct_write":
+                    results.append(result_queue.get(timeout=10.0))
+                release_publish.set()
+                while len(results) < 2:
+                    results.append(result_queue.get(timeout=10.0))
+            finally:
+                release_publish.set()
+                self._join_workers(first, second)
+
+            self.assertEqual([result[0] for result in results], ["ok", "ok"], results)
+            copied_paths = [Path(result[1]) for result in results]
+            delivered = list(destination.glob("*.pdf"))
+            self.assertEqual(copied_paths[0], copied_paths[1])
+            self.assertEqual(len(delivered), 1)
+            self.assertTrue(is_valid_pdf(delivered[0]))
+
+    def test_terminated_publish_leaves_no_partial_pdf_and_next_copy_recovers(self) -> None:
+        from paper_automation.batch_workflow import copy_pdf_safely, is_valid_pdf
+
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            payload = b"%PDF-1.7\nrecoverable payload after termination"
+            source.write_bytes(payload)
+            destination = root / "pdfs"
+            publish_reached = context.Event()
+            release_publish = context.Event()
+            phase_queue = context.Queue()
+            result_queue = context.Queue()
+            worker = context.Process(
+                target=_controlled_copy_pdf_worker,
+                args=(
+                    source,
+                    destination,
+                    "paper.pdf",
+                    publish_reached,
+                    release_publish,
+                    phase_queue,
+                    result_queue,
+                ),
+            )
+            worker.start()
+            try:
+                self.assertTrue(
+                    publish_reached.wait(10.0),
+                    "worker did not reach its publish boundary",
+                )
+                phase_queue.get(timeout=5.0)
+                worker.terminate()
+                worker.join(10.0)
+                self.assertFalse(worker.is_alive())
+            finally:
+                if worker.is_alive():
+                    worker.terminate()
+                    worker.join(5.0)
+
+            delivered_before_recovery = list(destination.glob("*.pdf"))
+            recovered = copy_pdf_safely(source, destination, "paper.pdf")
+            delivered_after_recovery = list(destination.glob("*.pdf"))
+
+            self.assertEqual(delivered_before_recovery, [])
+            self.assertEqual(delivered_after_recovery, [recovered])
+            self.assertEqual(recovered.read_bytes(), payload)
+            self.assertTrue(is_valid_pdf(recovered))
+            self.assertFalse(list(destination.glob(".pdf_snapshot_*.tmp")))
+
+    def test_pdf_publish_lock_has_a_bounded_timeout(self) -> None:
+        import paper_automation.batch_workflow as workflow
+
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            source.write_bytes(b"%PDF-1.7\npublish lock timeout payload")
+            destination = root / "pdfs"
+            publish_reached = context.Event()
+            release_publish = context.Event()
+            phase_queue = context.Queue()
+            result_queue = context.Queue()
+            worker = context.Process(
+                target=_controlled_copy_pdf_worker,
+                args=(
+                    source,
+                    destination,
+                    "paper.pdf",
+                    publish_reached,
+                    release_publish,
+                    phase_queue,
+                    result_queue,
+                ),
+            )
+            worker.start()
+            try:
+                self.assertTrue(publish_reached.wait(10.0))
+                self.assertEqual(phase_queue.get(timeout=5.0), "hard_link")
+                with self.assertRaisesRegex(TimeoutError, "pdf_publish_lock_timeout"):
+                    workflow.copy_pdf_safely(
+                        source,
+                        destination,
+                        "paper.pdf",
+                        lock_timeout=0.1,
+                    )
+            finally:
+                release_publish.set()
+                self._join_workers(worker)
+
+            self.assertEqual(result_queue.get(timeout=5.0)[0], "ok")
+
+    def test_hard_link_publish_failure_never_exposes_a_formal_pdf(self) -> None:
+        import paper_automation.batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.pdf"
+            source.write_bytes(b"%PDF-1.7\nhard link failure payload")
+            destination = root / "pdfs"
+
+            with patch.object(
+                os,
+                "link",
+                side_effect=OSError("synthetic hard-link failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "hard_link_publish_failed"):
+                    workflow.copy_pdf_safely(source, destination, "paper.pdf")
+
+            self.assertFalse(list(destination.glob("*.pdf")))
+            self.assertFalse(list(destination.glob(".pdf_snapshot_*.tmp")))
+
     def test_copy_rejects_absolute_and_traversal_filenames(self) -> None:
         from paper_automation.batch_workflow import copy_pdf_safely
 
@@ -390,6 +636,53 @@ class BatchFileTests(unittest.TestCase):
             self.assertEqual(first.read_bytes(), first_payload)
             self.assertEqual(second.read_bytes(), second_payload)
 
+    def test_different_pdf_content_concurrent_copies_publish_unique_targets(self) -> None:
+        from paper_automation.batch_workflow import is_valid_pdf
+
+        context = multiprocessing.get_context("spawn")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sources = [root / "first.pdf", root / "second.pdf"]
+            payloads = [
+                b"%PDF-1.7\nconcurrent first payload",
+                b"%PDF-1.7\nconcurrent second payload",
+            ]
+            for source, payload in zip(sources, payloads):
+                source.write_bytes(payload)
+            destination = root / "pdfs"
+            start = context.Event()
+            result_queue = context.Queue()
+            started_events = [context.Event(), context.Event()]
+            workers = [
+                context.Process(
+                    target=_copy_pdf_worker,
+                    args=(
+                        source,
+                        destination,
+                        "paper.pdf",
+                        start,
+                        started,
+                        result_queue,
+                    ),
+                )
+                for source, started in zip(sources, started_events)
+            ]
+            for worker in workers:
+                worker.start()
+            start.set()
+            try:
+                self.assertTrue(all(event.wait(10.0) for event in started_events))
+                results = [result_queue.get(timeout=15.0) for _ in workers]
+            finally:
+                self._join_workers(*workers)
+
+            self.assertEqual([result[0] for result in results], ["ok", "ok"], results)
+            copied_paths = {Path(result[1]) for result in results}
+            self.assertEqual(len(copied_paths), 2)
+            self.assertEqual({path.read_bytes() for path in copied_paths}, set(payloads))
+            self.assertTrue(all(is_valid_pdf(path) for path in copied_paths))
+            self.assertEqual(set(destination.glob("*.pdf")), copied_paths)
+
     def test_occupied_hash_candidate_gets_numeric_suffix_without_overwriting(self) -> None:
         from paper_automation.batch_workflow import copy_pdf_safely
 
@@ -427,21 +720,29 @@ class BatchFileTests(unittest.TestCase):
             destination.mkdir()
             (destination / "paper.pdf").write_bytes(b"%PDF-1.7\nexisting target")
             expected_hash = hashlib.sha256(source_payload).hexdigest()[:8]
-            original_copy = workflow._copy_exclusively
+            original_copyfileobj = shutil.copyfileobj
+            original_link = os.link
             mutation_seen = False
 
-            def mutate_original_then_copy(snapshot_or_source, target):
+            def mutate_original_once():
                 nonlocal mutation_seen
                 if not mutation_seen:
                     source.write_bytes(b"")
                     mutation_seen = True
-                return original_copy(snapshot_or_source, target)
+
+            def mutate_original_then_copy(source_handle, target_handle, length=0):
+                mutate_original_once()
+                return original_copyfileobj(source_handle, target_handle, length)
+
+            def mutate_original_then_link(source_path, target_path, *args, **kwargs):
+                mutate_original_once()
+                return original_link(source_path, target_path, *args, **kwargs)
 
             with patch.object(
-                workflow,
-                "_copy_exclusively",
+                shutil,
+                "copyfileobj",
                 side_effect=mutate_original_then_copy,
-            ):
+            ), patch.object(os, "link", side_effect=mutate_original_then_link):
                 copied = workflow.copy_pdf_safely(source, destination, "paper.pdf")
 
             self.assertTrue(mutation_seen)
