@@ -543,3 +543,14 @@
 - 生成的输出文件：测试仅在被忽略的 `.codex-test-tmp` 下生成临时目录、PDF、CSV、JSON 和报告；未修改原始文献清单、现有 PDF 或 Zotero 附件，未重新打包项目。
 - 如何检查是否成功：修复前聚焦套件 `Ran 9 tests`，出现 12 个预期断言失败；修复后 `Ran 9 tests in 0.057s ... OK`；compileall 退出码 0；完整套件 `Ran 160 tests in 7.415s ... OK`；`git diff --check` 无空白错误；实现提交为 `41cbcca`。
 - 注意事项或潜在风险：更严格的安全规则会拒绝包含 `..`、分隔符、Windows 非法字符或保留设备名的旧自定义名称；PDF 有效性仍按 Task 2 约定使用最小大小和 `%PDF-` 文件头，而不是完整 PDF 结构解析；本次未执行真实网络、机构登录或 Zotero 下载。
+
+## 2026-07-10 18:43:23 +08:00
+
+- 本次任务目标：执行 Task 2 第二修复波次，解决批次状态并发写入与一次性人工重试 claim 的跨进程竞态，补齐 Windows 上标设备名校验，并消除 PDF 源文件验证后再次读取的 TOCTOU 风险。
+- 新增、修改或删除的文件：修改 `paper_automation/batch_workflow.py`、`tests/test_batch_workflow.py`、`CHANGELOG.md`，并追加 `.superpowers/sdd/task-2-report.md`；未修改 Task 3+ 文件或 `__init__` 文件。
+- 具体修改内容：状态保存改为同目录唯一临时文件，完整写入后执行 `flush`、`os.fsync` 和原子 `os.replace`，异常清理自身临时文件，并对 Windows 同目标 replace 的短暂共享冲突做最多 2 秒有界重试；新增基于 `msvcrt.locking`（非 Windows 使用 `fcntl.flock`）的 `batch_state_lock()`，默认 10 秒超时、异常安全释放且不静默绕过；新增 `claim_manual_retry()`，在同一把锁内完成 load→检查→置位→durable save，保证两个进程只有一个能 claim；`COM¹/²/³` 与 `LPT¹/²/³` 现在同时被 run_name 和 filename 拒绝；PDF 复制先把源单次读取到目标目录唯一快照并同步落盘，在该稳定快照上验证、计算哈希、去重和排他复制，最后清理快照。
+- 修改原因：固定 `batch_state.json.tmp` 会让并发保存共享并争用同一临时路径；仅原子替换单个文件不能保护 `manual_retry_used` 的多步读改写；Windows 还保留上标数字设备名；旧 PDF 流程在验证/哈希后重新打开源文件，源被替换或截断时会把未验证内容写入目标。
+- 如何运行：先设置 `TEMP`/`TMP` 为工作树 `.codex-test-tmp`；聚焦测试运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchFileTests -v`；语法检查运行 `..\\..\\.venv\\Scripts\\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`；完整测试运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`；格式检查运行 `git diff --check`。
+- 生成的输出文件：测试仅在被忽略的 `.codex-test-tmp` 下生成临时锁文件、状态 JSON、PDF 快照和报告；未修改原始文献清单、现有 PDF、Zotero 附件或真实下载结果，未重新打包项目。
+- 如何检查是否成功：修复前聚焦套件 `Ran 17 tests`，出现 18 个预期断言失败；修复后 `Ran 17 tests in 1.191s ... OK`；compileall 退出码 0；完整套件 `Ran 168 tests in 7.633s ... OK`；`git diff --check` 无空白错误；实现提交为 `caed578`。
+- 注意事项或潜在风险：Task 4 的 `resume_batch()` 必须使用 `claim_manual_retry()`，不得自行无锁执行 load→check→save，也不应在网络重试期间长期持有 `batch_state_lock()`；独立 `save_batch_state()` 的并发语义是“每个快照完整、最后写入者生效”，不是多字段合并；锁标记文件会保留但 OS 字节锁会随上下文、异常或进程退出释放；PDF 仍仅做最小大小和 `%PDF-` 文件头校验；本次未执行真实网络、机构登录或 Zotero 测试。
