@@ -665,3 +665,30 @@
   - Task 2 `is_valid_pdf()` 仍按最小字节数和 `%PDF-` 文件头校验，不执行完整 PDF 结构解析。
   - 当前 Windows 环境无法创建真实 file symlink（`WinError 1314`），端到端测试继续跳过；不依赖权限的 mocked symlink-before-resolve 测试已执行并通过。
   - 适配器只清理自身的逻辑输入，不删除原始输入、报告或 PDF；重复阶段 CSV 为可诊断中间文件，后续重复运行会更新同一批次的对应阶段 CSV。
+
+## 2026-07-10 22:18:07 +08:00
+
+- 本次任务目标：执行 Task 3 第二修复波次，拒绝单行多 DOI 阶段输入，并加固绝对 PDF 路径规范化、机构报告行号匹配和缺失报告路径处理。
+- 新增、修改或删除的文件：
+  - 修改 `paper_automation/batch_stages.py`。
+  - 修改 `tests/test_batch_workflow.py`，仅扩展 `BatchStageTests`。
+  - 追加 `CHANGELOG.md` 和被 Git 忽略的 `.superpowers/sdd/task-3-report.md`。
+  - 未修改 Task 4 代码、Task 4 brief、现有下载器实现、原始输入或项目打包文件。
+- 具体修改内容：
+  - 使用项目现有 `parser.extract_dois()` 检测每个阶段输入行；一个输入行含多个不同 DOI 时不调用任何下层，按原位置返回 `failed / multiple_dois_in_stage_input`，并与 owner/duplicate 布局共同保持数量、顺序和 `task_id`。
+  - 所有绝对报告 PDF 路径均先执行 `expanduser().resolve()`；含 `..` 的路径和祖先 junction/reparse 路径统一返回最终规范绝对目标，再要求该最终目标是非 symlink、常规可读且通过 Task 2 `is_valid_pdf()` 的 PDF。
+  - `write_stage_input()` 生成的 CSV 报告 `row_number` 降级匹配仅接受 `index + 2`；伪造的 `index + 1` 不再消费错误报告行。
+  - OA 的 `manifest_csv` 与非 Elsevier 的 `report_path` 对 `None`、空字符串和属性缺失统一返回 `failed / stage_report_missing`，不再把 `Path('')` 当作当前目录或抛出 `TypeError`。
+  - Task 3 继续显式返回 `duplicate / duplicate_stage_input`，不伪装下载成功；跨任务契约由已更新的 Task 4 brief 约束其为终态，禁止写入 `manual_retry` 或 `zotero_fallback`。
+- 修改原因：旧适配器可能把同一源行解析出的两个 DOI交给下层并丢失一对一任务语义，保留未规范化绝对路径，按错误的 CSV 行号消费报告，或在报告路径为空时异常退出；这些行为会破坏 Task 4 的复制与恢复流程。
+- 如何运行：在隔离 worktree 中先设置 `$env:TEMP=(Resolve-Path .codex-test-tmp); $env:TMP=$env:TEMP`，然后运行：
+  - `..\..\.venv\Scripts\python.exe -m unittest tests.test_batch_workflow.BatchStageTests -v`
+  - `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+  - `..\..\.venv\Scripts\python.exe -m compileall paper_automation`
+  - `git diff --check`
+- 生成的输出文件：测试只在被忽略的 `.codex-test-tmp` 中生成临时 CSV、报告、PDF 固件和 junction；未进行真实网络、机构登录、cookie 读取或论文下载，未移动/删除源 PDF，未重新打包项目。
+- 如何检查是否成功：本波次最终聚焦测试为 `Ran 29 tests in 0.691s ... OK (skipped=1)`，其中真实 junction 端到端测试通过；完整套件为 `Ran 206 tests in 12.460s ... OK (skipped=2)`；`compileall paper_automation` 和 `git diff --check` 退出码均为 0。
+- 注意事项或潜在风险：
+  - Task 2 `is_valid_pdf()` 仍只检查最小字节数和 `%PDF-` 文件头，不执行完整 PDF 结构解析。
+  - 当前 Windows 账户创建 file symlink 返回 `WinError 1314`；因此真实 file-symlink 测试按条件跳过。junction 端到端测试会实际尝试创建目录 junction，失败时跳过；另有不依赖权限且始终运行的 mocked `resolve()` 最终目标语义测试。
+  - Task 3 只负责把多 DOI 单行显式标记失败；Task 4 必须在标准化阶段将它展开为独立 `task_id`，并把 `duplicate` 当作不进入人工重试或 Zotero 回退的终态。

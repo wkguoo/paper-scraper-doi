@@ -915,6 +915,104 @@ class BatchStageTests(unittest.TestCase):
 
         self.assertEqual(rows, [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "中文标题", "authors": "", "journal": "", "year": ""}])
 
+    def test_multi_doi_stage_row_is_explicit_failure_and_never_sent_downstream(self) -> None:
+        from types import SimpleNamespace
+
+        from paper_automation.batch_stages import (
+            BatchOptions,
+            run_non_elsevier_stage,
+            run_oa_stage,
+            run_sciencedirect_stage,
+            write_stage_input,
+        )
+        from paper_automation.parser import parse_mixed_text
+
+        row = {
+            "task_id": "paper-0001",
+            "doi": "10.1016/first 10.1038/second",
+            "title": "One source row with two DOI values",
+        }
+        parsed = parse_mixed_text(row["doi"])
+        self.assertEqual([candidate.doi for candidate in parsed], ["10.1016/first", "10.1038/second"])
+        self.assertEqual([candidate.source_index for candidate in parsed], [1, 1])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch(
+                "paper_automation.batch_stages.run_workflow",
+                return_value=SimpleNamespace(manifest_csv="", output_dir=""),
+            ) as oa_lower:
+                oa_results = run_oa_stage([row], root / "oa-output", BatchOptions())
+
+            input_path = write_stage_input([row], root / "input.csv")
+            with patch("paper_automation.batch_stages.sd_main", return_value=0) as sd_lower:
+                sd_results = run_sciencedirect_stage(input_path, root / "sd-output", BatchOptions())
+            with patch(
+                "paper_automation.batch_stages.run_institutional_workflow",
+                return_value=SimpleNamespace(report_path=""),
+            ) as institutional_lower:
+                institutional_results = run_non_elsevier_stage(
+                    input_path,
+                    root / "institutional-output",
+                    BatchOptions(),
+                )
+
+        for source, results in (
+            ("oa", oa_results),
+            ("sciencedirect", sd_results),
+            ("non_elsevier", institutional_results),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(len(results), 1)
+                self.assertEqual(results[0].task_id, "paper-0001")
+                self.assertEqual(results[0].status, "failed")
+                self.assertEqual(results[0].reason, "multiple_dois_in_stage_input")
+                self.assertEqual(results[0].source, source)
+
+        oa_lower.assert_not_called()
+        sd_lower.assert_not_called()
+        institutional_lower.assert_not_called()
+
+    def test_multi_doi_failure_preserves_owner_and_duplicate_layout(self) -> None:
+        import csv
+        from types import SimpleNamespace
+
+        from paper_automation.batch_stages import BatchOptions, run_oa_stage
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "oa_run"
+            valid_pdf = run_dir / "pdfs" / "owner.pdf"
+            valid_pdf.parent.mkdir(parents=True)
+            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture")
+            manifest = run_dir / "metadata" / "manifest.csv"
+            manifest.parent.mkdir(parents=True)
+            received_lines: list[str] = []
+
+            def fake_workflow(input_text: str, *args, **kwargs):
+                received_lines.extend(input_text.splitlines())
+                with manifest.open("w", newline="", encoding="utf-8-sig") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=["source_index", "doi", "title", "download_status", "file", "reason"])
+                    writer.writeheader()
+                    writer.writerow({"source_index": "1", "doi": "10.1000/owner", "title": "Owner", "download_status": "downloaded", "file": "owner.pdf"})
+                return SimpleNamespace(manifest_csv=str(manifest), output_dir=str(run_dir))
+
+            with patch("paper_automation.batch_stages.run_workflow", side_effect=fake_workflow):
+                results = run_oa_stage(
+                    [
+                        {"task_id": "paper-0001", "doi": "10.1000/first 10.1000/second", "title": "Multi"},
+                        {"task_id": "paper-0002", "doi": "10.1000/owner", "title": "Owner"},
+                        {"task_id": "paper-0003", "doi": "https://doi.org/10.1000/OWNER", "title": "Duplicate"},
+                    ],
+                    run_dir.parent,
+                    BatchOptions(),
+                )
+
+        self.assertEqual(received_lines, ["10.1000/owner"])
+        self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002", "paper-0003"])
+        self.assertEqual([result.status for result in results], ["failed", "downloaded", "duplicate"])
+        self.assertEqual(results[0].reason, "multiple_dois_in_stage_input")
+        self.assertEqual(results[2].reason, "duplicate_stage_input")
+
     def test_oa_adapter_maps_manifest_rows_in_input_order(self) -> None:
         import csv
         from types import SimpleNamespace
@@ -1055,6 +1153,36 @@ class BatchStageTests(unittest.TestCase):
         self.assertEqual(results[0].reason, "missing_stage_report_row")
         self.assertEqual(results[1].status, "downloaded")
         self.assertEqual(results[1].file, str(valid_pdf.resolve()))
+
+    def test_oa_missing_manifest_path_values_are_safe_failures(self) -> None:
+        from types import SimpleNamespace
+
+        from paper_automation.batch_stages import BatchOptions, run_oa_stage
+
+        variants = {
+            "none": SimpleNamespace(manifest_csv=None, output_dir=""),
+            "empty": SimpleNamespace(manifest_csv="", output_dir=""),
+            "missing_attribute": SimpleNamespace(output_dir=""),
+        }
+        for name, workflow_result in variants.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp, patch(
+                "paper_automation.batch_stages.run_workflow",
+                return_value=workflow_result,
+            ):
+                caught = None
+                try:
+                    results = run_oa_stage(
+                        [{"task_id": "paper-0001", "doi": "10.1000/a", "title": "A"}],
+                        Path(tmp),
+                        BatchOptions(),
+                    )
+                except Exception as exc:
+                    caught = exc
+                    results = []
+
+                self.assertIsNone(caught, f"unexpected {type(caught).__name__}: {caught}")
+                self.assertEqual(results[0].status, "failed")
+                self.assertEqual(results[0].reason, "stage_report_missing")
 
     def test_sciencedirect_adapter_maps_success_auth_and_cli_options(self) -> None:
         import csv
@@ -1256,7 +1384,7 @@ class BatchStageTests(unittest.TestCase):
         self.assertEqual(mocked.call_args.kwargs["login_wait_seconds"], 20)
         self.assertEqual(mocked.call_args.kwargs["throttle_seconds"], 0.0)
 
-    def test_stage_rejects_external_symlink_pdf_when_supported(self) -> None:
+    def test_stage_normalizes_absolute_symlink_to_final_pdf_when_supported(self) -> None:
         import csv
 
         from paper_automation.batch_stages import BatchOptions, run_sciencedirect_stage, write_stage_input
@@ -1288,8 +1416,8 @@ class BatchStageTests(unittest.TestCase):
             with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
                 results = run_sciencedirect_stage(input_path, root, BatchOptions())
 
-        self.assertEqual(results[0].status, "failed")
-        self.assertEqual(results[0].reason, "invalid_pdf")
+        self.assertEqual(results[0].status, "downloaded")
+        self.assertEqual(results[0].file, str(external.resolve()))
 
     def test_sciencedirect_relative_pdf_cannot_escape_pdf_directory(self) -> None:
         import csv
@@ -1356,15 +1484,18 @@ class BatchStageTests(unittest.TestCase):
 
         self.assertIsNone(resolved)
 
-    def test_sciencedirect_absolute_pdf_path_is_preserved(self) -> None:
+    def test_sciencedirect_absolute_pdf_path_is_canonicalized(self) -> None:
         import csv
 
         from paper_automation.batch_stages import BatchOptions, run_sciencedirect_stage, write_stage_input
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            valid_pdf = root / "absolute.pdf"
+            valid_pdf = root / "actual" / "absolute.pdf"
+            valid_pdf.parent.mkdir()
             valid_pdf.write_bytes(b"%PDF-1.7\nabsolute fixture")
+            (root / "alias").mkdir()
+            reported_pdf = root / "alias" / ".." / "actual" / "absolute.pdf"
             input_path = write_stage_input(
                 [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"}],
                 root / "input.csv",
@@ -1377,14 +1508,90 @@ class BatchStageTests(unittest.TestCase):
                     fields = ["doi", "pii", "title", "status", "file", "reason", "manual_pdf_url", "manual_status", "manual_reason"]
                     writer = csv.DictWriter(handle, fieldnames=fields)
                     writer.writeheader()
-                    writer.writerow({"doi": "10.1016/a", "title": "A", "status": "success", "file": str(valid_pdf)})
+                    writer.writerow({"doi": "10.1016/a", "title": "A", "status": "success", "file": str(reported_pdf)})
                 return 0
 
             with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
                 results = run_sciencedirect_stage(input_path, root, BatchOptions())
 
         self.assertEqual(results[0].status, "downloaded")
-        self.assertEqual(results[0].file, str(valid_pdf))
+        self.assertEqual(results[0].file, str(valid_pdf.resolve()))
+
+    def test_absolute_pdf_resolve_returns_final_reparse_target_semantics(self) -> None:
+        from paper_automation.batch_stages import _resolve_report_pdf
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            alias_file = root / "junction-alias" / "paper.pdf"
+            final_file = root / "real-target" / "paper.pdf"
+            final_file.parent.mkdir()
+            final_file.write_bytes(b"%PDF-1.7\nreparse target fixture")
+            original_resolve = Path.resolve
+
+            def fake_resolve(path: Path, *args, **kwargs) -> Path:
+                if path == alias_file:
+                    return final_file
+                return original_resolve(path, *args, **kwargs)
+
+            with patch.object(Path, "resolve", autospec=True, side_effect=fake_resolve):
+                resolved = _resolve_report_pdf(str(alias_file), root / "unused-base")
+
+        self.assertEqual(resolved, final_file)
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction semantics")
+    def test_sciencedirect_absolute_junction_path_resolves_to_final_pdf(self) -> None:
+        import csv
+        import subprocess
+
+        from paper_automation.batch_stages import BatchOptions, run_sciencedirect_stage, write_stage_input
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target_dir = root / "junction-target"
+            target_dir.mkdir()
+            final_pdf = target_dir / "paper.pdf"
+            final_pdf.write_bytes(b"%PDF-1.7\njunction target fixture")
+            junction_dir = root / "junction-alias"
+            created = subprocess.run(
+                ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction_dir), str(target_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if created.returncode != 0:
+                self.skipTest("current Windows environment cannot create a directory junction")
+
+            try:
+                input_path = write_stage_input(
+                    [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"}],
+                    root / "input.csv",
+                )
+
+                def fake_sd_main(args: list[str]) -> int:
+                    report = root / "sciencedirect" / "pdf_download_report.csv"
+                    report.parent.mkdir(parents=True)
+                    with report.open("w", newline="", encoding="utf-8-sig") as handle:
+                        fields = ["doi", "pii", "title", "status", "file", "reason", "manual_pdf_url", "manual_status", "manual_reason"]
+                        writer = csv.DictWriter(handle, fieldnames=fields)
+                        writer.writeheader()
+                        writer.writerow(
+                            {
+                                "doi": "10.1016/a",
+                                "title": "A",
+                                "status": "success",
+                                "file": str(junction_dir / "paper.pdf"),
+                            }
+                        )
+                    return 0
+
+                with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
+                    results = run_sciencedirect_stage(input_path, root, BatchOptions())
+            finally:
+                if junction_dir.exists():
+                    junction_dir.rmdir()
+
+        self.assertEqual(results[0].status, "downloaded")
+        self.assertEqual(results[0].file, str(final_pdf.resolve()))
 
     def test_non_elsevier_adapter_keeps_missing_blank_rows_in_place(self) -> None:
         import csv
@@ -1407,6 +1614,7 @@ class BatchStageTests(unittest.TestCase):
                     writer = csv.DictWriter(handle, fieldnames=fields)
                     writer.writeheader()
                     writer.writerow({"row_number": "3", "status": "unsupported_publisher", "reason": "no_supported_adapter"})
+                    writer.writerow({"row_number": "1", "status": "failed", "reason": "bogus_row_number"})
                 return SimpleNamespace(report_path=str(report))
 
             with patch("paper_automation.batch_stages.run_institutional_workflow", side_effect=fake_workflow):
@@ -1415,6 +1623,38 @@ class BatchStageTests(unittest.TestCase):
         self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
         self.assertEqual(results[0].reason, "missing_stage_report_row")
         self.assertEqual(results[1].status, "unsupported_publisher")
+
+    def test_non_elsevier_missing_report_path_values_are_safe_failures(self) -> None:
+        from types import SimpleNamespace
+
+        from paper_automation.batch_stages import BatchOptions, run_non_elsevier_stage, write_stage_input
+
+        variants = {
+            "none": SimpleNamespace(report_path=None),
+            "empty": SimpleNamespace(report_path=""),
+            "missing_attribute": SimpleNamespace(),
+        }
+        for name, workflow_result in variants.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                input_path = write_stage_input(
+                    [{"task_id": "paper-0001", "doi": "10.1038/a", "title": "A"}],
+                    root / "input.csv",
+                )
+                with patch(
+                    "paper_automation.batch_stages.run_institutional_workflow",
+                    return_value=workflow_result,
+                ):
+                    caught = None
+                    try:
+                        results = run_non_elsevier_stage(input_path, root, BatchOptions())
+                    except Exception as exc:
+                        caught = exc
+                        results = []
+
+                self.assertIsNone(caught, f"unexpected {type(caught).__name__}: {caught}")
+                self.assertEqual(results[0].status, "failed")
+                self.assertEqual(results[0].reason, "stage_report_missing")
 
     def test_oa_adapter_marks_normalized_duplicate_doi_without_second_download(self) -> None:
         import csv

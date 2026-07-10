@@ -9,7 +9,11 @@ from sd_institutional_skill import main as sd_main
 
 from .batch_workflow import is_valid_pdf
 from .institutional import run_institutional_workflow
+from .parser import extract_dois
 from .workflow import run_workflow
+
+
+_MULTIPLE_DOIS_LAYOUT = -1
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,8 @@ def run_oa_stage(rows: list[dict], output_dir: Path, options: BatchOptions) -> l
     if not rows:
         return []
     prepared = _prepare_stage_rows(rows)
+    if not prepared.owner_rows:
+        return _restore_stage_results(rows, prepared, [], "oa")
     stage_rows: list[dict] = []
     input_values: list[str] = []
     for row in prepared.owner_rows:
@@ -84,7 +90,10 @@ def run_oa_stage(rows: list[dict], output_dir: Path, options: BatchOptions) -> l
         owner_results = _stage_failure(prepared.owner_rows, "oa", _exception_reason(exc))
         return _restore_stage_results(rows, prepared, owner_results, "oa")
 
-    report_path = Path(getattr(workflow_result, "manifest_csv", ""))
+    report_path = _optional_report_path(getattr(workflow_result, "manifest_csv", None))
+    if report_path is None:
+        owner_results = _stage_failure(stage_rows, "oa", "stage_report_missing")
+        return _restore_stage_results(rows, prepared, owner_results, "oa")
     raw_output_dir = getattr(workflow_result, "output_dir", "")
     workflow_output_dir = str(raw_output_dir).strip() if raw_output_dir is not None else ""
     pdf_base_dir = (
@@ -108,6 +117,8 @@ def run_sciencedirect_stage(input_path: Path, output_dir: Path, options: BatchOp
     if not rows:
         return []
     prepared = _prepare_stage_rows(rows)
+    if not prepared.owner_rows:
+        return _restore_stage_results(rows, prepared, [], "sciencedirect")
     stage_input_path = _deduplicated_stage_input(
         input_path,
         output_dir,
@@ -163,6 +174,8 @@ def run_non_elsevier_stage(input_path: Path, output_dir: Path, options: BatchOpt
     if not rows:
         return []
     prepared = _prepare_stage_rows(rows)
+    if not prepared.owner_rows:
+        return _restore_stage_results(rows, prepared, [], "non_elsevier")
     stage_input_path = _deduplicated_stage_input(
         input_path,
         output_dir,
@@ -183,13 +196,10 @@ def run_non_elsevier_stage(input_path: Path, output_dir: Path, options: BatchOpt
         owner_results = _stage_failure(prepared.owner_rows, "non_elsevier", _exception_reason(exc))
         return _restore_stage_results(rows, prepared, owner_results, "non_elsevier")
 
-    report_path = Path(
-        getattr(
-            workflow_result,
-            "report_path",
-            output_dir / "non_elsevier_institutional" / "institutional_pdf_download_report.csv",
-        )
-    )
+    report_path = _optional_report_path(getattr(workflow_result, "report_path", None))
+    if report_path is None:
+        owner_results = _stage_failure(prepared.owner_rows, "non_elsevier", "stage_report_missing")
+        return _restore_stage_results(rows, prepared, owner_results, "non_elsevier")
     owner_results = _map_report(
         prepared.owner_rows,
         report_path,
@@ -212,11 +222,21 @@ def _read_stage_input(path: Path) -> list[dict[str, str]]:
         return [{key: str(value or "") for key, value in row.items()} for row in csv.DictReader(handle)]
 
 
+def _optional_report_path(value: object) -> Path | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return Path(text) if text else None
+
+
 def _prepare_stage_rows(rows: list[dict]) -> _PreparedRows:
     owner_rows: list[dict] = []
     layout: list[int | None] = []
     seen: set[tuple[str, str]] = set()
     for row in rows:
+        if len(_stage_input_dois(row)) > 1:
+            layout.append(_MULTIPLE_DOIS_LAYOUT)
+            continue
         identity = _stage_input_identity(row)
         if identity is not None and identity in seen:
             layout.append(None)
@@ -226,6 +246,18 @@ def _prepare_stage_rows(rows: list[dict]) -> _PreparedRows:
         layout.append(len(owner_rows))
         owner_rows.append(row)
     return _PreparedRows(owner_rows=owner_rows, layout=layout)
+
+
+def _stage_input_dois(row: dict) -> list[str]:
+    text = " ".join(
+        value
+        for value in (
+            str(row.get("doi", "")).strip(),
+            str(row.get("title", "")).strip(),
+        )
+        if value
+    )
+    return extract_dois(text)
 
 
 def _stage_input_identity(row: dict) -> tuple[str, str] | None:
@@ -261,7 +293,15 @@ def _restore_stage_results(
 ) -> list[StageResult]:
     results: list[StageResult] = []
     for row, owner_index in zip(input_rows, prepared.layout):
-        if owner_index is None:
+        if owner_index == _MULTIPLE_DOIS_LAYOUT:
+            results.append(
+                _failure_for_row(
+                    row,
+                    source,
+                    "multiple_dois_in_stage_input",
+                )
+            )
+        elif owner_index is None:
             results.append(
                 StageResult(
                     task_id=str(row.get("task_id", "")),
@@ -350,10 +390,10 @@ def _find_matching_report_row(input_row: dict, report_rows: list[dict[str, str]]
 
 
 def _find_matching_row_number(index: int, report_rows: list[dict[str, str]]) -> int | None:
-    expected_numbers = {index + 1, index + 2}
+    expected_number = index + 2
     for report_index, report_row in enumerate(report_rows):
         try:
-            if int(report_row.get("row_number", "")) in expected_numbers:
+            if int(report_row.get("row_number", "")) == expected_number:
                 return report_index
         except ValueError:
             continue
@@ -400,7 +440,10 @@ def _resolve_report_pdf(file: str, pdf_base_dir: Path) -> Path | None:
         return None
     path = Path(file).expanduser()
     if path.is_absolute():
-        return path
+        try:
+            return path.resolve()
+        except OSError:
+            return None
     try:
         base_dir = pdf_base_dir.expanduser().resolve()
         candidate = base_dir / path
