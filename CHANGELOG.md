@@ -741,3 +741,15 @@
 - 生成的输出文件：测试只在被忽略的 `.codex-test-tmp` 下生成临时 CSV、XLSX/XLSM、批次 state、pending 文件、报告与 PDF fixture；正式流程输出接口未变化，未生成真实下载或 Zotero 对账结果。
 - 如何检查是否成功：严格 TDD 红灯阶段新增用例出现 11 个预期失败和 1 个缺失签名错误，status 精确匹配反例另行先红；修复后聚焦测试 `Ran 38 tests ... OK`，全套离线测试 `Ran 244 tests ... OK (skipped=2)`，全项目 `compileall` 退出码 0，最终 `git diff --check` 应无空白错误。
 - 注意事项或潜在风险：title-only DOI 的接受依赖现有 intake 契约（`input_doi` 为空、`status=valid`、解析 `doi` 非空）；PDF 有效性仍沿用 Task 2 的最小大小与 `%PDF-` 文件头校验；本轮未访问网络、机构登录、Cookie 内容或 Zotero，未重新打包项目。
+
+## 2026-07-11 00:11:05 +08:00 — Task 5 Zotero reconciliation
+
+- Goal: add safe local Zotero-result reconciliation and stable final reports.
+- Files: modified `paper_automation/batch_workflow.py` and `tests/test_batch_workflow.py`; appended `CHANGELOG.md`; added `.superpowers/sdd/task-5-report.md`. Task 6 CLI, Task 7 MCP, source inputs, Zotero attachments, and packages were not modified.
+- Changes: strict UTF-8-SIG CSV/header/task-ID validation precedes every state mutation; only local regular valid PDFs are copied with `copy_pdf_safely()`; source attachments remain untouched and same-content copies are reused.
+- Reports: `final_manifest.csv`, `final_manifest.xlsx`, `failed.csv`, and `run_summary.txt` use stable ordering; XLSX text is written as text and report files are written through temporary files before replacement.
+- Metadata policy: a `metadata_uncertain` row may retain a usable Zotero PDF, but its `reason` keeps a `metadata_uncertain` audit marker; no DOI or title is invented.
+- Run: set `TEMP` and `TMP` to `.codex-test-tmp`, then run `..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchFinalizeTests -v`, `..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`, `..\\..\\.venv\\Scripts\\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation`, and `git diff --check`.
+- Outputs: final reports are inside each batch `reports/` directory; test artifacts remain in ignored `.codex-test-tmp/`.
+- Verification: Task 5 focus `Ran 7 tests ... OK`; suite `Ran 251 tests ... OK (skipped=2)`; compile and diff checks exit 0.
+- Risks: PDF validation remains the Task 2 magic-header/minimum-size test, not full PDF parsing. No network, institutional login, Cookie read, live Zotero operation, source-file mutation, or repackaging was performed.

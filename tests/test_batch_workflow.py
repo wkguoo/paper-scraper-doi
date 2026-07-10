@@ -3030,3 +3030,296 @@ class BatchRunTests(unittest.TestCase):
 
         self.assertEqual(len(gateway.retry_rows), 1)
         self.assertEqual(len(gateway.retry_rows[0]), 1)
+
+
+class BatchFinalizeTests(unittest.TestCase):
+    def _paths_with_state(self, root: Path, rows: list[dict]):
+        from paper_automation.batch_workflow import create_batch_paths, save_batch_state
+
+        paths = create_batch_paths(root, now=datetime(2026, 7, 11, 9, 0, 0))
+        save_batch_state(
+            paths,
+            {
+                "version": 1,
+                "run_dir": str(paths.root),
+                "manual_retry_used": True,
+                "options": {
+                    "email": "",
+                    "cookies": "",
+                    "browser_exe": "",
+                    "login_wait_seconds": 0,
+                    "debug_port": 9222,
+                    "throttle_seconds": 0.0,
+                },
+                "rows": rows,
+            },
+        )
+        return paths
+
+    @staticmethod
+    def _row(task_id: str, status: str = "no_open_pdf", **extra) -> dict:
+        row = {
+            "task_id": task_id,
+            "source_index": task_id[-1:],
+            "input_doi": f"10.1000/{task_id}",
+            "input_title": f"Input {task_id}",
+            "doi": f"10.1000/{task_id}",
+            "title": f"Title {task_id}",
+            "authors": "Reader Example",
+            "journal": "Journal",
+            "year": "2026",
+            "publisher": "Publisher",
+            "status": status,
+            "source": "oa",
+            "file": "",
+            "reason": "initial_failure",
+        }
+        row.update(extra)
+        return row
+
+    @staticmethod
+    def _write_zotero_csv(path: Path, rows: list[dict], fieldnames=None) -> None:
+        import csv
+
+        columns = fieldnames or [
+            "task_id",
+            "zotero_item_id",
+            "attachment_path",
+            "status",
+            "reason",
+        ]
+        with path.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def test_finalize_reconciles_safely_and_writes_consistent_reports(self) -> None:
+        import csv
+
+        from openpyxl import load_workbook
+
+        from paper_automation.batch_workflow import FINAL_MANIFEST_FIELDS, finalize_batch, load_batch_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attachment = root / "zotero.pdf"
+            attachment.write_bytes(b"%PDF-1.7\nZotero fixture")
+            attachment_hash = hashlib.sha256(attachment.read_bytes()).hexdigest()
+            html = root / "login.html"
+            html.write_text("<html>login</html>", encoding="utf-8")
+            original = self._row("paper-0001", "oa_downloaded", source="oa", file="already.pdf", reason="")
+            paths = self._paths_with_state(
+                root,
+                [original, self._row("paper-0002"), self._row("paper-0003")],
+            )
+            zotero_csv = root / "zotero_results.csv"
+            self._write_zotero_csv(
+                zotero_csv,
+                [
+                    {"task_id": "paper-0001", "zotero_item_id": "ignored", "attachment_path": str(attachment), "status": "downloaded", "reason": ""},
+                    {"task_id": "paper-0002", "zotero_item_id": "42", "attachment_path": str(attachment), "status": "existing_pdf", "reason": ""},
+                    {"task_id": "paper-0003", "zotero_item_id": "43", "attachment_path": str(html), "status": "downloaded", "reason": ""},
+                ],
+            )
+
+            result = finalize_batch(paths.root, zotero_csv)
+            state = load_batch_state(paths.root)
+            rows_by_id = {row["task_id"]: row for row in state["rows"]}
+            with (paths.reports / "final_manifest.csv").open("r", newline="", encoding="utf-8-sig") as handle:
+                csv_reader = csv.DictReader(handle)
+                csv_rows = list(csv_reader)
+            workbook = load_workbook(paths.reports / "final_manifest.xlsx", read_only=True, data_only=False)
+            worksheet = workbook.active
+            xlsx_rows = list(worksheet.iter_rows(values_only=True))
+            workbook.close()
+            attachment_intact = (
+                attachment.exists()
+                and hashlib.sha256(attachment.read_bytes()).hexdigest() == attachment_hash
+            )
+
+        self.assertEqual(rows_by_id["paper-0001"], original)
+        self.assertEqual(rows_by_id["paper-0002"]["status"], "zotero_existing_pdf")
+        self.assertEqual(rows_by_id["paper-0002"]["zotero_item_id"], "42")
+        self.assertEqual(rows_by_id["paper-0003"]["status"], "not_pdf_response")
+        self.assertEqual(rows_by_id["paper-0003"]["source"], "zotero")
+        self.assertTrue(attachment_intact)
+        self.assertEqual(result.success_count, 2)
+        self.assertEqual(result.failed_count, 1)
+        self.assertEqual(csv_reader.fieldnames, FINAL_MANIFEST_FIELDS)
+        self.assertEqual(xlsx_rows[0], tuple(FINAL_MANIFEST_FIELDS))
+        self.assertEqual(
+            [[str(value or "") for value in row] for row in xlsx_rows[1:]],
+            [[row[field] for field in FINAL_MANIFEST_FIELDS] for row in csv_rows],
+        )
+
+    def test_finalize_rejects_invalid_zotero_csv_without_state_changes(self) -> None:
+        from paper_automation.batch_workflow import finalize_batch
+
+        cases = [
+            ("missing_header", ["task_id", "status"], [{"task_id": "paper-0001", "status": "not_found"}], "zotero_results_fields_invalid"),
+            ("unknown", None, [{"task_id": "paper-9999", "zotero_item_id": "", "attachment_path": "", "status": "not_found", "reason": "x"}], "zotero_result_task_id_unknown"),
+            ("duplicate", None, [{"task_id": "paper-0001", "zotero_item_id": "", "attachment_path": "", "status": "not_found", "reason": "x"}] * 2, "zotero_result_task_id_duplicate"),
+            ("empty", None, [{"task_id": "", "zotero_item_id": "", "attachment_path": "", "status": "not_found", "reason": "x"}], "zotero_result_task_id_missing"),
+            ("duplicate_header", ["task_id", "zotero_item_id", "attachment_path", "status", "reason", "reason"], [{"task_id": "paper-0001", "zotero_item_id": "", "attachment_path": "", "status": "not_found", "reason": "x"}], "zotero_results_fields_invalid"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, fieldnames, rows, error in cases:
+                with self.subTest(name=name):
+                    paths = self._paths_with_state(root / name, [self._row("paper-0001")])
+                    zotero_csv = paths.working / "zotero_results.csv"
+                    self._write_zotero_csv(zotero_csv, rows, fieldnames)
+                    before = paths.state.read_bytes()
+                    with self.assertRaisesRegex(ValueError, error):
+                        finalize_batch(paths.root, zotero_csv)
+                    self.assertEqual(paths.state.read_bytes(), before)
+
+    def test_finalize_rejects_unsafe_attachments_and_deduplicates_repeated_pdf(self) -> None:
+        from paper_automation.batch_workflow import finalize_batch, load_batch_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            valid_pdf = root / "attachment.pdf"
+            valid_pdf.write_bytes(b"%PDF-1.7\nshared attachment")
+            missing = root / "missing.pdf"
+            directory = root / "attachment-directory"
+            directory.mkdir()
+            html = root / "attachment.html"
+            html.write_text("<html>not a PDF</html>", encoding="utf-8")
+            paths = self._paths_with_state(
+                root,
+                [self._row(f"paper-000{index}") for index in range(1, 7)],
+            )
+            zotero_csv = paths.working / "zotero_results.csv"
+            self._write_zotero_csv(
+                zotero_csv,
+                [
+                    {"task_id": "paper-0001", "zotero_item_id": "1", "attachment_path": str(valid_pdf), "status": "downloaded", "reason": ""},
+                    {"task_id": "paper-0002", "zotero_item_id": "2", "attachment_path": str(valid_pdf), "status": "existing_pdf", "reason": ""},
+                    {"task_id": "paper-0003", "zotero_item_id": "3", "attachment_path": "https://example.invalid/paper.pdf", "status": "downloaded", "reason": ""},
+                    {"task_id": "paper-0004", "zotero_item_id": "4", "attachment_path": str(html), "status": "downloaded", "reason": ""},
+                    {"task_id": "paper-0005", "zotero_item_id": "5", "attachment_path": str(missing), "status": "downloaded", "reason": ""},
+                    {"task_id": "paper-0006", "zotero_item_id": "6", "attachment_path": str(directory), "status": "downloaded", "reason": ""},
+                ],
+            )
+            finalize_batch(paths.root, zotero_csv)
+            state = load_batch_state(paths.root)
+            pdf_count = len(list(paths.pdfs.glob("*.pdf")))
+
+        rows_by_id = {row["task_id"]: row for row in state["rows"]}
+        self.assertEqual(rows_by_id["paper-0001"]["file"], rows_by_id["paper-0002"]["file"])
+        self.assertEqual(pdf_count, 1)
+        for task_id in ("paper-0003", "paper-0004", "paper-0005", "paper-0006"):
+            self.assertEqual(rows_by_id[task_id]["status"], "not_pdf_response")
+            self.assertEqual(rows_by_id[task_id]["file"], "")
+
+    def test_finalize_preserves_metadata_uncertain_audit_and_non_success_results(self) -> None:
+        from paper_automation.batch_workflow import finalize_batch, load_batch_state
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attachment = root / "uncertain.pdf"
+            attachment.write_bytes(b"%PDF-1.7\nuncertain")
+            paths = self._paths_with_state(
+                root,
+                [
+                    self._row("paper-0001", "metadata_uncertain", reason="title_low_confidence"),
+                    self._row("paper-0002"),
+                    self._row("paper-0003"),
+                ],
+            )
+            zotero_csv = paths.working / "zotero_results.csv"
+            self._write_zotero_csv(
+                zotero_csv,
+                [
+                    {"task_id": "paper-0001", "zotero_item_id": "42", "attachment_path": str(attachment), "status": "existing_pdf", "reason": ""},
+                    {"task_id": "paper-0002", "zotero_item_id": "", "attachment_path": "", "status": "not_found", "reason": "not in collection"},
+                ],
+            )
+            result = finalize_batch(paths.root, zotero_csv)
+            state = load_batch_state(paths.root)
+
+        rows_by_id = {row["task_id"]: row for row in state["rows"]}
+        self.assertEqual(rows_by_id["paper-0001"]["status"], "zotero_existing_pdf")
+        self.assertIn("metadata_uncertain", rows_by_id["paper-0001"]["reason"])
+        self.assertEqual(rows_by_id["paper-0002"]["status"], "not_found")
+        self.assertEqual(rows_by_id["paper-0002"]["source"], "zotero")
+        self.assertEqual(rows_by_id["paper-0002"]["file"], "")
+        self.assertEqual(rows_by_id["paper-0003"]["status"], "no_open_pdf")
+        self.assertEqual(result.total_count, 3)
+        self.assertEqual(result.success_count, 1)
+        self.assertEqual(result.failed_count, 2)
+
+    def test_final_reports_escape_formula_text_and_summarize_failures(self) -> None:
+        import csv
+
+        from openpyxl import load_workbook
+
+        from paper_automation.batch_workflow import write_final_reports
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [
+                self._row("paper-0001", "zotero_downloaded", title="=DANGEROUS", reason=""),
+                self._row("paper-0002", "no_open_pdf", reason="=FORMULA"),
+                self._row("paper-0003", "duplicate", reason="duplicate_input"),
+            ]
+            paths = self._paths_with_state(root, rows)
+            write_final_reports(paths, rows)
+            with (paths.reports / "failed.csv").open("r", newline="", encoding="utf-8-sig") as handle:
+                failed_rows = list(csv.DictReader(handle))
+            workbook = load_workbook(paths.reports / "final_manifest.xlsx", read_only=True, data_only=False)
+            values = list(workbook.active.iter_rows(values_only=False))
+            formula_cell = values[1][5]
+            workbook.close()
+            summary = (paths.reports / "run_summary.txt").read_text(encoding="utf-8")
+
+        self.assertEqual([row["task_id"] for row in failed_rows], ["paper-0002"])
+        self.assertEqual(formula_cell.value, "=DANGEROUS")
+        self.assertEqual(formula_cell.data_type, "s")
+        self.assertIn("input_count: 3", summary)
+        self.assertIn("success_count: 1", summary)
+        self.assertIn("failure_count: 1", summary)
+        self.assertIn("no_open_pdf: 1", summary)
+        self.assertIn("paper-0002\tno_open_pdf\t=FORMULA", summary)
+        self.assertIn("duplicate_terminal_rows_excluded: 1", summary)
+
+    def test_finalize_rejects_symlink_attachment_and_empty_results_leave_state_pending(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attachment = root / "attachment.pdf"
+            attachment.write_bytes(b"%PDF-1.7\nfixture")
+            paths = self._paths_with_state(root, [self._row("paper-0001"), self._row("paper-0002")])
+            zotero_csv = paths.working / "zotero_results.csv"
+            self._write_zotero_csv(
+                zotero_csv,
+                [{"task_id": "paper-0001", "zotero_item_id": "1", "attachment_path": str(attachment), "status": "downloaded", "reason": ""}],
+            )
+            original_is_symlink = workflow.Path.is_symlink
+
+            def symlink_only_attachment(path):
+                return path == attachment or original_is_symlink(path)
+
+            with patch.object(workflow.Path, "is_symlink", new=symlink_only_attachment):
+                workflow.finalize_batch(paths.root, zotero_csv)
+            state_after_symlink = workflow.load_batch_state(paths.root)
+            self._write_zotero_csv(zotero_csv, [])
+            result = workflow.finalize_batch(paths.root, zotero_csv)
+            state_after_empty = workflow.load_batch_state(paths.root)
+
+        self.assertEqual(state_after_symlink["rows"][0]["status"], "not_pdf_response")
+        self.assertEqual(state_after_symlink["rows"][0]["file"], "")
+        self.assertEqual(state_after_empty["rows"][1]["status"], "no_open_pdf")
+        self.assertEqual(result.success_count, 0)
+        self.assertEqual(result.failed_count, 2)
+
+    def test_final_report_write_error_is_diagnostic(self) -> None:
+        from paper_automation import batch_workflow as workflow
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = self._paths_with_state(Path(tmp), [self._row("paper-0001")])
+            with patch.object(workflow, "_write_final_manifest_xlsx", side_effect=OSError("disk full")):
+                with self.assertRaisesRegex(RuntimeError, "final_report_write_failed:OSError:disk full"):
+                    workflow.write_final_reports(paths, [self._row("paper-0001")])

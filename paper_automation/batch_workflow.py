@@ -77,6 +77,18 @@ SUCCESS_STATUSES = {
     "zotero_existing_pdf",
     "zotero_downloaded",
 }
+ZOTERO_RESULT_FIELDS = [
+    "task_id",
+    "zotero_item_id",
+    "attachment_path",
+    "status",
+    "reason",
+]
+ZOTERO_SUCCESS = {
+    "existing_pdf": "zotero_existing_pdf",
+    "downloaded": "zotero_downloaded",
+}
+FINAL_MANIFEST_FIELDS = [*NORMALIZED_FIELDS, "zotero_item_id"]
 _STAGE_SUCCESS_STATUSES = {"downloaded", "oa_downloaded", "institutional_downloaded"}
 _INSTITUTIONAL_SOURCES = {"sciencedirect", "non_elsevier", "institutional"}
 
@@ -537,6 +549,79 @@ def _write_csv_rows(path: Path, rows: list[dict]) -> Path:
     return path
 
 
+def _atomic_report_file(path: Path, suffix: str, writer: Callable[[Path], None]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.stem}.",
+        suffix=suffix,
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.close(descriptor)
+        writer(temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def _report_row(row: dict, fields: list[str]) -> dict[str, str]:
+    return {field: str(row.get(field, "") or "") for field in fields}
+
+
+def _write_report_csv(path: Path, fields: list[str], rows: list[dict]) -> Path:
+    normalized_rows = [_report_row(row, fields) for row in rows]
+
+    def write(temporary: Path) -> None:
+        with temporary.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(normalized_rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    return _atomic_report_file(path, ".csv.tmp", write)
+
+
+def _write_report_text(path: Path, content: str) -> Path:
+    def write(temporary: Path) -> None:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    return _atomic_report_file(path, ".txt.tmp", write)
+
+
+def _write_report_json(path: Path, payload: dict[str, object]) -> Path:
+    content = json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    return _write_report_text(path, content)
+
+
+def _write_final_manifest_xlsx(path: Path, rows: list[dict]) -> Path:
+    manifest_rows = [_report_row(row, FINAL_MANIFEST_FIELDS) for row in rows]
+
+    def write(temporary: Path) -> None:
+        from openpyxl import Workbook
+        from openpyxl.cell import WriteOnlyCell
+
+        workbook = Workbook(write_only=True)
+        worksheet = workbook.create_sheet("final_manifest")
+        for values in [FINAL_MANIFEST_FIELDS, *(
+            [row[field] for field in FINAL_MANIFEST_FIELDS] for row in manifest_rows
+        )]:
+            cells = []
+            for value in values:
+                cell = WriteOnlyCell(worksheet, value=str(value or ""))
+                cell.data_type = "s"
+                cells.append(cell)
+            worksheet.append(cells)
+        workbook.save(temporary)
+
+    return _atomic_report_file(path, ".xlsx.tmp", write)
+
+
 def _tabular_doi_cells(input_path: Path) -> dict[str, str] | None:
     if input_path.suffix.lower() not in {".csv", ".tsv", ".xlsx", ".xlsm"}:
         return None
@@ -983,6 +1068,102 @@ def _read_csv_rows(path: Path) -> list[dict]:
         return [{key: str(value or "") for key, value in row.items()} for row in csv.DictReader(handle)]
 
 
+def _read_zotero_results(path: Path, state_rows: list[dict]) -> list[dict[str, str]]:
+    """Read and fully validate the handoff before changing any batch state."""
+
+    if not path.is_file():
+        raise ValueError("zotero_results_file_missing")
+    with path.open("r", newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames or []
+        if (
+            not set(ZOTERO_RESULT_FIELDS).issubset(fieldnames)
+            or len(fieldnames) != len(set(fieldnames))
+            or any(not str(field or "").strip() for field in fieldnames)
+        ):
+            raise ValueError("zotero_results_fields_invalid")
+        raw_rows = list(reader)
+
+    known_ids = {str(row.get("task_id", "") or "") for row in state_rows}
+    if not known_ids or "" in known_ids or len(known_ids) != len(state_rows):
+        raise ValueError("invalid_state_task_ids")
+    results: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for raw_row in raw_rows:
+        if None in raw_row:
+            raise ValueError("zotero_results_row_invalid")
+        result = {
+            field: str(raw_row.get(field, "") or "").strip()
+            for field in ZOTERO_RESULT_FIELDS
+        }
+        result["status"] = result["status"].lower()
+        task_id = result["task_id"]
+        if not task_id:
+            raise ValueError("zotero_result_task_id_missing")
+        if task_id in seen_ids:
+            raise ValueError("zotero_result_task_id_duplicate")
+        if task_id not in known_ids:
+            raise ValueError("zotero_result_task_id_unknown")
+        if not result["status"]:
+            raise ValueError("zotero_result_status_missing")
+        seen_ids.add(task_id)
+        results.append(result)
+    return results
+
+
+def _local_zotero_attachment(path_value: str) -> Path:
+    value = str(path_value or "").strip()
+    if not value or "://" in value or value.lower().startswith(("zotero:", "file:")):
+        raise ValueError("zotero_attachment_not_local")
+    source = Path(value).expanduser()
+    try:
+        if source.is_symlink() or not source.is_file() or not is_valid_pdf(source):
+            raise ValueError("not_pdf_response")
+    except OSError as exc:
+        raise ValueError("not_pdf_response") from exc
+    return source
+
+
+def _filename_for_batch_row(row: dict) -> str:
+    from .file_manager import make_pdf_filename
+    from .models import MetadataResult
+
+    try:
+        source_index = int(str(row.get("source_index", "") or "0"))
+    except ValueError:
+        source_index = 0
+    authors = [
+        part.strip()
+        for part in str(row.get("authors", "") or "").replace(";", "|").split("|")
+        if part.strip()
+    ]
+    metadata = MetadataResult(
+        source_index=source_index,
+        query_title=str(row.get("input_title", "") or row.get("title", "") or ""),
+        doi=str(row.get("doi", "") or ""),
+        title=str(row.get("title", "") or ""),
+        authors=authors,
+        journal=str(row.get("journal", "") or ""),
+        year=str(row.get("year", "") or ""),
+        publisher=str(row.get("publisher", "") or ""),
+    )
+    return make_pdf_filename(metadata)
+
+
+def _copy_zotero_attachment(row: dict, attachment_path: str, paths: BatchPaths) -> Path:
+    source = _local_zotero_attachment(attachment_path)
+    source_hash = _sha256(source)
+    for candidate in paths.pdfs.glob("*.pdf"):
+        if _same_pdf_content(candidate, source_hash):
+            return candidate
+    return copy_pdf_safely(source, paths.pdfs, _filename_for_batch_row(row))
+
+
+def _metadata_uncertain_audit(reason: object) -> str:
+    detail = str(reason or "").strip()
+    return "metadata_uncertain" if not detail else f"metadata_uncertain; {detail}"
+
+
 def _validate_manual_retry_preclaim(state: dict, paths: BatchPaths) -> list[dict]:
     if not paths.manual_retry.is_file():
         raise ValueError("manual_retry_file_missing")
@@ -1022,18 +1203,125 @@ def _validate_manual_retry_preclaim(state: dict, paths: BatchPaths) -> list[dict
 
 
 def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
-    """Minimal Task 4 reports; Task 5 may extend this interface for Zotero reconciliation."""
+    """Write stable final reports from the current state, with or without Zotero data."""
 
-    _write_csv_rows(paths.reports / "batch_status.csv", rows)
-    summary = {
-        "total_count": len(rows),
-        "success_count": sum(1 for row in rows if _is_successful_status(row.get("status", ""))),
-        "failed_count": sum(1 for row in rows if not _is_terminal_status(row.get("status", ""))),
-    }
-    (paths.reports / "batch_status.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    manifest_rows = [dict(row) for row in rows]
+    failed_rows = [
+        row for row in manifest_rows
+        if not _is_successful_status(row.get("status", ""))
+        and str(row.get("status", "")).strip().lower() != "duplicate"
+    ]
+    duplicate_count = sum(
+        1 for row in manifest_rows
+        if str(row.get("status", "")).strip().lower() == "duplicate"
     )
+    success_count = sum(
+        1 for row in manifest_rows if _is_successful_status(row.get("status", ""))
+    )
+    failure_count = len(failed_rows)
+    failure_status_counts: dict[str, int] = {}
+    for row in failed_rows:
+        status = str(row.get("status", "") or "").strip() or "missing_status"
+        failure_status_counts[status] = failure_status_counts.get(status, 0) + 1
+    summary_lines = [
+        f"input_count: {len(manifest_rows)}",
+        f"success_count: {success_count}",
+        f"failure_count: {failure_count}",
+        f"final_pdf_directory: {paths.pdfs}",
+        f"duplicate_terminal_rows_excluded: {duplicate_count}",
+        "failure_status_counts:",
+    ]
+    summary_lines.extend(
+        f"{status}: {count}" for status, count in sorted(failure_status_counts.items())
+    )
+    summary_lines.append("failed_tasks:")
+    summary_lines.extend(
+        "{task_id}\t{status}\t{reason}".format(
+            task_id=str(row.get("task_id", "") or ""),
+            status=str(row.get("status", "") or ""),
+            reason=str(row.get("reason", "") or ""),
+        )
+        for row in failed_rows
+    )
+    summary = {
+        "total_count": len(manifest_rows),
+        "success_count": success_count,
+        "failed_count": failure_count,
+    }
+    try:
+        _write_report_csv(paths.reports / "final_manifest.csv", FINAL_MANIFEST_FIELDS, manifest_rows)
+        _write_final_manifest_xlsx(paths.reports / "final_manifest.xlsx", manifest_rows)
+        _write_report_csv(paths.reports / "failed.csv", FINAL_MANIFEST_FIELDS, failed_rows)
+        _write_report_text(paths.reports / "run_summary.txt", "\n".join(summary_lines) + "\n")
+        # Keep Task 4 report names available for start/resume callers.
+        _write_report_csv(paths.reports / "batch_status.csv", NORMALIZED_FIELDS, manifest_rows)
+        _write_report_json(paths.reports / "batch_status.json", summary)
+    except Exception as exc:
+        raise RuntimeError(f"final_report_write_failed:{type(exc).__name__}:{exc}") from exc
+
+
+def finalize_batch(
+    run_dir: str | Path,
+    zotero_results: str | Path,
+) -> BatchRunResult:
+    """Reconcile one fully validated Zotero export without changing Zotero attachments."""
+
+    paths = _paths_from_run_dir(run_dir)
+    state = load_batch_state(paths.root)
+    _validate_state(state, expected_run_dir=paths.root)
+    results = _read_zotero_results(Path(zotero_results), state["rows"])
+    results_by_id = {result["task_id"]: result for result in results}
+    for index, existing in enumerate(state["rows"]):
+        task_id = str(existing.get("task_id", "") or "")
+        result = results_by_id.get(task_id)
+        if result is None or _is_terminal_status(existing.get("status", "")):
+            continue
+        updated = dict(existing)
+        zotero_status = result["status"]
+        if zotero_status in ZOTERO_SUCCESS:
+            if not result["zotero_item_id"]:
+                updated.update(
+                    status="zotero_item_id_missing",
+                    source="zotero",
+                    file="",
+                    reason="zotero_item_id_missing",
+                    zotero_item_id="",
+                )
+            else:
+                try:
+                    target = _copy_zotero_attachment(updated, result["attachment_path"], paths)
+                except (OSError, ValueError) as exc:
+                    updated.update(
+                        status="not_pdf_response",
+                        source="zotero",
+                        file="",
+                        reason=f"not_pdf_response:{exc}",
+                        zotero_item_id=result["zotero_item_id"],
+                    )
+                else:
+                    previous_status = str(existing.get("status", "") or "").strip().lower()
+                    updated.update(
+                        status=ZOTERO_SUCCESS[zotero_status],
+                        source="zotero",
+                        file=str(target),
+                        reason=(
+                            _metadata_uncertain_audit(existing.get("reason", ""))
+                            if previous_status == "metadata_uncertain" else ""
+                        ),
+                        zotero_item_id=result["zotero_item_id"],
+                    )
+        else:
+            updated.update(
+                status=zotero_status,
+                source="zotero",
+                file="",
+                reason=result["reason"],
+                zotero_item_id=result["zotero_item_id"],
+            )
+        state["rows"][index] = updated
+        save_batch_state(paths, state)
+    write_final_reports(paths, state["rows"])
+    return _result_from_state(paths, state)
 
 
 def _result_from_state(paths: BatchPaths, state: dict) -> BatchRunResult:
