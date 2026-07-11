@@ -1,0 +1,13 @@
+bridge-menu-label = 文献下载桥接
+bridge-menu-scan = 立即检查任务
+bridge-menu-status = 查看最近状态
+bridge-menu-undo = 撤销最近批次新增
+bridge-confirm-title = 确认导入 Zotero 文献下载任务
+bridge-confirm-body = 将创建或复用条目；已有附件不会被修改。
+bridge-status-waiting = 等待完整分块
+bridge-status-running = 正在处理
+bridge-status-completed = 已完成
+bridge-status-undone = 已撤销
+bridge-undo-confirm-title = 确认撤销最近批次新增
+bridge-undo-confirm-body = 只会处理该批次账本中记录且身份仍匹配的条目、附件和集合成员关系。
+bridge-undo-already-done = 最近批次已经撤销，不能重复执行。

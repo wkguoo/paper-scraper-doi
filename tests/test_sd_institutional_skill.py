@@ -24,6 +24,14 @@ def assert_same_existing_path(testcase: unittest.TestCase, actual: str, expected
 
 
 class InstitutionalSkillIntakeTests(unittest.TestCase):
+    def test_sciencedirect_main_has_no_shadow_library_fallback(self) -> None:
+        import inspect
+        import sd_institutional_skill
+
+        source = inspect.getsource(sd_institutional_skill.main)
+        self.assertNotIn("apply_auto_fallback", source)
+        self.assertNotIn("scihub_downloaded", source)
+
     def test_main_writes_empty_reports_when_no_valid_doi(self) -> None:
         from sd_institutional_skill import main
 
@@ -307,6 +315,62 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertFalse(disabled_summary["supplement_requested"])
         self.assertEqual(disabled_summary["supplement_report_path"], "")
         self.assertFalse((root / "disabled_supplements" / "supplement_download_report.csv").exists())
+
+    def test_main_writes_failed_pdf_report_when_devtools_download_raises_file_not_found(self) -> None:
+        from sd_institutional_skill import main
+
+        class FakeScraper:
+            def resolve_doi_batch(self, _input_path: str):
+                return [
+                    {
+                        "doi": "10.1016/j.actamat.2024.119999",
+                        "pii": "S1359645424000012",
+                        "title": "Missing downloaded PDF",
+                    }
+                ], []
+
+            def save_to_xlsx(self, _results: list[dict], filename: str, output_dir: str) -> str:
+                path = Path(output_dir) / filename
+                path.write_text("placeholder", encoding="utf-8")
+                return str(path)
+
+            def save_failed_doi_report(self, _failures: list[dict], filename: str, output_dir: str) -> str:
+                path = Path(output_dir) / filename
+                path.write_text("row_number,doi,reason\n", encoding="utf-8-sig")
+                return str(path)
+
+            def download_pdfs_devtools(self, *_args: object, **_kwargs: object) -> object:
+                raise FileNotFoundError("synthetic missing browser output")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("sd_institutional_skill.make_scraper", return_value=FakeScraper()), patch(
+                "sd_institutional_skill.cache_devtools_cookies",
+                return_value=0,
+            ):
+                exit_code = main([
+                    "--text",
+                    "10.1016/j.actamat.2024.119999",
+                    "--out",
+                    str(root),
+                    "--run-name",
+                    "download_exception",
+                    "--no-download-supplements",
+                ])
+
+            with (root / "download_exception" / "pdf_download_report.csv").open(
+                "r", newline="", encoding="utf-8-sig"
+            ) as handle:
+                report_rows = list(csv.DictReader(handle))
+            summary = json.loads(
+                (root / "download_exception" / "run_summary.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(report_rows), 1)
+        self.assertEqual(report_rows[0]["status"], "failed")
+        self.assertEqual(report_rows[0]["reason"], "download_exception_FileNotFoundError")
+        self.assertEqual(summary["pdf_failed"], 1)
 
     def test_main_marks_supplements_not_requested_for_non_pdf_runs(self) -> None:
         from paper_automation.models import MetadataResult

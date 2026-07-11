@@ -117,7 +117,7 @@ DOI: 10.1016/j.actamat.2016.08.081
 DOI: 10.1016/j.scriptamat.2023.115000
 ```
 
-第一次运行时，如果没有可用登录状态，工具可能会弹出 Chrome 或 Edge 窗口。请你自己在浏览器里完成学校、机构、VPN、CARSI 或图书馆登录。不要把账号密码发给 Codex。
+第一次运行时，如果没有可用登录状态，工具只会自动尝试启动 Chrome/Chromium，不会隐式启动 Edge。若在 Codex App 中进行机构登录，请使用内置浏览器；项目 Python 下载器不能直接接管该内置浏览器的登录会话。请你自己完成学校、机构、VPN、CARSI 或图书馆登录，不要把账号密码发给 Codex。
 
 ### 示例 2：混乱 AI 推荐列表先做 preflight
 
@@ -148,6 +148,20 @@ Example title copied from a bibliography
 ```
 
 这个流程不会读取 `cookies.json`，不会使用机构登录。
+
+## 统一批处理：项目优先，Zotero 仅处理失败项
+
+当 DOI 与题名混合列表需要先走项目已有流程、再把剩余失败项交给 Zotero 9 时，使用本地文件桥接。打开 Zotero 并启用“文献下载桥接”插件；正常路径不再使用直接 Zotero MCP 写入。
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
+.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
+.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
+```
+
+`start` 创建批次；只有 `working\manual_retry.csv` 有数据且你完成了项目提示的浏览器操作时，才运行一次 `resume`。只有 `zotero_fallback.csv` 的剩余行进入固定队列 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。若 `zotero` 返回退出码 `3`，保持 Zotero 打开并接受 one confirmation（一次确认）；多个分块仍是 one confirmation per batch。插件完成后只重跑同一条 `paper_batch.py zotero`，项目会自动校验结果并 finalize。
+
+输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：最终 PDF 在 `pdfs\`，报告在 `reports\`。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。当前只完成源码和离线测试；先验收 Zotero test profile，do not install to the main profile yet。未经明确批准不生成 XPI。详细步骤见 [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)。
 
 ## 图形界面用法
 

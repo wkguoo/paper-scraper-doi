@@ -143,6 +143,48 @@ Expected:
 - The package contains `skills\sciencedirect-doi-download\references\failure-reasons.md`.
 - `docs\sciencedirect_skill_beginner_guide.md`, `README.md`, `README_zh.md`, `WINDOWS_UI_README.md`, and `MANUAL_QA.md` are included.
 
+## 10. Unified Batch With Zotero Fallback
+
+Do not perform these checks in the default unittest suite. They require an
+explicitly approved XPI and the isolated profile `elpj7iql.Zotero test`. Do not
+install the extension in `g39b695l.default`, do not copy files directly into a
+profile, and do not exercise the user's main library.
+
+Before starting, record the XPI version, Zotero version, test library ID, date,
+and test collection. For every case record job ID, result status, output paths,
+and error code without credentials.
+
+1. **Idle:** with no queue job, start Zotero test and verify the Tools menu
+   contains “文献下载桥接”; “查看最近状态” reports idle without an error.
+2. **Complete-chunk barrier and one confirmation:** queue only chunk 1 of a
+   two-chunk run and verify zero prompts/writes. Add chunk 2 and verify exactly
+   one native confirmation for the shared `run_id`.
+3. **Cancel means zero writes:** cancel that confirmation; verify one
+   `user_cancelled` row per task, durable cancellation replay after restart,
+   and zero collection/item/attachment writes.
+4. **Existing PDF:** use an existing item with a valid local PDF. Verify
+   `existing_pdf`, no available-PDF call, and unchanged source attachment hash.
+5. **Existing item without PDF:** verify one collection assignment and at most
+   one available-PDF call, returning `downloaded` or `no_pdf`.
+6. **Missing DOI:** verify one identifier import into the preserved temporary
+   collection with translator attachments disabled. Replay must not import,
+   assign, or request the PDF twice.
+7. **Crash/restart:** interrupt a three-item confirmed run after item 1. Restart
+   Zotero test and verify no second confirmation and no duplicate Zotero write.
+   Inspect the retained progress: a completed ownership checkpoint may resume,
+   but an unresolved write intent must become `write_outcome_uncertain` without
+   being claimed or retried. Also interrupt an approved undo and
+   verify it resumes without a second undo prompt or touching preexisting IDs;
+   an action left in an uncertain pending state must be reported as skipped and
+   must not be replayed after restart.
+8. **Project finalization and idempotency:** rerun
+   `paper_batch.py zotero --run-dir "<run-dir>"`; verify strict JSON consumption,
+   final PDFs under `pdfs\`, reports under `reports\`, unchanged source PDF
+   hashes, and no changed state/PDF copies on a repeated command.
+
+After all eight cases pass, present the evidence and ask separately before any
+main-profile installation. Do not automatically package the Windows project.
+
 ## Cleanup
 
 Run after institutional-access tests if this machine should not keep cached browser state:

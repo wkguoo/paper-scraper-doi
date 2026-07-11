@@ -587,5 +587,33 @@ class FileWorkflowTests(unittest.TestCase):
         self.assertIn("duplicate_doi", duplicate_text)
 
 
+class WorkflowSafetyTests(unittest.TestCase):
+    def test_oa_failure_stays_failed_for_later_authorized_fallback(self) -> None:
+        import csv
+        from unittest.mock import patch
+        from paper_automation.models import MetadataResult
+        from paper_automation.workflow import run_workflow
+
+        metadata = MetadataResult(
+            source_index=1,
+            query_title="Closed paper",
+            doi="10.1000/closed",
+            title="Closed paper",
+        )
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "paper_automation.workflow.MetadataResolver.resolve_one",
+            return_value=metadata,
+        ):
+            result = run_workflow("10.1000/closed", tmp)
+            with Path(result.manifest_csv).open("r", encoding="utf-8-sig") as handle:
+                row = next(csv.DictReader(handle))
+
+        self.assertEqual(row["download_status"], "failed")
+        self.assertEqual(row["reason"], "no_legal_open_pdf")
+
+    def test_shadow_library_module_is_not_part_of_project(self) -> None:
+        self.assertFalse((PROJECT_ROOT / "paper_automation" / "scihub_fallback.py").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

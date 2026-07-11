@@ -89,38 +89,6 @@ def run_workflow(
             "reason": reason,
         })
 
-    # --- 自动 Sci-Hub / Anna's Archive 回退（OA 路径失败后） ---
-    failed_rows = [row for row in rows if row["download_status"] == "failed"]
-    if failed_rows:
-        from doi_batch_utils import PdfDownloadRecord, apply_auto_fallback
-
-        records = [
-            PdfDownloadRecord(
-                doi=row["doi"],
-                pii="",
-                title=row["title"],
-                status="failed",
-                file=row["file"],
-                reason=row["reason"],
-            )
-            for row in failed_rows
-        ]
-        updated, auto_success, auto_failed = apply_auto_fallback(records, dirs["pdfs"])
-        updated_map = {rec.doi: rec for rec in updated if rec.doi}
-        for row in rows:
-            if row["download_status"] == "failed" and row["doi"] in updated_map:
-                rec = updated_map[row["doi"]]
-                if rec.status == "scihub_downloaded":
-                    row["download_status"] = rec.status
-                    row["file"] = rec.file
-                    row["reason"] = rec.reason
-                    row["pdf_source"] = getattr(rec, "manual_status", "") or "scihub"
-                    row["pdf_url"] = getattr(rec, "manual_pdf_url", "") or ""
-                    downloaded_count += 1
-                    failed_count -= 1
-        if auto_success or auto_failed:
-            print(f"  [自动回退] Sci-Hub/Anna's 补下载: 成功 {auto_success}，仍失败 {auto_failed}")
-
     manifest_csv, manifest_json = write_manifest(rows, dirs["metadata"])
     duplicates_csv = write_duplicates(deduped.duplicates, dirs["failed"])
     return WorkflowResult(

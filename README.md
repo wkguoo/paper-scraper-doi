@@ -102,6 +102,32 @@ Use this workflow for mixed publisher lists when you only want to search public 
 
 This workflow does not read `cookies.json` and does not use institutional login state.
 
+### Unified Batch With Zotero Fallback
+
+Use this Codex-guided workflow for a mixed DOI/title list when the project
+should try its documented routes first and only remaining failures may be
+checked through Zotero 9. Keep Zotero open with the local paper-download bridge
+plugin enabled; normal execution no longer performs direct Zotero MCP writes.
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
+.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
+.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
+```
+
+Run `resume` only once and only after `working\manual_retry.csv` contains rows
+and the required browser action is complete. Only `zotero_fallback.csv` rows
+enter `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`. Exit code 3 means the
+job is queued; accept one Zotero confirmation for the whole batch, then rerun
+only the same `paper_batch.py zotero` command after the plugin finishes.
+
+Final PDFs are in `pdfs\`, reports are in `reports\`, and handoff files remain
+in `working\`. Finalization validates and copies ordinary PDF files without
+moving Zotero attachments or overwriting existing files. See the
+[Zotero bridge beginner guide](docs/zotero_bridge_beginner_guide.md). The XPI
+remains approval-gated: test only in a Zotero test profile first and do not
+install it in the main profile yet.
+
 ## Outputs
 
 ScienceDirect batch runs create a timestamped result folder containing reports such as:
