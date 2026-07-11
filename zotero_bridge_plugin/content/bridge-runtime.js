@@ -230,6 +230,73 @@
     addAvailablePDF(item) {
       return Zotero.Attachments.addAvailablePDF(item);
     },
+    async assertUndoAPI() {
+      if (typeof Zotero.Items?.getAsync !== "function") apiUnavailable();
+    },
+    async removeMembershipIfOwned(itemID, collectionID, libraryID) {
+      const item = await Zotero.Items.getAsync(itemID);
+      if (
+        !item
+        || typeof item.isRegularItem !== "function"
+        || !item.isRegularItem()
+        || item.isFeedItem
+        || item.deleted
+        || item.libraryID !== libraryID
+        || typeof item.getCollections !== "function"
+        || typeof item.removeFromCollection !== "function"
+        || typeof item.saveTx !== "function"
+      ) {
+        return false;
+      }
+      if (!item.getCollections(false).includes(collectionID)) return false;
+      item.removeFromCollection(collectionID);
+      await item.saveTx();
+      return true;
+    },
+    async eraseCreatedObject(id, kind, libraryID, identity) {
+      const item = await Zotero.Items.getAsync(id);
+      if (!item || item.deleted || item.libraryID !== libraryID || typeof item.eraseTx !== "function") {
+        return false;
+      }
+      if (kind === "attachment") {
+        if (typeof item.isAttachment !== "function" || !item.isAttachment()) return false;
+        const parent = await Zotero.Items.getAsync(item.parentItemID);
+        if (
+          !parent
+          || typeof parent.isRegularItem !== "function"
+          || !parent.isRegularItem()
+          || parent.isFeedItem
+          || parent.deleted
+          || parent.libraryID !== libraryID
+        ) {
+          return false;
+        }
+        const parentWasInBatch = identity.batchItemIDs.includes(parent.id)
+          || (
+            Number.isInteger(identity.collectionID)
+            && identity.collectionID > 0
+            && typeof parent.getCollections === "function"
+            && parent.getCollections(false).includes(identity.collectionID)
+          );
+        if (!parentWasInBatch) return false;
+        await item.eraseTx();
+        return true;
+      }
+      if (
+        kind !== "item"
+        || typeof item.isRegularItem !== "function"
+        || !item.isRegularItem()
+        || item.isFeedItem
+        || !Number.isInteger(identity.collectionID)
+        || identity.collectionID <= 0
+        || typeof item.getCollections !== "function"
+        || !item.getCollections(false).includes(identity.collectionID)
+      ) {
+        return false;
+      }
+      await item.eraseTx();
+      return true;
+    },
   };
 
   Zotero.PaperDownloadBridge = createRuntime({
@@ -242,6 +309,7 @@
   });
 })(function createRuntime({ core, io, env, prompt, clock, zotero }) {
   const JOB_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/;
+  const PROGRESS_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.progress\.json$/;
   const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   const SHA256_RE = /^[0-9a-f]{64}$/;
   const UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
@@ -252,6 +320,59 @@
     "payload_sha256",
     "confirmed_at",
     "completed",
+  ]);
+  const PROGRESS_FIELDS = new Set([
+    "schema_version",
+    "job_id",
+    "payload_sha256",
+    "confirmed",
+    "rows",
+    "created_item_ids",
+    "created_attachment_ids",
+    "added_memberships",
+  ]);
+  const RESULT_FIELDS = new Set([
+    "schema_version",
+    "job_id",
+    "payload_sha256",
+    "plugin_version",
+    "zotero_version",
+    "started_at",
+    "finished_at",
+    "rows",
+  ]);
+  const UNDO_LEDGER_FIELDS = new Set([
+    "run_id",
+    "library_id",
+    "collection_id",
+    "collection_name",
+    "job_ids",
+    "payload_sha256",
+    "created_item_ids",
+    "created_attachment_ids",
+    "added_memberships",
+    "preexisting_item_ids",
+    "preexisting_attachment_ids",
+    "total_count",
+    "success_count",
+    "failure_count",
+    "completed_at",
+    "undone",
+    "undo_result",
+  ]);
+  const UNDO_RESULT_FIELDS = new Set([
+    "finished_at",
+    "removed_memberships",
+    "deleted_attachment_ids",
+    "deleted_item_ids",
+    "skipped_ids",
+  ]);
+  const RESULT_ROW_FIELDS = new Set([
+    "task_id",
+    "zotero_item_id",
+    "attachment_path",
+    "status",
+    "reason",
   ]);
   const ITEM_FAILURE_STATUSES = new Set([
     "no_pdf",
@@ -264,6 +385,12 @@
     "job_expired",
     "job_id_conflict",
     "plugin_error",
+  ]);
+  const RESULT_STATUSES = new Set([
+    ...ITEM_FAILURE_STATUSES,
+    "existing_pdf",
+    "downloaded",
+    "user_cancelled",
   ]);
   const PROCESSING_METHODS = [
     "assertProcessingAPI",
@@ -278,6 +405,7 @@
     "addAvailablePDF",
   ];
   const ABSOLUTE_WINDOWS_PATH_RE = /^(?:[a-zA-Z]:[\\/].+|(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+[\\/].+)$/;
+  const MAX_BRIDGE_TEXT_LENGTH = 4096;
   const MAX_TITLE_SEARCH_LENGTH = 256;
   const POLL_INTERVAL_MS = 1000;
 
@@ -312,6 +440,7 @@
   let scanInFlight = null;
   let temporaryCounter = 0;
   let lastStatus = "插件已启动，尚无已处理批次。";
+  let lastRunSummary = null;
 
   function isPlainObject(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -431,9 +560,92 @@
     return { schema_version: 1, runs: {}, last_undo: null };
   }
 
+  function validIDArray(value) {
+    return Array.isArray(value)
+      && value.every(isPositiveInteger)
+      && new Set(value).size === value.length;
+  }
+
+  function validMemberships(value) {
+    return Array.isArray(value)
+      && value.every(pair => (
+        Array.isArray(pair)
+        && pair.length === 2
+        && pair.every(isPositiveInteger)
+      ))
+      && new Set(value.map(pair => pair.join(":"))).size === value.length;
+  }
+
+  function validUTCTimestamp(value) {
+    return typeof value === "string"
+      && UTC_TIMESTAMP_RE.test(value)
+      && !Number.isNaN(Date.parse(value));
+  }
+
+  function validateUndoResult(value) {
+    if (!hasExactFields(value, UNDO_RESULT_FIELDS)) return false;
+    return validUTCTimestamp(value.finished_at)
+      && validMemberships(value.removed_memberships)
+      && validIDArray(value.deleted_attachment_ids)
+      && validIDArray(value.deleted_item_ids)
+      && validIDArray(value.skipped_ids);
+  }
+
+  function validateUndoLedger(value) {
+    if (!hasExactFields(value, UNDO_LEDGER_FIELDS)) return false;
+    if (
+      typeof value.run_id !== "string"
+      || !value.run_id
+      || value.run_id.length > MAX_BRIDGE_TEXT_LENGTH
+      || !isPositiveInteger(value.library_id)
+      || !(value.collection_id === null || isPositiveInteger(value.collection_id))
+      || typeof value.collection_name !== "string"
+      || !value.collection_name
+      || value.collection_name.length > MAX_BRIDGE_TEXT_LENGTH
+      || !Array.isArray(value.job_ids)
+      || !value.job_ids.length
+      || !value.job_ids.every(id => typeof id === "string" && JOB_ID_RE.test(id))
+      || new Set(value.job_ids).size !== value.job_ids.length
+      || !Array.isArray(value.payload_sha256)
+      || value.payload_sha256.length !== value.job_ids.length
+      || !value.payload_sha256.every(hash => typeof hash === "string" && SHA256_RE.test(hash))
+      || !validIDArray(value.created_item_ids)
+      || !validIDArray(value.created_attachment_ids)
+      || !validMemberships(value.added_memberships)
+      || !validIDArray(value.preexisting_item_ids)
+      || !validIDArray(value.preexisting_attachment_ids)
+      || !Number.isInteger(value.total_count)
+      || value.total_count < 0
+      || !Number.isInteger(value.success_count)
+      || value.success_count < 0
+      || !Number.isInteger(value.failure_count)
+      || value.failure_count < 0
+      || value.total_count !== value.success_count + value.failure_count
+      || !validUTCTimestamp(value.completed_at)
+      || typeof value.undone !== "boolean"
+      || (value.undone ? !validateUndoResult(value.undo_result) : value.undo_result !== null)
+      || (
+        (
+          value.created_item_ids.length
+          || value.created_attachment_ids.length
+          || value.added_memberships.length
+        )
+        && value.collection_id === null
+      )
+      || value.added_memberships.some(pair => pair[1] !== value.collection_id)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   function validateState(value) {
     if (!hasExactFields(value, STATE_FIELDS)) throw new Error("bridge_state_invalid");
-    if (value.schema_version !== 1 || !isPlainObject(value.runs) || value.last_undo !== null) {
+    if (
+      value.schema_version !== 1
+      || !isPlainObject(value.runs)
+      || !(value.last_undo === null || validateUndoLedger(value.last_undo))
+    ) {
       throw new Error("bridge_state_invalid");
     }
     for (const [runID, run] of Object.entries(value.runs)) {
@@ -452,6 +664,17 @@
         || !UTC_TIMESTAMP_RE.test(run.confirmed_at)
         || Number.isNaN(Date.parse(run.confirmed_at))
         || typeof run.completed !== "boolean"
+      ) {
+        throw new Error("bridge_state_invalid");
+      }
+    }
+    if (value.last_undo) {
+      const completedRun = value.runs[value.last_undo.run_id];
+      if (
+        !completedRun
+        || !completedRun.completed
+        || !arraysEqual(completedRun.job_ids, value.last_undo.job_ids)
+        || !arraysEqual(completedRun.payload_sha256, value.last_undo.payload_sha256)
       ) {
         throw new Error("bridge_state_invalid");
       }
@@ -488,6 +711,10 @@
     return result;
   }
 
+  function cloneUndoLedger(ledger) {
+    return ledger === null ? null : JSON.parse(JSON.stringify(ledger));
+  }
+
   function identityFor(entries) {
     const sorted = [...entries].sort((left, right) => (
       left.request.chunk_index - right.request.chunk_index
@@ -515,10 +742,12 @@
 
   async function saveConfirmation(paths, state, runID, entries) {
     const identity = identityFor(entries);
+    let lastUndo = cloneUndoLedger(state.last_undo);
+    if (lastUndo?.run_id === runID) lastUndo = null;
     const updated = {
       schema_version: 1,
       runs: cloneRuns(state.runs),
-      last_undo: null,
+      last_undo: lastUndo,
     };
     Object.defineProperty(updated.runs, runID, {
       value: {
@@ -530,6 +759,7 @@
       configurable: true,
       writable: true,
     });
+    validateState(updated);
     await replaceJSON(paths.state, updated);
     return updated;
   }
@@ -561,6 +791,7 @@
       const children = [...await io.list(directory)].sort();
       for (const path of children) {
         const name = io.basename(path);
+        if (location === "processing" && PROGRESS_FILE_RE.test(name)) continue;
         try {
           if (!JOB_FILE_RE.test(name)) throw new Error("bridge_request_filename_invalid");
           const request = await readRequest(path);
@@ -652,6 +883,132 @@
     }
   }
 
+  function isPositiveInteger(value) {
+    return Number.isInteger(value) && value > 0;
+  }
+
+  function emptyProgress(request) {
+    return {
+      schema_version: 1,
+      job_id: request.job_id,
+      payload_sha256: request.payload_sha256,
+      confirmed: true,
+      rows: [],
+      created_item_ids: [],
+      created_attachment_ids: [],
+      added_memberships: [],
+    };
+  }
+
+  function validateProgress(value, request) {
+    if (!hasExactFields(value, PROGRESS_FIELDS)) throw new Error("bridge_progress_invalid");
+    if (
+      value.schema_version !== 1
+      || value.job_id !== request.job_id
+      || value.payload_sha256 !== request.payload_sha256
+      || value.confirmed !== true
+      || !Array.isArray(value.rows)
+      || value.rows.length > request.items.length
+    ) {
+      throw new Error("bridge_progress_invalid");
+    }
+    for (let index = 0; index < value.rows.length; index += 1) {
+      const row = value.rows[index];
+      if (
+        !hasExactFields(row, RESULT_ROW_FIELDS)
+        || row.task_id !== request.items[index].task_id
+        || !Object.values(row).every(field => (
+          typeof field === "string" && field.length <= MAX_BRIDGE_TEXT_LENGTH
+        ))
+        || !RESULT_STATUSES.has(row.status)
+      ) {
+        throw new Error("bridge_progress_invalid");
+      }
+      const success = row.status === "existing_pdf" || row.status === "downloaded";
+      if (success && (
+        !isPositiveInteger(Number(row.zotero_item_id))
+        || !isAbsoluteWindowsPath(row.attachment_path)
+        || row.reason
+      )) {
+        throw new Error("bridge_progress_invalid");
+      }
+      if (!success && (row.zotero_item_id || row.attachment_path)) {
+        throw new Error("bridge_progress_invalid");
+      }
+    }
+    for (const field of ["created_item_ids", "created_attachment_ids"]) {
+      if (
+        !Array.isArray(value[field])
+        || !value[field].every(isPositiveInteger)
+        || new Set(value[field]).size !== value[field].length
+      ) {
+        throw new Error("bridge_progress_invalid");
+      }
+    }
+    if (
+      !Array.isArray(value.added_memberships)
+      || !value.added_memberships.every(pair => (
+        Array.isArray(pair)
+        && pair.length === 2
+        && pair.every(isPositiveInteger)
+      ))
+      || new Set(value.added_memberships.map(pair => pair.join(":"))).size
+        !== value.added_memberships.length
+    ) {
+      throw new Error("bridge_progress_invalid");
+    }
+    return value;
+  }
+
+  async function loadProgress(paths, entry) {
+    const name = `${entry.request.job_id}.progress.json`;
+    const candidates = [
+      { path: io.join(paths.processing, name), location: "processing" },
+      { path: io.join(paths.archive, name), location: "archive" },
+    ];
+    const existing = [];
+    for (const candidate of candidates) {
+      if (await io.exists(candidate.path)) existing.push(candidate);
+    }
+    if (existing.length > 1) throw new Error("bridge_progress_conflict");
+    if (!existing.length) {
+      const record = {
+        path: candidates[0].path,
+        location: "processing",
+        progress: emptyProgress(entry.request),
+        entry,
+      };
+      await replaceJSON(record.path, record.progress);
+      return record;
+    }
+    let value;
+    try {
+      value = JSON.parse(await io.readUTF8(existing[0].path));
+    } catch (_error) {
+      throw new Error("bridge_progress_invalid");
+    }
+    return {
+      ...existing[0],
+      progress: validateProgress(value, entry.request),
+      entry,
+    };
+  }
+
+  async function saveProgress(record) {
+    validateProgress(record.progress, record.entry.request);
+    await replaceJSON(record.path, record.progress);
+  }
+
+  async function archiveProgressRecords(paths, records) {
+    for (const record of records) {
+      if (record.location === "archive") continue;
+      const target = io.join(paths.archive, io.basename(record.path));
+      await io.move(record.path, target, { noOverwrite: true });
+      record.path = target;
+      record.location = "archive";
+    }
+  }
+
   function resultDocument(request, rows, startedAt, finishedAt) {
     return {
       schema_version: 1,
@@ -665,6 +1022,40 @@
     };
   }
 
+  function validateResultDocument(value, request, rows) {
+    if (
+      !hasExactFields(value, RESULT_FIELDS)
+      || value.schema_version !== 1
+      || value.job_id !== request.job_id
+      || value.payload_sha256 !== request.payload_sha256
+      || typeof value.plugin_version !== "string"
+      || !value.plugin_version
+      || value.plugin_version.length > MAX_BRIDGE_TEXT_LENGTH
+      || typeof value.zotero_version !== "string"
+      || !value.zotero_version
+      || value.zotero_version.length > MAX_BRIDGE_TEXT_LENGTH
+      || !validUTCTimestamp(value.started_at)
+      || !validUTCTimestamp(value.finished_at)
+      || Date.parse(value.finished_at) < Date.parse(value.started_at)
+      || JSON.stringify(value.rows) !== JSON.stringify(rows)
+    ) {
+      throw new Error("bridge_result_conflict");
+    }
+    return value;
+  }
+
+  async function publishResultDocument(path, document, request, rows) {
+    if (!await io.exists(path)) return publishJSON(path, document);
+    let existing;
+    try {
+      existing = JSON.parse(await io.readUTF8(path));
+    } catch (_error) {
+      throw new Error("bridge_result_conflict");
+    }
+    validateResultDocument(existing, request, rows);
+    return path;
+  }
+
   async function publishFailureGroup(paths, entries, status, reason) {
     const startedAt = nowISO();
     for (const entry of entries) {
@@ -673,9 +1064,11 @@
         core.failureRow(item.task_id, status, reason)
       ));
       const target = io.join(paths.outbox, `${entry.request.job_id}.result.json`);
-      await publishJSON(
+      await publishResultDocument(
         target,
         resultDocument(entry.request, rows, startedAt, finishedAt),
+        entry.request,
+        rows,
       );
     }
     await archiveEntries(paths, entries);
@@ -783,11 +1176,33 @@
     return collection;
   }
 
-  async function importByDOI(doi, libraryID, collectionID) {
+  function recordID(values, id) {
+    const numericID = Number(id);
+    if (!isPositiveInteger(numericID)) throw new Error("zotero_api_unavailable");
+    if (!values.includes(numericID)) values.push(numericID);
+    return numericID;
+  }
+
+  function recordMembership(values, itemID, collectionID) {
+    const pair = [Number(itemID), Number(collectionID)];
+    if (!pair.every(isPositiveInteger)) throw new Error("zotero_api_unavailable");
+    if (!values.some(value => value[0] === pair[0] && value[1] === pair[1])) {
+      values.push(pair);
+    }
+    return pair;
+  }
+
+  async function importByDOI(doi, libraryID, collectionID, progress = null) {
     const normalized = core.normalizeDOI(doi);
     if (!normalized) throw new Error("not_found");
     const translated = await zotero.translateByDOI(normalized, libraryID, collectionID);
     const descriptors = await eligibleItemDescriptors(translated, libraryID);
+    if (progress) {
+      for (const descriptor of descriptors) {
+        const itemID = recordID(progress.created_item_ids, descriptor.id);
+        recordMembership(progress.added_memberships, itemID, collectionID);
+      }
+    }
     const exact = descriptors.filter(candidate => (
       core.normalizeDOI(candidate.doi) === normalized
     ));
@@ -845,7 +1260,9 @@
         throw error;
       });
     }
-    return context.collectionPromise;
+    const collection = await context.collectionPromise;
+    context.collectionID = collection.id;
+    return collection;
   }
 
   function zoteroItemID(item) {
@@ -857,17 +1274,32 @@
   async function processItem(requestItem, context) {
     let item = await resolveItem(requestItem, context.libraryID);
     let collection = null;
+    let imported = false;
+    if (item) {
+      context.preexistingItemIDs.add(Number(item.id));
+    }
     if (!item) {
       const doi = core.normalizeDOI(requestItem.doi);
       if (!doi) throw new Error("not_found");
       collection = await collectionForContext(context);
-      item = await importByDOI(doi, context.libraryID, collection.id);
+      item = await importByDOI(
+        doi,
+        context.libraryID,
+        collection.id,
+        context.progress,
+      );
+      imported = true;
     }
     if (!collection) collection = await collectionForContext(context);
-    await zotero.addToCollection(item, collection.id);
+    const membershipAdded = await zotero.addToCollection(item, collection.id);
+    if (membershipAdded || imported) {
+      recordMembership(context.progress.added_memberships, item.id, collection.id);
+    }
 
     const existing = await findPDFAttachment(item);
     if (existing) {
+      const attachmentID = Number(existing.attachmentID);
+      if (isPositiveInteger(attachmentID)) context.preexistingAttachmentIDs.add(attachmentID);
       return core.successRow(
         requestItem.task_id,
         zoteroItemID(item),
@@ -878,6 +1310,7 @@
 
     const downloaded = await addAvailablePDFOnce(item);
     if (downloaded) {
+      recordID(context.progress.created_attachment_ids, downloaded.attachmentID);
       return core.successRow(
         requestItem.task_id,
         zoteroItemID(item),
@@ -897,6 +1330,108 @@
     return core.failureRow(taskID, status, code);
   }
 
+  function uniqueSortedIDs(values) {
+    return Array.from(new Set(values.map(Number).filter(isPositiveInteger)))
+      .sort((left, right) => left - right);
+  }
+
+  function uniqueSortedMemberships(values) {
+    const keyed = new Map();
+    for (const pair of values) {
+      if (Array.isArray(pair) && pair.length === 2 && pair.every(isPositiveInteger)) {
+        keyed.set(pair.join(":"), [pair[0], pair[1]]);
+      }
+    }
+    return Array.from(keyed.values()).sort((left, right) => (
+      left[0] - right[0] || left[1] - right[1]
+    ));
+  }
+
+  function summaryForRows(runID, state, rows) {
+    const successCount = rows.filter(row => (
+      row.status === "existing_pdf" || row.status === "downloaded"
+    )).length;
+    return {
+      runID,
+      state,
+      totalCount: rows.length,
+      successCount,
+      failureCount: rows.length - successCount,
+    };
+  }
+
+  function buildUndoLedger(group, progressRecords, context) {
+    const rows = progressRecords.flatMap(record => record.progress.rows);
+    const createdItemIDs = uniqueSortedIDs(
+      progressRecords.flatMap(record => record.progress.created_item_ids),
+    );
+    const createdAttachmentIDs = uniqueSortedIDs(
+      progressRecords.flatMap(record => record.progress.created_attachment_ids),
+    );
+    const addedMemberships = uniqueSortedMemberships(
+      progressRecords.flatMap(record => record.progress.added_memberships),
+    );
+    const collectionIDs = new Set(addedMemberships.map(pair => pair[1]));
+    if (isPositiveInteger(Number(context.collectionID))) {
+      collectionIDs.add(Number(context.collectionID));
+    }
+    if (collectionIDs.size > 1) throw new Error("bridge_progress_invalid");
+    const createdItems = new Set(createdItemIDs);
+    const successfulItemIDs = rows
+      .filter(row => row.status === "existing_pdf" || row.status === "downloaded")
+      .map(row => Number(row.zotero_item_id));
+    const preexistingItemIDs = uniqueSortedIDs([
+      ...context.preexistingItemIDs,
+      ...successfulItemIDs,
+    ]).filter(id => !createdItems.has(id));
+    const identity = identityFor(group.entries);
+    const summary = summaryForRows(group.runID, "completed", rows);
+    const ledger = {
+      run_id: group.runID,
+      library_id: group.entries[0].request.library_id,
+      collection_id: collectionIDs.size ? Array.from(collectionIDs)[0] : null,
+      collection_name: group.entries[0].request.collection_name,
+      job_ids: identity.job_ids,
+      payload_sha256: identity.payload_sha256,
+      created_item_ids: createdItemIDs,
+      created_attachment_ids: createdAttachmentIDs,
+      added_memberships: addedMemberships,
+      preexisting_item_ids: preexistingItemIDs,
+      preexisting_attachment_ids: uniqueSortedIDs([...context.preexistingAttachmentIDs]),
+      total_count: summary.totalCount,
+      success_count: summary.successCount,
+      failure_count: summary.failureCount,
+      completed_at: nowISO(),
+      undone: false,
+      undo_result: null,
+    };
+    if (!validateUndoLedger(ledger)) throw new Error("bridge_state_invalid");
+    return ledger;
+  }
+
+  async function saveRunCompletion(paths, group, progressRecords, context) {
+    const state = await loadState(paths);
+    if (!confirmationMatches(state, group.runID, group.entries)) {
+      throw new Error("bridge_state_invalid");
+    }
+    const previous = state.runs[group.runID];
+    const runs = cloneRuns(state.runs);
+    runs[group.runID].completed = true;
+    const ledger = previous.completed
+      ? cloneUndoLedger(state.last_undo)
+      : buildUndoLedger(group, progressRecords, context);
+    const updated = {
+      schema_version: 1,
+      runs,
+      last_undo: ledger,
+    };
+    validateState(updated);
+    await replaceJSON(paths.state, updated);
+    const rows = progressRecords.flatMap(record => record.progress.rows);
+    lastRunSummary = summaryForRows(group.runID, "completed", rows);
+    return updated;
+  }
+
   async function processRun(group, { confirmed, paths = queuePaths() } = {}) {
     if (!confirmed) {
       await publishFailureGroup(
@@ -905,44 +1440,87 @@
         "user_cancelled",
         "user_cancelled",
       );
+      const totalCount = group.entries.reduce((total, entry) => (
+        total + entry.request.items.length
+      ), 0);
+      lastRunSummary = {
+        runID: group.runID,
+        state: "completed",
+        totalCount,
+        successCount: 0,
+        failureCount: totalCount,
+      };
       lastStatus = `批次 ${group.runID} 已取消，未写入 Zotero。`;
       return { status: "cancelled", runID: group.runID };
     }
 
     const first = group.entries[0].request;
+    const progressRecords = [];
+    for (const entry of group.entries) {
+      progressRecords.push(await loadProgress(paths, entry));
+    }
+    const existingRows = progressRecords.flatMap(record => record.progress.rows);
+    const existingSuccesses = existingRows.filter(row => (
+      row.status === "existing_pdf" || row.status === "downloaded"
+    )).length;
+    lastRunSummary = {
+      runID: group.runID,
+      state: "running",
+      totalCount: group.entries.reduce((total, entry) => total + entry.request.items.length, 0),
+      successCount: existingSuccesses,
+      failureCount: existingRows.length - existingSuccesses,
+    };
+    let preflightError = null;
     try {
       await assertProcessingAPI(first.library_id);
     } catch (error) {
-      const row = failureRowFromError("placeholder", error);
-      await publishFailureGroup(paths, group.entries, row.status, row.reason);
-      lastStatus = `批次 ${group.runID} 无法访问所需 Zotero API，未写入条目。`;
-      return { status: "api_unavailable", runID: group.runID };
+      preflightError = error;
     }
 
     const context = {
       libraryID: first.library_id,
       collectionName: first.collection_name,
       collectionPromise: null,
+      collectionID: null,
+      preexistingItemIDs: new Set(),
+      preexistingAttachmentIDs: new Set(),
     };
     const startedAt = nowISO();
     const allRows = [];
-    for (const entry of group.entries) {
-      const rows = [];
-      for (const requestItem of entry.request.items) {
-        try {
-          rows.push(await processItem(requestItem, context));
-        } catch (error) {
-          rows.push(failureRowFromError(requestItem.task_id, error));
+    for (const record of progressRecords) {
+      const { entry, progress } = record;
+      context.progress = progress;
+      for (let index = progress.rows.length; index < entry.request.items.length; index += 1) {
+        const requestItem = entry.request.items[index];
+        let row;
+        if (preflightError) {
+          row = failureRowFromError(requestItem.task_id, preflightError);
+        } else {
+          try {
+            row = await processItem(requestItem, context);
+          } catch (error) {
+            row = failureRowFromError(requestItem.task_id, error);
+          }
         }
+        progress.rows.push(row);
+        await saveProgress(record);
       }
-      allRows.push(...rows);
+      allRows.push(...progress.rows);
       const target = io.join(paths.outbox, `${entry.request.job_id}.result.json`);
-      await publishJSON(
+      await publishResultDocument(
         target,
-        resultDocument(entry.request, rows, startedAt, nowISO()),
+        resultDocument(entry.request, progress.rows, startedAt, nowISO()),
+        entry.request,
+        progress.rows,
       );
     }
+    await saveRunCompletion(paths, group, progressRecords, context);
+    await archiveProgressRecords(paths, progressRecords);
     await archiveEntries(paths, group.entries);
+    if (preflightError) {
+      lastStatus = `批次 ${group.runID} 无法访问所需 Zotero API，未写入条目。`;
+      return { status: "api_unavailable", runID: group.runID, rows: allRows };
+    }
     lastStatus = `批次 ${group.runID} 已处理 ${allRows.length} 项。`;
     return { status: "processed", runID: group.runID, rows: allRows };
   }
@@ -956,6 +1534,15 @@
       reportError(errorCode(error));
       return { status: "state_invalid", completeRuns: 0, incompleteRuns: 0 };
     }
+    if (state.last_undo) {
+      lastRunSummary = {
+        runID: state.last_undo.run_id,
+        state: state.last_undo.undone ? "undone" : "completed",
+        totalCount: state.last_undo.total_count,
+        successCount: state.last_undo.success_count,
+        failureCount: state.last_undo.failure_count,
+      };
+    }
 
     const groups = groupRequests(await collectRequests(paths));
     let completeRuns = 0;
@@ -963,6 +1550,15 @@
     for (const group of groups) {
       if (group.status === "incomplete") {
         incompleteRuns += 1;
+        lastRunSummary = {
+          runID: group.runID,
+          state: "waiting",
+          totalCount: group.entries.reduce((total, entry) => (
+            total + entry.request.items.length
+          ), 0),
+          successCount: 0,
+          failureCount: 0,
+        };
         continue;
       }
       if (group.status === "invalid") {
@@ -1034,14 +1630,175 @@
   }
 
   function showStatus() {
-    if (typeof prompt.alert === "function") prompt.alert("文献下载桥接", lastStatus);
-    return lastStatus;
+    const labels = {
+      waiting: "等待分块",
+      running: "正在处理",
+      completed: "已完成",
+      undone: "已撤销",
+    };
+    const message = lastRunSummary
+      ? [
+        `批次：${lastRunSummary.runID}`,
+        `状态：${labels[lastRunSummary.state] || lastRunSummary.state}`,
+        `总数：${lastRunSummary.totalCount}`,
+        `成功：${lastRunSummary.successCount}`,
+        `失败：${lastRunSummary.failureCount}`,
+      ].join("\n")
+      : lastStatus;
+    if (typeof prompt.alert === "function") prompt.alert("文献下载桥接", message);
+    return message;
   }
 
   async function undoLastBatch() {
-    const message = "当前没有可撤销的批次。";
-    if (typeof prompt.alert === "function") prompt.alert("文献下载桥接", message);
-    return { status: "nothing_to_undo" };
+    const paths = await ensureQueue();
+    let state;
+    try {
+      state = await loadState(paths);
+    } catch (error) {
+      const code = errorCode(error);
+      reportError(code);
+      if (typeof prompt.alert === "function") {
+        prompt.alert("文献下载桥接", `无法读取撤销账本：${code}`);
+      }
+      return { status: "state_invalid" };
+    }
+    if (Object.values(state.runs).some(run => !run.completed)) {
+      const message = "仍有已确认批次正在处理，暂不允许撤销旧批次。";
+      if (typeof prompt.alert === "function") prompt.alert("文献下载桥接", message);
+      return { status: "run_active" };
+    }
+    const ledger = state.last_undo;
+    if (!ledger) {
+      const message = "当前没有可撤销的批次。";
+      if (typeof prompt.alert === "function") prompt.alert("文献下载桥接", message);
+      return { status: "nothing_to_undo" };
+    }
+    if (ledger.undone) {
+      const message = `批次 ${ledger.run_id} 已撤销，不能重复执行。`;
+      if (typeof prompt.alert === "function") prompt.alert("文献下载桥接", message);
+      return { status: "already_undone", runID: ledger.run_id };
+    }
+
+    const message = [
+      `将撤销批次：${ledger.run_id}`,
+      `新增条目：${ledger.created_item_ids.length}`,
+      `新增附件：${ledger.created_attachment_ids.length}`,
+      `集合成员关系：${ledger.added_memberships.length}`,
+      "",
+      "只会处理该批次账本中记录且身份仍匹配的对象。是否继续？",
+    ].join("\n");
+    const accepted = await prompt.confirm({
+      kind: "undo",
+      runID: ledger.run_id,
+      itemCount: ledger.created_item_ids.length,
+      attachmentCount: ledger.created_attachment_ids.length,
+      membershipCount: ledger.added_memberships.length,
+      message,
+    });
+    if (!accepted) return { status: "cancelled", runID: ledger.run_id };
+
+    if (
+      typeof zotero?.assertUndoAPI !== "function"
+      || typeof zotero?.removeMembershipIfOwned !== "function"
+      || typeof zotero?.eraseCreatedObject !== "function"
+    ) {
+      reportError("zotero_api_unavailable", { run_id: ledger.run_id });
+      return { status: "api_unavailable", runID: ledger.run_id };
+    }
+    try {
+      await zotero.assertUndoAPI();
+    } catch (error) {
+      reportError(errorCode(error), { run_id: ledger.run_id });
+      return { status: "api_unavailable", runID: ledger.run_id };
+    }
+
+    const preexistingItems = new Set(ledger.preexisting_item_ids);
+    const preexistingAttachments = new Set(ledger.preexisting_attachment_ids);
+    const createdItems = ledger.created_item_ids.filter(id => !preexistingItems.has(id));
+    const createdAttachments = ledger.created_attachment_ids
+      .filter(id => !preexistingAttachments.has(id));
+    const batchItemIDs = uniqueSortedIDs([
+      ...createdItems,
+      ...ledger.preexisting_item_ids,
+      ...ledger.added_memberships.map(pair => pair[0]),
+    ]);
+    const identity = {
+      collectionID: ledger.collection_id,
+      batchItemIDs,
+    };
+    const removedMemberships = [];
+    const deletedAttachmentIDs = [];
+    const deletedItemIDs = [];
+    const skippedIDs = [];
+
+    for (const [itemID, collectionID] of [...ledger.added_memberships].reverse()) {
+      if (createdItems.includes(itemID)) continue;
+      try {
+        if (await zotero.removeMembershipIfOwned(itemID, collectionID, ledger.library_id)) {
+          removedMemberships.push([itemID, collectionID]);
+        } else {
+          reportError("undo_identity_mismatch", { run_id: ledger.run_id, object_id: itemID });
+          skippedIDs.push(itemID);
+        }
+      } catch (error) {
+        reportError(errorCode(error), { run_id: ledger.run_id });
+        skippedIDs.push(itemID);
+      }
+    }
+    for (const id of [...createdAttachments].reverse()) {
+      try {
+        if (await zotero.eraseCreatedObject(id, "attachment", ledger.library_id, identity)) {
+          deletedAttachmentIDs.push(id);
+        } else {
+          reportError("undo_identity_mismatch", { run_id: ledger.run_id, object_id: id });
+          skippedIDs.push(id);
+        }
+      } catch (error) {
+        reportError(errorCode(error), { run_id: ledger.run_id });
+        skippedIDs.push(id);
+      }
+    }
+    for (const id of [...createdItems].reverse()) {
+      try {
+        if (await zotero.eraseCreatedObject(id, "item", ledger.library_id, identity)) {
+          deletedItemIDs.push(id);
+        } else {
+          reportError("undo_identity_mismatch", { run_id: ledger.run_id, object_id: id });
+          skippedIDs.push(id);
+        }
+      } catch (error) {
+        reportError(errorCode(error), { run_id: ledger.run_id });
+        skippedIDs.push(id);
+      }
+    }
+
+    const undoResult = {
+      finished_at: nowISO(),
+      removed_memberships: removedMemberships,
+      deleted_attachment_ids: deletedAttachmentIDs,
+      deleted_item_ids: deletedItemIDs,
+      skipped_ids: uniqueSortedIDs(skippedIDs),
+    };
+    const updated = {
+      schema_version: 1,
+      runs: cloneRuns(state.runs),
+      last_undo: {
+        ...cloneUndoLedger(ledger),
+        undone: true,
+        undo_result: undoResult,
+      },
+    };
+    validateState(updated);
+    await replaceJSON(paths.state, updated);
+    lastRunSummary = {
+      runID: ledger.run_id,
+      state: "undone",
+      totalCount: ledger.total_count,
+      successCount: ledger.success_count,
+      failureCount: ledger.failure_count,
+    };
+    lastStatus = `批次 ${ledger.run_id} 已完成安全撤销。`;
+    return { status: "undone", runID: ledger.run_id, result: undoResult };
   }
 
   return {

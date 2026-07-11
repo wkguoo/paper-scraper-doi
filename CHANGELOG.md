@@ -1117,3 +1117,14 @@
 - 生成的输出文件：真实启用后每个作业会在 outbox 原子发布严格结果 JSON，并把处理完的请求移入 archive；成功行只返回 Zotero 条目 ID 与现有/新下载附件的绝对 Windows 路径。此次测试仅使用内存 Zotero/文件系统替身，未创建真实集合、条目、附件、PDF、队列文件、Cookie、XPI 或打包文件。
 - 如何检查是否成功：23 项运行时测试和插件侧合计 30 项测试全部通过；覆盖已有 PDF 零导入/零下载调用、集合成员只加一次、标识符导入不保存翻译器附件、导入 DOI 二次校验、候选资格过滤、重复 DOI/标题歧义零写入、单条异常隔离、无 PDF、API 缺失零 Zotero 写入，以及 URL/相对路径/非 PDF 附件拒绝；语法、差异与安全扫描均通过。另已从本机 Zotero 9.0.6 自带源码确认 Translate 选项、`getByLibrary()`、`addAvailablePDF()`、附件路径方法和集合成员方法签名。
 - 注意事项或潜在风险：本阶段尚未安装或调用真实插件，因此 Zotero 的登录状态、机构授权、网络、出版商限制与 CAPTCHA 仍未实测且不会被绕过；`addAvailablePDF()` 真实运行时可能联网，但本次没有联网或启动 Chrome/Edge/Codex 浏览器。崩溃发生在 Zotero 写入之后、结果 JSON 发布之前时的逐项检查点，以及新建条目/附件/集合成员的可审计撤销账本仍属于 Task 5；在该保护完成前不会打包或安装插件。
+
+## 2026-07-11 15:48:04 +08:00 — Zotero 9 插件 Task 5 断点恢复、状态与安全撤销
+
+- 本次任务目标：使已确认批次在 Zotero 或插件中断后从最后一个完整条目继续，保证结果不重复覆盖，并为本批次新建条目、附件及集合成员关系提供可审计、不可重复的二次确认撤销。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/content/bridge-runtime.js`、`zotero_bridge_plugin/tests/bridge-runtime.test.cjs`、`zotero_bridge_plugin/locale/zh-CN/bridge.ftl` 与本 `CHANGELOG.md`；未删除文件，未修改原始文献数据或 PDF。
+- 具体修改内容：为每个作业新增严格的 `processing\<job_id>.progress.json`，精确保存请求身份、已完成结果行、批次创建的条目/附件 ID 和新增集合成员关系；每完成一项即原子替换进度，重启时只接受与请求 job/hash 和任务顺序完全一致的进度；完整结果存在时复核身份及逐行内容并保持原字节，不覆盖或删除唯一结果；全部任务完成后将 run 标记为 `completed`，保存跨作业撤销账本并依次归档 progress/request；状态菜单可从持久化状态恢复并显示批次、等待/运行/完成/撤销阶段及总数/成功/失败；撤销前显示三类精确数量并再次确认，先移除仅对预存条目新增的成员关系，再删除账本记录且身份仍匹配的新附件和新条目，预存 ID、跨文库/已移动对象和活动批次均不处理，撤销结果持久化后禁止重复执行。
+- 修改原因：防止 Zotero 网络请求、应用退出或文件发布中断导致整批重跑、重复导入、重复下载、结果覆盖或误删用户已有资料，并让用户能在菜单中直接判断批次是否仍需等待。
+- 如何运行：聚焦测试 `node --test zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；全部插件回归 `node --test zotero_bridge_plugin/tests/*.test.cjs`；语法检查 `node --check zotero_bridge_plugin/content/bridge-runtime.js`；安全扫描 `rg -n "zotero\.sqlite|executeTransaction|queryAsync|eval\(|Function\(|fetch\(|XMLHttpRequest|WebSocket|ServerSocket" zotero_bridge_plugin/content zotero_bridge_plugin/bootstrap.js`。
+- 生成的输出文件：真实启用后会生成/更新 `plugin-state.json`、`processing\<job_id>.progress.json`、`outbox\<job_id>.result.json`，并把完成的请求和进度移至 archive；撤销只修改账本授权且身份仍匹配的 Zotero 对象。本次测试仅使用共享内存文件系统和假 Zotero，对真实 `%LOCALAPPDATA%`、Zotero 文库、PDF、Cookie、XPI 与安装配置均无写入。
+- 如何检查是否成功：32 项运行时测试及插件侧合计 39 项测试连续运行两次均通过；覆盖三条任务在第一条后中断并无二次确认续跑、进度 task ID 篡改拒绝、已发布结果原字节重放、完成状态/进度归档、实际生成账本撤销“预存 + 导入”混合批次、撤销取消零写入、预存 ID 不删除、身份变化跳过并报告、活动批次阻止撤销、撤销不可重复，以及重启后状态摘要恢复；语法与差异检查通过，源码安全扫描零匹配，插件全目录唯一匹配来自测试自身的禁止字符串清单。
+- 注意事项或潜在风险：真实 Zotero 写 API 返回与进度文件落盘之间仍存在极短的进程硬终止窗口；重启时会通过 DOI 查重、集合幂等和已有 PDF 复核避免重复动作，但极端断电下撤销账本可能需要真实配置测试确认完整性。当前仍未联网、未启动 Chrome/Edge/Codex 浏览器、未读取 Cookie、未安装或打包插件；真实机构授权、出版商限制和 CAPTCHA 不会被绕过，留待隔离测试配置验收。
