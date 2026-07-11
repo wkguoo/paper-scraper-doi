@@ -1051,3 +1051,14 @@
 - 生成的输出文件：测试在临时目录创建桥接 JSON、结果 JSON 和 CSV 后自动清理；未写入真实 `%LOCALAPPDATA%`、Zotero、PDF、Cookie、XPI 或打包文件。
 - 如何检查是否成功：43 项聚焦测试通过；缺失第二分块时 canonical CSV 不存在，既有 CSV 保持字节不变，原子发布前读者看不到目标 CSV，恶意 `https://` 附件路径最终被标为 `not_pdf_response`。
 - 注意事项或潜在风险：桥接层有意不信任或复制附件路径，实际 PDF 安全复核仍由既有 `finalize_batch()` 完成；真实插件结果和最终 CLI 编排属于后续任务。
+
+## 2026-07-11 13:50:35 +08:00 — Task 4 Zotero 桥接恢复命令
+
+- 本次任务目标：提供可重复执行的 `paper_batch.py zotero` 命令，使项目可在不重跑下载阶段的前提下排队、等待插件确认、接收结果并调用现有最终汇总。
+- 新增、修改或删除的文件：修改 `paper_automation/zotero_bridge.py`、`paper_automation/batch_workflow.py`、`paper_batch.py`、`tests/test_zotero_bridge.py`、`tests/test_batch_workflow.py` 与本 `CHANGELOG.md`；未删除文件。
+- 具体修改内容：新增 `BridgeRunResult` 和 `run_zotero_bridge()`；新增安全的公开批次路径/状态汇总辅助函数；第一次调用仅发布同一批次的固定作业，返回等待确认；随后同命令在结果齐全时合并 CSV 并调用 `finalize_batch()`；新增 `zotero --run-dir --library-id --wait-seconds` 子命令和无敏感内容的错误提示。
+- 修改原因：让用户只需在 Zotero 中确认一次后重复同一条命令，无需手动管理 JSON、CSV、子作业 ID 或重新运行 OA/机构下载阶段。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe paper_batch.py zotero --run-dir "<已有批次目录>"`；如需在命令中等待结果，可加 `--wait-seconds 60`（范围 0–86400）。
+- 生成的输出文件：实际运行时仅在 `%LOCALAPPDATA%\\PaperScraperDOI\\zotero-bridge\\v1` 建立桥接队列，并在批次 `working` 下安全创建结果 CSV；本次测试只使用临时目录，未写入真实 Zotero、PDF、Cookie、XPI 或打包文件。
+- 如何检查是否成功：70 项桥接/CLI 聚焦测试、`compileall` 和 `git diff --check` 通过；完整离线回归为 344 项通过、2 项 Windows 符号链接权限跳过。首次命令应返回 3 并提示“请在 Zotero 中确认一次”，结果完整后同命令返回 0 并更新报告。
+- 注意事项或潜在风险：若回退 CSV 被清空但批次状态仍有待 Zotero 条目，命令会以 `bridge_fallback_state_mismatch` 停止，避免误报完成；不会启动 Chrome/Edge、读取 Cookie 或自动打包。Zotero 9 插件实现和真实队列验证仍属于后续任务。

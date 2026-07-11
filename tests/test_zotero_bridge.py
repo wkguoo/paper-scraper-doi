@@ -614,5 +614,154 @@ class ZoteroBridgeResultTests(ZoteroBridgeRequestTests):
         self.assertEqual(state["rows"][0]["file"], "")
 
 
+class ZoteroBridgeOrchestrationTests(ZoteroBridgeRequestTests):
+    def test_run_returns_waiting_without_requeue(self) -> None:
+        from paper_automation.zotero_bridge import run_zotero_bridge
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bridge_root = root / "bridge"
+            run_dir = self._run(root / "runs", fallback_count=101)
+            first = run_zotero_bridge(run_dir, bridge_root=bridge_root, wait_seconds=0)
+            second = run_zotero_bridge(run_dir, bridge_root=bridge_root, wait_seconds=0)
+            first_ids = [job.job_id for job in first.bridge.jobs] if first.bridge else []
+            second_ids = [job.job_id for job in second.bridge.jobs] if second.bridge else []
+            published_count = len(list((bridge_root / "inbox").glob("*.json")))
+
+        self.assertEqual(first.status, "awaiting_confirmation")
+        self.assertEqual(second.status, "awaiting_confirmation")
+        self.assertEqual(second_ids, first_ids)
+        self.assertEqual(published_count, 2)
+
+    def test_run_consumes_result_and_finalizes_once(self) -> None:
+        from paper_automation.zotero_bridge import run_zotero_bridge
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._run(root / "runs", fallback_count=101)
+            bridge_root = root / "bridge"
+            queued = run_zotero_bridge(run_dir, bridge_root=bridge_root, wait_seconds=0)
+            self.assertIsNotNone(queued.bridge)
+            for job in queued.bridge.jobs:
+                request = json.loads(job.request_path.read_text(encoding="utf-8"))
+                job.result_path.write_text(
+                    json.dumps(bridge_result(job, [
+                        {
+                            "task_id": item["task_id"],
+                            "zotero_item_id": "",
+                            "attachment_path": "",
+                            "status": "no_pdf",
+                            "reason": "fixture",
+                        }
+                        for item in request["items"]
+                    ])),
+                    encoding="utf-8",
+                )
+            with patch("paper_automation.zotero_bridge.finalize_batch") as finalize:
+                outcome = run_zotero_bridge(
+                    run_dir,
+                    bridge_root=bridge_root,
+                    wait_seconds=1,
+                )
+            zotero_results = outcome.zotero_results
+
+        self.assertEqual(outcome.status, "finalized")
+        self.assertIsNotNone(zotero_results)
+        finalize.assert_called_once_with(run_dir.resolve(), zotero_results)
+        self.assertIsNotNone(outcome.bridge)
+        self.assertEqual(len(outcome.bridge.jobs), 2)
+
+    def test_no_fallback_writes_current_reports_without_creating_a_job(self) -> None:
+        from paper_automation.batch_workflow import (
+            load_batch_state,
+            paths_from_run_dir,
+            result_from_state,
+        )
+        from paper_automation.zotero_bridge import run_zotero_bridge
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bridge_root = root / "bridge"
+            run_dir = self._run(root / "runs", fallback_count=0)
+            paths = paths_from_run_dir(run_dir)
+            expected = result_from_state(paths, load_batch_state(run_dir))
+            outcome = run_zotero_bridge(run_dir, bridge_root=bridge_root, wait_seconds=0)
+            report_exists = (paths.reports / "final_manifest.csv").is_file()
+            bridge_exists = bridge_root.exists()
+
+        self.assertEqual(outcome.status, "no_fallback")
+        self.assertIsNone(outcome.bridge)
+        self.assertIsNone(outcome.zotero_results)
+        self.assertEqual(outcome.batch_result, expected)
+        self.assertTrue(report_exists)
+        self.assertFalse(bridge_exists)
+
+    def test_empty_fallback_cannot_bypass_pending_state_rows(self) -> None:
+        from paper_automation.batch_workflow import NORMALIZED_FIELDS
+        from paper_automation.zotero_bridge import run_zotero_bridge
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._run(root / "runs", fallback_count=1)
+            fallback = run_dir / "working" / "zotero_fallback.csv"
+            fallback.write_text(
+                ",".join(NORMALIZED_FIELDS) + "\n",
+                encoding="utf-8-sig",
+            )
+            with self.assertRaisesRegex(ValueError, "^bridge_fallback_state_mismatch$"):
+                run_zotero_bridge(run_dir, bridge_root=root / "bridge", wait_seconds=0)
+
+    def test_plugin_failure_results_produce_recoverable_final_report(self) -> None:
+        from paper_automation.batch_workflow import load_batch_state
+        from paper_automation.zotero_bridge import run_zotero_bridge
+
+        statuses = [
+            "user_cancelled",
+            "job_expired",
+            "job_id_conflict",
+            "plugin_error",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._run(root / "runs", fallback_count=len(statuses))
+            bridge_root = root / "bridge"
+            queued = run_zotero_bridge(run_dir, bridge_root=bridge_root, wait_seconds=0)
+            self.assertIsNotNone(queued.bridge)
+            job = queued.bridge.jobs[0]
+            request = json.loads(job.request_path.read_text(encoding="utf-8"))
+            job.result_path.write_text(
+                json.dumps(bridge_result(job, [
+                    {
+                        "task_id": item["task_id"],
+                        "zotero_item_id": "",
+                        "attachment_path": "",
+                        "status": status,
+                        "reason": "fixture",
+                    }
+                    for item, status in zip(request["items"], statuses, strict=True)
+                ])),
+                encoding="utf-8",
+            )
+            outcome = run_zotero_bridge(run_dir, bridge_root=bridge_root, wait_seconds=0)
+            state = load_batch_state(run_dir)
+            report_exists = (run_dir / "reports" / "final_manifest.csv").is_file()
+
+        self.assertEqual(outcome.status, "finalized")
+        self.assertIsNotNone(outcome.batch_result)
+        self.assertEqual(outcome.batch_result.failed_count, len(statuses))
+        self.assertEqual([row["status"] for row in state["rows"]], statuses)
+        self.assertTrue(report_exists)
+
+    def test_wait_seconds_rejects_outside_range_and_boolean_values(self) -> None:
+        from paper_automation.zotero_bridge import run_zotero_bridge
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_run = Path(tmp) / "missing"
+            for seconds in (-1, 86401, True):
+                with self.subTest(seconds=seconds):
+                    with self.assertRaisesRegex(ValueError, "^bridge_wait_seconds_invalid$"):
+                        run_zotero_bridge(missing_run, wait_seconds=seconds)
+
+
 if __name__ == "__main__":
     unittest.main()

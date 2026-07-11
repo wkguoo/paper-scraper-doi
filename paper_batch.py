@@ -19,6 +19,7 @@ from paper_automation.batch_workflow import (
     resume_batch,
     start_batch,
 )
+from paper_automation.zotero_bridge import run_zotero_bridge
 
 
 ERROR_HINTS = {
@@ -43,6 +44,21 @@ ERROR_HINTS = {
     "manual_retry_state_not_pending": "人工重试清单与当前批次状态不一致，请重新检查批次。",
     "manual_retry_status_mismatch": "人工重试清单状态不一致，请勿手工修改该 CSV。",
     "manual_retry_task_ids_mismatch": "人工重试清单任务集合不一致，请勿增删 CSV 行。",
+    "bridge_wait_seconds_invalid": "--wait-seconds 必须是 0 到 86400 之间的整数。",
+    "bridge_poll_seconds_invalid": "桥接轮询参数无效，请使用默认设置后重试。",
+    "bridge_localappdata_missing": "未找到 Windows LOCALAPPDATA，无法建立 Zotero 本地桥接目录。",
+    "bridge_fallback_file_missing": "Zotero 回退清单不存在，请确认 --run-dir 指向完整批次。",
+    "bridge_fallback_fields_invalid": "Zotero 回退清单表头无效，请保留项目自动生成的 CSV。",
+    "bridge_fallback_state_mismatch": "Zotero 回退清单与当前批次状态不一致，请不要手工修改它。",
+    "bridge_batch_manifest_conflict": "桥接清单与当前回退条目不一致，请不要手工修改桥接文件。",
+    "bridge_manifest_invalid": "桥接批次清单无效或不完整，请检查本地桥接文件后重新创建批次。",
+    "bridge_job_id_conflict": "桥接作业编号冲突，请不要手工复制或覆盖桥接 JSON。",
+    "bridge_result_missing": "Zotero 尚未返回全部子作业结果，请在 Zotero 中确认后重新运行同一条命令。",
+    "bridge_result_fields_invalid": "Zotero 插件结果字段无效，请保留插件自动生成的结果文件。",
+    "bridge_result_identity_invalid": "Zotero 插件结果不属于当前桥接作业，请不要混用结果文件。",
+    "bridge_result_status_invalid": "Zotero 插件结果的 status 不属于允许范围。",
+    "bridge_result_tasks_missing": "Zotero 插件结果未覆盖当前批次的全部条目。",
+    "bridge_result_invalid": "Zotero 插件结果文件无效或尚未完整写入，请稍后重试。",
 }
 
 _SAFE_ERROR_CODE = re.compile(r"^\s*([a-z][a-z0-9_]{0,127})(?=\b|:)")
@@ -79,6 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
     finalize = subparsers.add_parser("finalize", help="归并 Zotero 附件并生成最终报告")
     finalize.add_argument("--run-dir", required=True, help="已有批次目录")
     finalize.add_argument("--zotero-results", required=True, help="Zotero 结果 CSV 文件")
+
+    zotero = subparsers.add_parser("zotero", help="把项目失败项交给 Zotero 9 本地桥接")
+    zotero.add_argument("--run-dir", required=True, help="已有批次目录")
+    zotero.add_argument("--library-id", type=int, default=1, help="目标 Zotero 文库 ID（默认：1）")
+    zotero.add_argument("--wait-seconds", type=int, default=0, help="等待 Zotero 结果的秒数（0-86400）")
     return parser
 
 
@@ -207,7 +228,7 @@ def _known_error_code(error: Exception) -> str | None:
     if match is None:
         return None
     code = match.group(1)
-    return code if code in ERROR_HINTS else None
+    return code if code in ERROR_HINTS or code.startswith("bridge_") else None
 
 
 def _print_error(error: Exception) -> None:
@@ -215,7 +236,11 @@ def _print_error(error: Exception) -> None:
     if code is None:
         message = f"错误码 2：{type(error).__name__}。批次工作流未完成，请检查输入路径和批次状态。"
     else:
-        message = f"错误码 2：{code}。{ERROR_HINTS[code]}"
+        hint = ERROR_HINTS.get(
+            code,
+            "Zotero 本地桥接数据无效或不完整，请不要手工修改桥接 JSON/CSV，并重新运行同一条命令。",
+        )
+        message = f"错误码 2：{code}。{hint}"
     print(message, file=sys.stderr)
 
 
@@ -242,11 +267,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "resume":
             result = resume_batch(args.run_dir)
-        else:
+        elif args.command == "finalize":
             result = finalize_batch(args.run_dir, args.zotero_results)
+        else:
+            bridge_run = run_zotero_bridge(
+                args.run_dir,
+                library_id=args.library_id,
+                wait_seconds=args.wait_seconds,
+            )
+            if bridge_run.status == "awaiting_confirmation":
+                if bridge_run.bridge is None:
+                    raise RuntimeError("bridge_batch_result_missing")
+                print(f"桥接任务：{len(bridge_run.bridge.jobs)} 个子作业")
+                print("请在 Zotero 中确认一次；确认后重新运行同一条命令即可继续。")
+                print(f"批次目录：{Path(args.run_dir).expanduser().resolve()}")
+                return 3
+            if bridge_run.batch_result is None:
+                raise RuntimeError("bridge_batch_result_missing")
+            result = bridge_run.batch_result
 
         _print_summary(result)
-        if args.command == "finalize":
+        if args.command in {"finalize", "zotero"}:
             if result.failed_count == 0 and result.zotero_fallback_count == 0:
                 print(f"批次已完成。最终 PDF 目录：{result.paths.pdfs}")
             else:

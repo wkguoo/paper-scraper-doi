@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -13,10 +14,15 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from paper_automation.batch_workflow import (
+    BatchRunResult,
     NORMALIZED_FIELDS,
     ZOTERO_INPUT_STATUSES,
     ZOTERO_RESULT_FIELDS,
+    finalize_batch,
     load_batch_state,
+    paths_from_run_dir,
+    result_from_state,
+    write_final_reports,
 )
 
 BRIDGE_SCHEMA_VERSION = 1
@@ -72,6 +78,14 @@ class BridgeBatch:
     run_id: str
     manifest_path: Path
     jobs: tuple[BridgeJob, ...]
+
+
+@dataclass(frozen=True)
+class BridgeRunResult:
+    status: str
+    bridge: BridgeBatch | None
+    zotero_results: Path | None
+    batch_result: BatchRunResult | None
 
 
 def default_bridge_root(environ: Mapping[str, str] | None = None) -> Path:
@@ -788,3 +802,48 @@ def consume_bridge_batch(bridge: BridgeBatch, *, now: datetime | None = None) ->
         raise ValueError("bridge_result_tasks_missing")
     ordered_rows = [rows_by_task[task_id] for task_id in ordered_ids]
     return _write_result_csv_exclusive(root, ordered_rows, now=now)
+
+
+def run_zotero_bridge(
+    run_dir: str | Path,
+    *,
+    library_id: int = 1,
+    wait_seconds: int = 0,
+    poll_seconds: float = 1.0,
+    bridge_root: str | Path | None = None,
+) -> BridgeRunResult:
+    """Queue or resume one Zotero bridge batch without rerunning download stages."""
+
+    if type(wait_seconds) is not int or not 0 <= wait_seconds <= 86400:
+        raise ValueError("bridge_wait_seconds_invalid")
+    if (
+        isinstance(poll_seconds, bool)
+        or not isinstance(poll_seconds, (int, float))
+        or not 0 < poll_seconds < float("inf")
+    ):
+        raise ValueError("bridge_poll_seconds_invalid")
+
+    root = Path(run_dir).expanduser().resolve()
+    try:
+        fallback_rows = _fallback_rows(root)
+    except OSError as exc:
+        raise ValueError("bridge_fallback_file_missing") from exc
+    if not fallback_rows:
+        paths = paths_from_run_dir(root)
+        state = load_batch_state(paths.root)
+        batch_result = result_from_state(paths, state)
+        if batch_result.zotero_fallback_count:
+            raise ValueError("bridge_fallback_state_mismatch")
+        write_final_reports(paths, state["rows"])
+        return BridgeRunResult("no_fallback", None, None, batch_result)
+
+    bridge = queue_bridge_jobs(root, library_id=library_id, bridge_root=bridge_root)
+    deadline = time.monotonic() + wait_seconds
+    while any(not job.result_path.is_file() for job in bridge.jobs):
+        if time.monotonic() >= deadline:
+            return BridgeRunResult("awaiting_confirmation", bridge, None, None)
+        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+
+    selected = consume_bridge_batch(bridge)
+    batch_result = finalize_batch(root, selected)
+    return BridgeRunResult("finalized", bridge, selected, batch_result)

@@ -1191,6 +1191,12 @@ def _paths_from_run_dir(run_dir: str | Path) -> BatchPaths:
     )
 
 
+def paths_from_run_dir(run_dir: str | Path) -> BatchPaths:
+    """Return the standard paths for an existing batch without changing it."""
+
+    return _paths_from_run_dir(run_dir)
+
+
 def _read_csv_rows(path: Path) -> list[dict]:
     if not path.is_file():
         raise ValueError("pending_file_missing")
@@ -1663,6 +1669,15 @@ def _result_from_state(paths: BatchPaths, state: dict) -> BatchRunResult:
         manual_retry_count=len(manual_rows),
         zotero_fallback_count=len(fallback_rows),
     )
+
+
+def result_from_state(paths: BatchPaths, state: dict) -> BatchRunResult:
+    """Validate and summarize an existing batch state without changing it."""
+
+    if not isinstance(paths, BatchPaths) or paths != _paths_from_run_dir(paths.root):
+        raise ValueError("invalid_batch_paths")
+    _validate_state(state, expected_run_dir=paths.root)
+    return _result_from_state(paths, state)
 
 
 class DefaultStageGateway:

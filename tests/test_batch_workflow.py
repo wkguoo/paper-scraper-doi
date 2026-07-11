@@ -4667,5 +4667,87 @@ class BatchCliTests(unittest.TestCase):
                 main(["--help"])
         self.assertEqual(raised.exception.code, 0)
         output = stdout.getvalue()
-        for text in ("TXT/MD/CSV/XLSX/XLSM", "只重试一次", "合法 OA/授权访问", "非破坏复制", "start", "resume", "finalize"):
+        for text in ("TXT/MD/CSV/XLSX/XLSM", "只重试一次", "合法 OA/授权访问", "非破坏复制", "start", "resume", "finalize", "zotero"):
             self.assertIn(text, output)
+
+    def test_zotero_waiting_returns_three_and_prints_one_action(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_automation.zotero_bridge import BridgeBatch, BridgeJob, BridgeRunResult
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "zotero waiting"
+            job = BridgeJob(
+                job_id="11111111-1111-4111-8111-111111111111",
+                payload_sha256="a" * 64,
+                request_path=root / "bridge" / "inbox" / "11111111-1111-4111-8111-111111111111.json",
+                result_path=root / "bridge" / "outbox" / "11111111-1111-4111-8111-111111111111.result.json",
+                run_dir=root,
+                chunk_index=1,
+                chunk_count=1,
+            )
+            waiting = BridgeRunResult(
+                status="awaiting_confirmation",
+                bridge=BridgeBatch(
+                    run_id=root.name,
+                    manifest_path=root / "working" / "zotero_bridge_jobs.json",
+                    jobs=(job,),
+                ),
+                zotero_results=None,
+                batch_result=None,
+            )
+            stdout = StringIO()
+            with patch("paper_batch.run_zotero_bridge", return_value=waiting, create=True) as run:
+                with redirect_stdout(stdout):
+                    exit_code = main([
+                        "zotero", "--run-dir", str(root), "--wait-seconds", "0",
+                    ])
+
+        self.assertEqual(exit_code, 3)
+        self.assertEqual(run.call_args.args, (str(root),))
+        self.assertEqual(run.call_args.kwargs, {"library_id": 1, "wait_seconds": 0})
+        self.assertIn("请在 Zotero 中确认一次", stdout.getvalue())
+        self.assertNotIn("'resume'", stdout.getvalue())
+
+    def test_zotero_wait_seconds_outside_range_returns_two(self) -> None:
+        from contextlib import redirect_stderr
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "missing"
+            for seconds in ("-1", "86401"):
+                with self.subTest(seconds=seconds):
+                    stderr = StringIO()
+                    with redirect_stderr(stderr):
+                        exit_code = main([
+                            "zotero", "--run-dir", str(run_dir), "--wait-seconds", seconds,
+                        ])
+                    self.assertEqual(exit_code, 2)
+                    self.assertIn("bridge_wait_seconds_invalid", stderr.getvalue())
+                    self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_zotero_invalid_result_returns_two_without_payload_leak(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        secret = '{"plugin_result":"must-not-leak"}'
+        stdout, stderr = StringIO(), StringIO()
+        with patch(
+            "paper_batch.run_zotero_bridge",
+            side_effect=ValueError(f"bridge_result_fields_invalid:{secret}"),
+            create=True,
+        ):
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["zotero", "--run-dir", "existing run"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("bridge_result_fields_invalid", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+        self.assertNotIn(secret, stdout.getvalue())
+        self.assertNotIn(secret, stderr.getvalue())
