@@ -1007,3 +1007,14 @@
   - 编译与完整离线回归：..\..\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation；..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v
 - 如何检查是否成功：RED 阶段在新模块创建前按预期报告 ModuleNotFoundError；GREEN 阶段 4 项通过；替代状态回归共 68 项通过（1 项因 Windows 符号链接权限按既有条件跳过）；完整离线回归为 Ran 294 tests ... OK (skipped=2)，编译命令退出码为 0；提交前另执行 git diff --check。
 - 注意事项或潜在风险：简报指定的 tests.test_batch_workflow.BatchStateTests 在当前基线不存在，直接运行会报 AttributeError，故以实际覆盖状态持久化与恢复验证的 BatchFileTests 和 BatchRunTests 替代；所有测试仅使用临时目录或 mock/fake 边界，未联网、未启动浏览器、未访问 Zotero、未读写 Cookie、未写真实 LocalAppData 队列，且未自动打包。
+
+## 2026-07-11 13:06:58 +08:00 — Task 1 桥接请求合同复审加固
+
+- 本次任务目标：补强 Zotero 本地桥接请求合同的输入完整性，防止任意元数据、重复作业 ID 或非规范时间戳进入后续文件队列。
+- 新增、修改或删除的文件：修改 `paper_automation/zotero_bridge.py`、`tests/test_zotero_bridge.py`、`docs/superpowers/plans/2026-07-11-zotero9-project-bridge.md` 与本 `CHANGELOG.md`；未删除文件，未修改原始文献数据、PDF、Zotero 配置或打包产物。
+- 具体修改内容：要求 supplied rows 严格等于当前 `zotero_fallback.csv` 中对应 chunk 的原始顺序切片，并与 `batch_state.json` 行完全一致；拒绝重复 job ID；只接受以 `Z` 结尾、有效且严格递增的 UTC 时间；拒绝把 Python 布尔值当作 JSON 整数；同步修正计划中的实际状态回归测试类名。
+- 修改原因：独立复审会话未能返回报告前的主控差异审查发现，原先可选 rows 参数、重复 ID 和时间类型边界仍可能使后续队列合同不够严格。
+- 如何运行：`..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests -v`；`..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests tests.test_batch_workflow.BatchFileTests tests.test_batch_workflow.BatchRunTests -v`；随后运行完整离线回归与 `git diff --check`。
+- 生成的输出文件：测试仅在系统临时目录创建短暂文件；未创建真实 LocalAppData 桥接 JSON、Zotero 集合/条目/附件、PDF、结果 CSV、XPI 或打包文件。
+- 如何检查是否成功：新增测试必须覆盖 101 条 100/1 分块、任意 rows 注入、state 不匹配、重复 UUID、非 UTC/倒置时间和布尔整数；所有离线测试通过且差异检查为空。
+- 注意事项或潜在风险：本次仍未联网、未启动 Chrome/Edge/Codex 浏览器、未访问或写入 Zotero、未处理 CAPTCHA、未读取 Cookie，且未自动打包；真实队列发布和 Zotero 插件处理仍属于后续任务。

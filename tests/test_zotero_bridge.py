@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import sys
@@ -46,6 +47,28 @@ class ZoteroBridgeRequestTests(unittest.TestCase):
             writer.writeheader()
             writer.writerows(rows)
         return paths.root
+
+    def _fallback_rows(self, run_dir: Path) -> list[dict[str, str]]:
+        path = run_dir / "working" / "zotero_fallback.csv"
+        with path.open("r", newline="", encoding="utf-8-sig") as handle:
+            return list(csv.DictReader(handle))
+
+    @staticmethod
+    def _rehash_request(request: dict) -> None:
+        payload = {
+            key: request[key]
+            for key in sorted(request)
+            if key != "payload_sha256"
+        }
+        request["payload_sha256"] = hashlib.sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
 
     def test_default_root_uses_local_appdata(self) -> None:
         from paper_automation.zotero_bridge import default_bridge_root
@@ -122,6 +145,178 @@ class ZoteroBridgeRequestTests(unittest.TestCase):
         self.assertEqual([value["chunk_count"] for value in requests], [2, 2])
         self.assertEqual({value["run_id"] for value in requests}, {run_dir.name})
         self.assertEqual(len({value["collection_name"] for value in requests}), 1)
+
+    def test_supplied_rows_must_equal_the_current_original_chunk_slice(self) -> None:
+        from paper_automation.zotero_bridge import build_bridge_request
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(Path(tmp), fallback_count=101)
+            fallback_rows = self._fallback_rows(run_dir)
+            first_chunk = fallback_rows[:100]
+
+            accepted = build_bridge_request(
+                run_dir,
+                library_id=1,
+                job_id="11111111-1111-4111-8111-111111111111",
+                now=datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+                rows=first_chunk,
+                chunk_index=1,
+                chunk_count=2,
+            )
+
+            injected_rows = [dict(row) for row in first_chunk]
+            injected_rows[0]["title"] = "Injected metadata"
+            invalid_cases = {
+                "metadata_injection": injected_rows,
+                "wrong_chunk": fallback_rows[100:],
+                "wrong_order": list(reversed(first_chunk)),
+            }
+            for label, rows in invalid_cases.items():
+                with self.subTest(label=label):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "^bridge_request_rows_invalid$",
+                    ):
+                        build_bridge_request(
+                            run_dir,
+                            library_id=1,
+                            job_id="11111111-1111-4111-8111-111111111111",
+                            now=datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+                            rows=rows,
+                            chunk_index=1,
+                            chunk_count=2,
+                        )
+
+        self.assertEqual(accepted["items"][0]["task_id"], "paper-0001")
+        self.assertEqual(accepted["items"][-1]["task_id"], "paper-0100")
+
+    def test_fallback_rows_must_match_the_current_batch_state(self) -> None:
+        from paper_automation.batch_workflow import NORMALIZED_FIELDS
+        from paper_automation.zotero_bridge import build_bridge_request
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(Path(tmp))
+            fallback_rows = self._fallback_rows(run_dir)
+            fallback_rows[0]["title"] = "Changed only in fallback CSV"
+            path = run_dir / "working" / "zotero_fallback.csv"
+            with path.open("w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=NORMALIZED_FIELDS)
+                writer.writeheader()
+                writer.writerows(fallback_rows)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "^bridge_fallback_state_mismatch$",
+            ):
+                build_bridge_request(
+                    run_dir,
+                    library_id=1,
+                    job_id="11111111-1111-4111-8111-111111111111",
+                    now=datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+                )
+
+    def test_supplied_job_ids_must_match_chunk_count_and_be_unique(self) -> None:
+        from paper_automation.zotero_bridge import build_bridge_requests
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(Path(tmp), fallback_count=101)
+            with self.subTest("count"):
+                with self.assertRaisesRegex(ValueError, "^bridge_job_count_invalid$"):
+                    build_bridge_requests(
+                        run_dir,
+                        library_id=1,
+                        job_ids=("11111111-1111-4111-8111-111111111111",),
+                        now=datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+                    )
+            with self.subTest("duplicate"):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^bridge_job_id_duplicate$",
+                ):
+                    build_bridge_requests(
+                        run_dir,
+                        library_id=1,
+                        job_ids=(
+                            "11111111-1111-4111-8111-111111111111",
+                            "11111111-1111-4111-8111-111111111111",
+                        ),
+                        now=datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+                    )
+
+    def test_validate_bridge_request_rejects_invalid_or_non_utc_timestamps(self) -> None:
+        from paper_automation.zotero_bridge import build_bridge_request, validate_bridge_request
+
+        with tempfile.TemporaryDirectory() as tmp:
+            request = build_bridge_request(
+                self._run(Path(tmp)),
+                library_id=1,
+                job_id="11111111-1111-4111-8111-111111111111",
+                now=datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+            )
+
+        invalid_values = (
+            "not-an-iso-timestamp",
+            "2026-07-11T09:05:00",
+            "2026-07-11T09:05:00+00:00",
+            "2026-07-11T17:05:00+08:00",
+        )
+        for value in invalid_values:
+            with self.subTest(value=value):
+                candidate = dict(request)
+                candidate["created_at"] = value
+                self._rehash_request(candidate)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^bridge_request_time_invalid$",
+                ):
+                    validate_bridge_request(candidate)
+
+    def test_validate_bridge_request_requires_expiry_after_creation(self) -> None:
+        from paper_automation.zotero_bridge import build_bridge_request, validate_bridge_request
+
+        with tempfile.TemporaryDirectory() as tmp:
+            request = build_bridge_request(
+                self._run(Path(tmp)),
+                library_id=1,
+                job_id="11111111-1111-4111-8111-111111111111",
+                now=datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+            )
+
+        for value in ("2026-07-11T09:05:00Z", "2026-07-11T09:04:59Z"):
+            with self.subTest(value=value):
+                candidate = dict(request)
+                candidate["expires_at"] = value
+                self._rehash_request(candidate)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^bridge_request_time_invalid$",
+                ):
+                    validate_bridge_request(candidate)
+
+    def test_boolean_values_are_not_accepted_as_integer_request_fields(self) -> None:
+        from paper_automation.zotero_bridge import build_bridge_request, validate_bridge_request
+
+        with tempfile.TemporaryDirectory() as tmp:
+            request = build_bridge_request(
+                self._run(Path(tmp)),
+                library_id=1,
+                job_id="11111111-1111-4111-8111-111111111111",
+                now=datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+            )
+
+        invalid_values = (
+            ("schema_version", True, "bridge_schema_version_invalid"),
+            ("library_id", True, "bridge_library_id_invalid"),
+            ("chunk_index", True, "bridge_chunk_index_invalid"),
+            ("chunk_count", True, "bridge_chunk_index_invalid"),
+        )
+        for field, value, code in invalid_values:
+            with self.subTest(field=field):
+                candidate = dict(request)
+                candidate[field] = value
+                self._rehash_request(candidate)
+                with self.assertRaisesRegex(ValueError, f"^{code}$"):
+                    validate_bridge_request(candidate)
 
 
 if __name__ == "__main__":

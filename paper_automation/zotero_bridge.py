@@ -21,6 +21,9 @@ BRIDGE_SCHEMA_VERSION = 1
 MAX_ITEMS_PER_JOB = 100
 MAX_TEXT_LENGTH = 4096
 JOB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+UTC_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
+)
 REQUEST_FIELDS = {
     "schema_version", "job_id", "payload_sha256", "created_at", "expires_at",
     "run_id", "library_id", "collection_name", "chunk_index", "chunk_count", "items",
@@ -81,6 +84,15 @@ def _iso(value: datetime) -> str:
     return aware.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _parse_utc_timestamp(value: str) -> datetime:
+    if not UTC_TIMESTAMP_RE.fullmatch(value):
+        raise ValueError("bridge_request_time_invalid")
+    parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("bridge_request_time_invalid")
+    return parsed.astimezone(timezone.utc)
+
+
 def _canonical_payload(request: dict) -> bytes:
     payload = {key: request[key] for key in sorted(REQUEST_FIELDS - {"payload_sha256"})}
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -99,17 +111,88 @@ def _fallback_rows(run_dir: Path) -> list[dict[str, str]]:
         return [{key: str(value or "").strip() for key, value in row.items()} for row in reader]
 
 
+def _state_row(row: object) -> dict[str, str]:
+    if not isinstance(row, Mapping):
+        raise ValueError("bridge_state_rows_invalid")
+    if any(field not in row for field in NORMALIZED_FIELDS):
+        raise ValueError("bridge_state_rows_invalid")
+    return {
+        field: str(row[field] or "").strip()
+        for field in NORMALIZED_FIELDS
+    }
+
+
 def _validated_fallback_rows(root: Path) -> list[dict[str, str]]:
     state = load_batch_state(root)
-    state_ids = {str(row.get("task_id", "")) for row in state["rows"]}
+    state_rows = state.get("rows") if isinstance(state, dict) else None
+    if not isinstance(state_rows, list):
+        raise ValueError("bridge_state_rows_invalid")
+    normalized_state_rows = [_state_row(row) for row in state_rows]
+    state_ids = [row["task_id"] for row in normalized_state_rows]
+    if not state_ids or "" in state_ids or len(set(state_ids)) != len(state_ids):
+        raise ValueError("bridge_state_task_invalid")
+    state_positions = {task_id: index for index, task_id in enumerate(state_ids)}
     rows = _fallback_rows(root)
     if not rows:
         raise ValueError("bridge_fallback_empty")
-    if any(row["task_id"] not in state_ids for row in rows):
-        raise ValueError("bridge_fallback_task_unknown")
     if len({row["task_id"] for row in rows}) != len(rows):
         raise ValueError("bridge_fallback_task_duplicate")
+    previous_state_position = -1
+    for row in rows:
+        task_id = row["task_id"]
+        if task_id not in state_positions:
+            raise ValueError("bridge_fallback_task_unknown")
+        state_position = state_positions[task_id]
+        if (
+            state_position <= previous_state_position
+            or row != normalized_state_rows[state_position]
+        ):
+            raise ValueError("bridge_fallback_state_mismatch")
+        previous_state_position = state_position
     return rows
+
+
+def _validated_request_rows(
+    root: Path,
+    rows: Sequence[dict[str, str]] | None,
+    *,
+    chunk_index: int,
+    chunk_count: int,
+) -> list[dict[str, str]]:
+    fallback_rows = _validated_fallback_rows(root)
+    if (
+        type(chunk_index) is not int
+        or type(chunk_count) is not int
+        or not 1 <= chunk_index <= chunk_count
+    ):
+        raise ValueError("bridge_chunk_index_invalid")
+    expected_chunk_count = (
+        len(fallback_rows) + MAX_ITEMS_PER_JOB - 1
+    ) // MAX_ITEMS_PER_JOB
+    if chunk_count != expected_chunk_count:
+        raise ValueError("bridge_chunk_count_invalid")
+    start = (chunk_index - 1) * MAX_ITEMS_PER_JOB
+    expected_rows = fallback_rows[start:start + MAX_ITEMS_PER_JOB]
+    if rows is None:
+        return expected_rows
+    try:
+        supplied_rows = list(rows)
+    except TypeError as exc:
+        raise ValueError("bridge_request_rows_invalid") from exc
+    if any(
+        not isinstance(row, dict)
+        or set(row) != set(NORMALIZED_FIELDS)
+        or any(not isinstance(row[field], str) for field in NORMALIZED_FIELDS)
+        for row in supplied_rows
+    ):
+        raise ValueError("bridge_request_rows_invalid")
+    normalized_supplied_rows = [
+        {field: row[field] for field in NORMALIZED_FIELDS}
+        for row in supplied_rows
+    ]
+    if normalized_supplied_rows != expected_rows:
+        raise ValueError("bridge_request_rows_invalid")
+    return expected_rows
 
 
 def _request_items(rows: Sequence[dict[str, str]]) -> list[dict[str, str]]:
@@ -134,7 +217,12 @@ def build_bridge_request(
     chunk_count: int = 1,
 ) -> dict:
     root = Path(run_dir).expanduser().resolve()
-    selected = list(rows) if rows is not None else _validated_fallback_rows(root)
+    selected = _validated_request_rows(
+        root,
+        rows,
+        chunk_index=chunk_index,
+        chunk_count=chunk_count,
+    )
     instant = now or datetime.now(timezone.utc)
     request = {
         "schema_version": BRIDGE_SCHEMA_VERSION,
@@ -167,6 +255,8 @@ def build_bridge_requests(
     identifiers = tuple(job_ids) if job_ids is not None else tuple(str(uuid.uuid4()) for _ in range(chunk_count))
     if len(identifiers) != chunk_count:
         raise ValueError("bridge_job_count_invalid")
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("bridge_job_id_duplicate")
     instant = now or datetime.now(timezone.utc)
     shared_collection_name = collection_name or "Codex下载回退_" + instant.astimezone().strftime("%Y%m%d_%H%M%S")
     return [
@@ -187,16 +277,23 @@ def build_bridge_requests(
 def validate_bridge_request(request: object) -> dict:
     if not isinstance(request, dict) or set(request) != REQUEST_FIELDS:
         raise ValueError("bridge_request_fields_invalid")
-    if request["schema_version"] != BRIDGE_SCHEMA_VERSION:
+    if type(request["schema_version"]) is not int or request["schema_version"] != BRIDGE_SCHEMA_VERSION:
         raise ValueError("bridge_schema_version_invalid")
     if not isinstance(request["job_id"], str) or not JOB_ID_RE.fullmatch(request["job_id"]):
         raise ValueError("bridge_job_id_invalid")
     scalar_fields = ("payload_sha256", "created_at", "expires_at", "run_id", "collection_name")
     if any(not isinstance(request[field], str) or not request[field] or len(request[field]) > MAX_TEXT_LENGTH for field in scalar_fields):
         raise ValueError("bridge_request_value_invalid")
-    if not isinstance(request["library_id"], int) or request["library_id"] <= 0:
+    try:
+        created_at = _parse_utc_timestamp(request["created_at"])
+        expires_at = _parse_utc_timestamp(request["expires_at"])
+    except ValueError as exc:
+        raise ValueError("bridge_request_time_invalid") from exc
+    if expires_at <= created_at:
+        raise ValueError("bridge_request_time_invalid")
+    if type(request["library_id"]) is not int or request["library_id"] <= 0:
         raise ValueError("bridge_library_id_invalid")
-    if not isinstance(request["chunk_index"], int) or not isinstance(request["chunk_count"], int):
+    if type(request["chunk_index"]) is not int or type(request["chunk_count"]) is not int:
         raise ValueError("bridge_chunk_index_invalid")
     if not 1 <= request["chunk_index"] <= request["chunk_count"]:
         raise ValueError("bridge_chunk_index_invalid")

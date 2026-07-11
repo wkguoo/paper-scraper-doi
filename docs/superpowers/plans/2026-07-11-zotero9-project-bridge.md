@@ -178,6 +178,33 @@ class ZoteroBridgeRequestTests(unittest.TestCase):
         self.assertEqual({value["run_id"] for value in requests}, {run_dir.name})
         self.assertEqual(len({value["collection_name"] for value in requests}), 1)
 
+    def test_rows_job_ids_and_times_cannot_weaken_the_contract(self) -> None:
+        from paper_automation.zotero_bridge import (
+            _digest,
+            build_bridge_request,
+            build_bridge_requests,
+            validate_bridge_request,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(Path(tmp), fallback_count=101)
+            with self.assertRaisesRegex(ValueError, "^bridge_request_rows_invalid$"):
+                build_bridge_request(
+                    run_dir, library_id=1, chunk_index=1, chunk_count=2,
+                    rows=[{"task_id": "outside", "doi": "10.1/x", "title": "x", "authors": "x", "year": "2025"}],
+                )
+            with self.assertRaisesRegex(ValueError, "^bridge_job_id_duplicate$"):
+                build_bridge_requests(
+                    run_dir, library_id=1,
+                    job_ids=("11111111-1111-4111-8111-111111111111",) * 2,
+                )
+            single_run = self._run(Path(tmp) / "single")
+            request = build_bridge_request(single_run, library_id=1)
+            request["expires_at"] = "2026-07-11T09:00:00Z"
+            request["payload_sha256"] = _digest(request)
+            with self.assertRaisesRegex(ValueError, "^bridge_request_time_invalid$"):
+                validate_bridge_request(request)
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -416,6 +443,8 @@ def validate_bridge_request(request: object) -> dict:
     return request
 ```
 
+When `build_bridge_request(..., rows=...)` is used internally by `build_bridge_requests()`, first obtain `_validated_fallback_rows(root)`, calculate the one-based slice `(chunk_index - 1) * MAX_ITEMS_PER_JOB : chunk_index * MAX_ITEMS_PER_JOB`, and require the supplied rows to equal that exact slice after normalizing the five request fields. Any mismatch raises `ValueError("bridge_request_rows_invalid")`; do not let a public optional argument introduce a non-fallback task. In `build_bridge_requests()`, reject duplicate supplied IDs with `ValueError("bridge_job_id_duplicate")` before constructing any request. In `validate_bridge_request()`, parse `created_at` and `expires_at` as canonical UTC `...Z` ISO-8601 timestamps and reject malformed or non-increasing timestamps with `ValueError("bridge_request_time_invalid")` before accepting the digest.
+
 The fixture must persist `options: asdict(BatchOptions())` exactly as shown; do not weaken production state validation or replace it with an empty options dictionary.
 
 - [ ] **Step 4: Run request tests and the existing state tests**
@@ -423,7 +452,7 @@ The fixture must persist `options: asdict(BatchOptions())` exactly as shown; do 
 Run:
 
 ```powershell
-..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests tests.test_batch_workflow.BatchStateTests -v
+..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests tests.test_batch_workflow.BatchFileTests tests.test_batch_workflow.BatchRunTests -v
 ```
 
 Expected: all selected tests pass.
