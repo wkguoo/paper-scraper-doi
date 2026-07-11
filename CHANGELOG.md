@@ -960,3 +960,14 @@
 - 生成的输出文件：本次仅生成测试运行时的临时文件；不会启动浏览器、不会生成 PDF、不会写入 Zotero 文库或更改原始输入。
 - 如何检查是否成功：在测试中同时模拟 Chrome 与 Edge 时必须选择 Chrome；只模拟 Edge 时也不得返回 Edge 路径；显式传入 Edge 路径的 profile 测试仍通过。查看文档可确认 Edge 仅在用户显式指定时使用。
 - 注意事项或潜在风险：若系统没有 Chrome/Chromium，默认路径会是 Chrome 的预期路径，随后由原有启动错误提示处理；这比在未获用户同意时自动改用 Edge 更符合当前要求。Codex App 内置浏览器仍需由本会话的浏览器控制能力登录，不能被 Python 的 CDP 下载器直接复用。未自动打包。
+
+## 2026-07-11 08:55:49 +08:00 — ScienceDirect 下载异常的可恢复报告
+
+- 本次任务目标：修复真实批次中 ScienceDirect 下载器在机构访问确认后抛出 `FileNotFoundError` 时，子流程没有生成 PDF 报告、上层只能记录笼统 `stage_exception_FileNotFoundError` 的问题。
+- 新增、修改或删除的文件：修改 `sd_institutional_skill.py`、`tests/test_sd_institutional_skill.py` 和本 `CHANGELOG.md`；未修改原始输入、实际 PDF、Cookie、浏览器配置、Zotero 文库或打包文件。
+- 具体修改内容：为 `scraper.download_pdfs_devtools()` 增加异常边界；任何普通异常都按当前已解析 DOI 逐篇生成 `PdfDownloadRecord(status="failed")`，原因只记录异常类型，例如 `download_exception_FileNotFoundError`，随后继续生成 `pdf_download_report.csv`、学生交接文件和汇总。新增最小回归测试，使用 1 条 DOI 与模拟下载器抛出 `FileNotFoundError`，断言主入口退出码为 0、报告有 1 条失败记录且 JSON 摘要 `pdf_failed=1`。
+- 修改原因：真实运行已证明下载器异常可能发生在 `sd_institutional_skill.main()` 内部；以前异常越过报告层，被 `paper_automation.batch_stages` 捕获后丢失了逐篇失败原因和恢复文件。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_sd_institutional_skill.InstitutionalSkillIntakeTests.test_main_writes_failed_pdf_report_when_devtools_download_raises_file_not_found -v`；`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_batch_workflow.BatchStageTests.test_sciencedirect_adapter_reports_missing_report tests.test_batch_workflow.BatchStageTests.test_sciencedirect_adapter_reports_nonzero_exit_without_report -v`；完整回归使用 `..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`。
+- 生成的输出文件：真实异常时会生成或保留 `pdf_download_report.csv`、`run_summary.txt`、`run_summary.json` 与学生交接文件；本次仅在测试临时目录生成并自动清理这些文件。
+- 如何检查是否成功：回归测试先在修复前稳定抛出 `FileNotFoundError`（RED），修复后验证报告状态为 `failed`、原因精确为 `download_exception_FileNotFoundError`、摘要失败数为 1（GREEN）；上层批处理随后可读取报告并把条目交给后续 Zotero 回退，而不是因缺失报告抛异常。
+- 注意事项或潜在风险：异常类型会保留用于排查，但不写入异常消息、路径、Cookie 或机构会话信息。已下载的部分结果若下载器在抛错前未返回结构化结果，出于安全性会被记录为失败而不推测成功。未联网、未启动 Edge/Chrome、未自动处理 CAPTCHA、未打包。

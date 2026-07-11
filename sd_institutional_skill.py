@@ -276,22 +276,15 @@ def main(argv: list[str] | None = None) -> int:
     download_supplements = download_pdfs and not args.no_download_supplements
     if download_pdfs and results:
         cache_devtools_cookies(scraper, cookie_cache_path)
-        download_result = scraper.download_pdfs_devtools(
-            results,
-            str(run_dir),
-            login_wait_seconds=args.login_wait_seconds,
-            interactive_login=False,
-            download_supplements=download_supplements,
-        )
-        if download_result:
-            pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
-            if isinstance(download_result, DownloadRunResult):
-                supplement_success = download_result.supplement_success
-                supplement_failed = download_result.supplement_failed
-                supplement_skipped = download_result.supplement_skipped
-                supplement_not_found = download_result.supplement_not_found
-                supplement_records = download_result.supplement_records
-        else:
+        try:
+            download_result = scraper.download_pdfs_devtools(
+                results,
+                str(run_dir),
+                login_wait_seconds=args.login_wait_seconds,
+                interactive_login=False,
+                download_supplements=download_supplements,
+            )
+        except Exception as exc:
             pdf_failed = len(results)
             pdf_records = [
                 PdfDownloadRecord(
@@ -299,12 +292,38 @@ def main(argv: list[str] | None = None) -> int:
                     pii=item.get("pii", ""),
                     title=item.get("title", ""),
                     status="failed",
-                    reason="PDF 下载流程未返回状态",
+                    reason=f"download_exception_{type(exc).__name__}",
                 )
                 for item in results
             ]
-        cache_devtools_cookies(scraper, cookie_cache_path)
-        cookie_message = cookie_status_message(cookie_cache_path)
+            supplement_skipped = len(results) if download_supplements else 0
+            print(
+                "[警告] PDF 下载器异常；已为每篇文献写入可恢复的失败记录。",
+                flush=True,
+            )
+        else:
+            if download_result:
+                pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
+                if isinstance(download_result, DownloadRunResult):
+                    supplement_success = download_result.supplement_success
+                    supplement_failed = download_result.supplement_failed
+                    supplement_skipped = download_result.supplement_skipped
+                    supplement_not_found = download_result.supplement_not_found
+                    supplement_records = download_result.supplement_records
+            else:
+                pdf_failed = len(results)
+                pdf_records = [
+                    PdfDownloadRecord(
+                        doi=item.get("doi", ""),
+                        pii=item.get("pii", ""),
+                        title=item.get("title", ""),
+                        status="failed",
+                        reason="PDF 下载流程未返回状态",
+                    )
+                    for item in results
+                ]
+            cache_devtools_cookies(scraper, cookie_cache_path)
+            cookie_message = cookie_status_message(cookie_cache_path)
     elif download_pdfs:
         print("[提示] 没有可下载的解析结果，跳过 PDF 下载。", flush=True)
     else:
