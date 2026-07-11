@@ -85,6 +85,151 @@
       error.name = "PaperDownloadBridgeError";
       Zotero.logError(error);
     },
+    async assertProcessingAPI(libraryID) {
+      const requiredFunctions = [
+        Zotero.Libraries?.get,
+        Zotero.Items?.getAsync,
+        Zotero.Collections?.getByLibrary,
+        Zotero.Attachments?.addAvailablePDF,
+      ];
+      if (
+        typeof Zotero.Search !== "function"
+        || typeof Zotero.Collection !== "function"
+        || typeof Zotero.Translate?.Search !== "function"
+        || requiredFunctions.some(value => typeof value !== "function")
+      ) {
+        apiUnavailable();
+      }
+      const search = new Zotero.Search();
+      const translate = new Zotero.Translate.Search();
+      const collection = new Zotero.Collection();
+      if (
+        typeof search.addCondition !== "function"
+        || typeof search.search !== "function"
+        || typeof translate.setIdentifier !== "function"
+        || typeof translate.getTranslators !== "function"
+        || typeof translate.setTranslator !== "function"
+        || typeof translate.translate !== "function"
+        || typeof collection.saveTx !== "function"
+      ) {
+        apiUnavailable();
+      }
+      const library = Zotero.Libraries.get(libraryID);
+      if (
+        !library
+        || library.isFeed
+        || library.editable === false
+        || library.filesEditable === false
+      ) {
+        throw new Error("zotero_unavailable");
+      }
+    },
+    async searchByDOI(libraryID, doi) {
+      const search = new Zotero.Search();
+      search.libraryID = libraryID;
+      search.addCondition("DOI", "is", doi);
+      const ids = await search.search();
+      return ids.length ? await Zotero.Items.getAsync(ids) : [];
+    },
+    async searchByTitle(libraryID, fragment) {
+      const search = new Zotero.Search();
+      search.libraryID = libraryID;
+      search.addCondition("title", "contains", fragment);
+      const ids = await search.search();
+      return ids.length ? await Zotero.Items.getAsync(ids) : [];
+    },
+    async describeItem(item, libraryID) {
+      const regular = Boolean(item && typeof item.isRegularItem === "function" && item.isRegularItem());
+      return {
+        item,
+        id: item?.id,
+        libraryID: item?.libraryID,
+        eligible: regular
+          && !item.isFeedItem
+          && !item.deleted
+          && item.libraryID === libraryID,
+        doi: regular ? String(item.getField("DOI") || "") : "",
+        title: regular ? String(item.getField("title") || "") : "",
+        firstCreator: regular ? String(item.getField("firstCreator") || "") : "",
+        year: regular ? String(item.getField("year") || "") : "",
+      };
+    },
+    async listAttachments(item) {
+      if (!item || typeof item.getAttachments !== "function") apiUnavailable();
+      const ids = item.getAttachments(false);
+      return ids.length ? await Zotero.Items.getAsync(ids) : [];
+    },
+    async describeAttachment(attachment, item) {
+      const isAttachment = Boolean(
+        attachment
+        && typeof attachment.isAttachment === "function"
+        && attachment.isAttachment(),
+      );
+      let path = "";
+      if (isAttachment) {
+        try {
+          if (typeof attachment.getFilePathAsync === "function") {
+            path = await attachment.getFilePathAsync();
+          } else if (typeof attachment.getFilePath === "function") {
+            path = attachment.getFilePath();
+          } else {
+            apiUnavailable();
+          }
+        } catch (_error) {
+          path = "";
+        }
+      }
+      return {
+        attachment,
+        id: attachment?.id,
+        eligible: isAttachment
+          && !attachment.deleted
+          && attachment.libraryID === item.libraryID
+          && attachment.parentItemID === item.id,
+        contentType: isAttachment ? String(attachment.attachmentContentType || "") : "",
+        path: path || "",
+      };
+    },
+    async ensureCollection(libraryID, name) {
+      const matches = Zotero.Collections.getByLibrary(libraryID, true, false)
+        .filter(collection => !collection.deleted && collection.name === name);
+      if (matches.length > 1) throw new Error("metadata_uncertain");
+      if (matches.length === 1) return matches[0];
+      const collection = new Zotero.Collection();
+      collection.libraryID = libraryID;
+      collection.name = name;
+      await collection.saveTx();
+      return collection;
+    },
+    async translateByDOI(doi, libraryID, collectionID) {
+      const translate = new Zotero.Translate.Search();
+      translate.setIdentifier({ DOI: doi });
+      const translators = await translate.getTranslators();
+      if (!translators.length) throw new Error("not_found");
+      translate.setTranslator(translators);
+      return translate.translate({
+        libraryID,
+        collections: [collectionID],
+        saveAttachments: false,
+      });
+    },
+    async addToCollection(item, collectionID) {
+      if (
+        !item
+        || typeof item.getCollections !== "function"
+        || typeof item.addToCollection !== "function"
+        || typeof item.saveTx !== "function"
+      ) {
+        apiUnavailable();
+      }
+      if (item.getCollections(false).includes(collectionID)) return false;
+      item.addToCollection(collectionID);
+      await item.saveTx();
+      return true;
+    },
+    addAvailablePDF(item) {
+      return Zotero.Attachments.addAvailablePDF(item);
+    },
   };
 
   Zotero.PaperDownloadBridge = createRuntime({
@@ -108,12 +253,43 @@
     "confirmed_at",
     "completed",
   ]);
+  const ITEM_FAILURE_STATUSES = new Set([
+    "no_pdf",
+    "not_found",
+    "metadata_uncertain",
+    "zotero_unavailable",
+    "no_attachment",
+    "download_failed",
+    "zotero_api_unavailable",
+    "job_expired",
+    "job_id_conflict",
+    "plugin_error",
+  ]);
+  const PROCESSING_METHODS = [
+    "assertProcessingAPI",
+    "searchByDOI",
+    "searchByTitle",
+    "describeItem",
+    "listAttachments",
+    "describeAttachment",
+    "ensureCollection",
+    "translateByDOI",
+    "addToCollection",
+    "addAvailablePDF",
+  ];
+  const ABSOLUTE_WINDOWS_PATH_RE = /^(?:[a-zA-Z]:[\\/].+|(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+[\\/].+)$/;
+  const MAX_TITLE_SEARCH_LENGTH = 256;
   const POLL_INTERVAL_MS = 1000;
 
   if (
     !core
     || typeof core.validateRequest !== "function"
     || typeof core.failureRow !== "function"
+    || typeof core.successRow !== "function"
+    || typeof core.normalizeDOI !== "function"
+    || typeof core.normalizeTitle !== "function"
+    || typeof core.firstCreatorKey !== "function"
+    || typeof core.chooseCandidate !== "function"
     || !io
     || typeof io.join !== "function"
     || typeof io.basename !== "function"
@@ -531,6 +707,196 @@
     }));
   }
 
+  async function assertProcessingAPI(libraryID) {
+    if (
+      !zotero
+      || PROCESSING_METHODS.some(method => typeof zotero[method] !== "function")
+    ) {
+      throw new Error("zotero_api_unavailable");
+    }
+    await zotero.assertProcessingAPI(libraryID);
+  }
+
+  async function eligibleItemDescriptors(candidates, libraryID) {
+    if (!Array.isArray(candidates)) throw new Error("zotero_api_unavailable");
+    const descriptors = [];
+    for (const candidate of candidates) {
+      const value = await zotero.describeItem(candidate, libraryID);
+      if (
+        !isPlainObject(value)
+        || value.eligible !== true
+        || value.libraryID !== libraryID
+        || value.id === undefined
+        || value.id === null
+      ) {
+        continue;
+      }
+      descriptors.push({ ...value, item: value.item || candidate });
+    }
+    return descriptors;
+  }
+
+  async function resolveItem(requestItem, libraryID) {
+    const doi = core.normalizeDOI(requestItem.doi);
+    if (doi) {
+      const descriptors = await eligibleItemDescriptors(
+        await zotero.searchByDOI(libraryID, doi),
+        libraryID,
+      );
+      const exact = descriptors.filter(candidate => (
+        core.normalizeDOI(candidate.doi) === doi
+      ));
+      if (exact.length > 1) throw new Error("metadata_uncertain");
+      return exact.length === 1 ? exact[0].item : null;
+    }
+
+    const title = String(requestItem.title || "")
+      .normalize("NFKC")
+      .replace(/\s+/g, " ")
+      .trim();
+    const hasDisambiguator = Boolean(
+      String(requestItem.year || "").trim()
+      || core.firstCreatorKey(requestItem.authors),
+    );
+    if (!title || !hasDisambiguator) throw new Error("metadata_uncertain");
+    const fragment = title.slice(0, MAX_TITLE_SEARCH_LENGTH);
+    const descriptors = await eligibleItemDescriptors(
+      await zotero.searchByTitle(libraryID, fragment),
+      libraryID,
+    );
+    const selected = core.chooseCandidate(requestItem, descriptors);
+    return selected ? selected.item : null;
+  }
+
+  async function ensureCollection(libraryID, name) {
+    const collection = await zotero.ensureCollection(libraryID, name);
+    if (
+      !collection
+      || collection.id === undefined
+      || collection.id === null
+      || collection.libraryID !== libraryID
+      || collection.name !== name
+      || collection.deleted === true
+    ) {
+      throw new Error("plugin_error");
+    }
+    return collection;
+  }
+
+  async function importByDOI(doi, libraryID, collectionID) {
+    const normalized = core.normalizeDOI(doi);
+    if (!normalized) throw new Error("not_found");
+    const translated = await zotero.translateByDOI(normalized, libraryID, collectionID);
+    const descriptors = await eligibleItemDescriptors(translated, libraryID);
+    const exact = descriptors.filter(candidate => (
+      core.normalizeDOI(candidate.doi) === normalized
+    ));
+    if (exact.length > 1) throw new Error("metadata_uncertain");
+    if (!exact.length) throw new Error("not_found");
+    return exact[0].item;
+  }
+
+  function isAbsoluteWindowsPath(path) {
+    return typeof path === "string"
+      && path === path.trim()
+      && ABSOLUTE_WINDOWS_PATH_RE.test(path);
+  }
+
+  async function describePDFAttachment(attachment, item) {
+    const descriptor = await zotero.describeAttachment(attachment, item);
+    if (!isPlainObject(descriptor) || descriptor.eligible !== true) return null;
+    const contentType = String(descriptor.contentType || "")
+      .split(";", 1)[0]
+      .trim()
+      .toLocaleLowerCase("und");
+    const path = typeof descriptor.path === "string" ? descriptor.path : "";
+    if (contentType !== "application/pdf" || !isAbsoluteWindowsPath(path)) return null;
+    return {
+      attachment: descriptor.attachment || attachment,
+      attachmentID: String(descriptor.id || ""),
+      path,
+    };
+  }
+
+  async function findPDFAttachment(item) {
+    const attachments = await zotero.listAttachments(item);
+    if (!Array.isArray(attachments)) throw new Error("zotero_api_unavailable");
+    for (const attachment of attachments) {
+      const match = await describePDFAttachment(attachment, item);
+      if (match) return match;
+    }
+    return null;
+  }
+
+  async function addAvailablePDFOnce(item) {
+    const created = await zotero.addAvailablePDF(item);
+    if (created) {
+      const direct = await describePDFAttachment(created, item);
+      if (direct) return direct;
+    }
+    return findPDFAttachment(item);
+  }
+
+  async function collectionForContext(context) {
+    if (!context.collectionPromise) {
+      const pending = ensureCollection(context.libraryID, context.collectionName);
+      context.collectionPromise = pending.catch(error => {
+        context.collectionPromise = null;
+        throw error;
+      });
+    }
+    return context.collectionPromise;
+  }
+
+  function zoteroItemID(item) {
+    const value = Number(item?.id);
+    if (!Number.isInteger(value) || value <= 0) throw new Error("zotero_api_unavailable");
+    return String(value);
+  }
+
+  async function processItem(requestItem, context) {
+    let item = await resolveItem(requestItem, context.libraryID);
+    let collection = null;
+    if (!item) {
+      const doi = core.normalizeDOI(requestItem.doi);
+      if (!doi) throw new Error("not_found");
+      collection = await collectionForContext(context);
+      item = await importByDOI(doi, context.libraryID, collection.id);
+    }
+    if (!collection) collection = await collectionForContext(context);
+    await zotero.addToCollection(item, collection.id);
+
+    const existing = await findPDFAttachment(item);
+    if (existing) {
+      return core.successRow(
+        requestItem.task_id,
+        zoteroItemID(item),
+        existing.path,
+        "existing_pdf",
+      );
+    }
+
+    const downloaded = await addAvailablePDFOnce(item);
+    if (downloaded) {
+      return core.successRow(
+        requestItem.task_id,
+        zoteroItemID(item),
+        downloaded.path,
+        "downloaded",
+      );
+    }
+    return core.failureRow(requestItem.task_id, "no_pdf", "no_available_pdf");
+  }
+
+  function failureRowFromError(taskID, error) {
+    const code = errorCode(error);
+    if (code === "no_available_pdf") {
+      return core.failureRow(taskID, "no_pdf", code);
+    }
+    const status = ITEM_FAILURE_STATUSES.has(code) ? code : "plugin_error";
+    return core.failureRow(taskID, status, code);
+  }
+
   async function processRun(group, { confirmed, paths = queuePaths() } = {}) {
     if (!confirmed) {
       await publishFailureGroup(
@@ -543,10 +909,42 @@
       return { status: "cancelled", runID: group.runID };
     }
 
-    // Task 4 adds item resolution and available-PDF handling here. Keeping the
-    // requests in processing makes this checkpoint restart-safe without writes.
-    lastStatus = `批次 ${group.runID} 已确认，等待处理文献。`;
-    return { status: "confirmed", runID: group.runID };
+    const first = group.entries[0].request;
+    try {
+      await assertProcessingAPI(first.library_id);
+    } catch (error) {
+      const row = failureRowFromError("placeholder", error);
+      await publishFailureGroup(paths, group.entries, row.status, row.reason);
+      lastStatus = `批次 ${group.runID} 无法访问所需 Zotero API，未写入条目。`;
+      return { status: "api_unavailable", runID: group.runID };
+    }
+
+    const context = {
+      libraryID: first.library_id,
+      collectionName: first.collection_name,
+      collectionPromise: null,
+    };
+    const startedAt = nowISO();
+    const allRows = [];
+    for (const entry of group.entries) {
+      const rows = [];
+      for (const requestItem of entry.request.items) {
+        try {
+          rows.push(await processItem(requestItem, context));
+        } catch (error) {
+          rows.push(failureRowFromError(requestItem.task_id, error));
+        }
+      }
+      allRows.push(...rows);
+      const target = io.join(paths.outbox, `${entry.request.job_id}.result.json`);
+      await publishJSON(
+        target,
+        resultDocument(entry.request, rows, startedAt, nowISO()),
+      );
+    }
+    await archiveEntries(paths, group.entries);
+    lastStatus = `批次 ${group.runID} 已处理 ${allRows.length} 项。`;
+    return { status: "processed", runID: group.runID, rows: allRows };
   }
 
   async function scanOnce() {
@@ -653,6 +1051,12 @@
     scanNow,
     confirmRun,
     processRun,
+    resolveItem,
+    findPDFAttachment,
+    importByDOI,
+    ensureCollection,
+    addAvailablePDFOnce,
+    processItem,
     startup,
     shutdown,
     showStatus,

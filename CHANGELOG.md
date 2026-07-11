@@ -1106,3 +1106,14 @@
 - 生成的输出文件：真实启用后可在固定桥接根目录原子创建 `plugin-state.json` 和 `<job_id>.result.json`，并在队列目录间排他移动请求；本次测试全部使用内存假 I/O，未写真实 `%LOCALAPPDATA%`、Zotero 文库、集合、条目、附件、PDF、Cookie、XPI 或打包文件。
 - 如何检查是否成功：13 项运行时测试与插件侧合计 20 项测试通过；测试确认不完整分块零提示、无效/不一致分块零 Zotero 写入、取消逐任务返回、状态精确持久化、并发扫描共享一个 Promise、结果文件不覆盖既有字节且临时文件通过 `noOverwrite` 移动发布；本机 Zotero 9.0.6 自带源码静态核对确认 `IOUtils.move(..., { noOverwrite: true })`、`mode: "create"`、`tmpPath` 与 `PathUtils.filename()` 可用。
 - 注意事项或潜在风险：当前已确认批次会安全停留在 processing，真正的 Zotero 条目解析、集合写入和可用 PDF 操作属于 Task 4，尚未执行；进度检查点与撤销账本属于后续任务。插件仍未打包或安装，未启动 Chrome/Edge/Codex 浏览器，未联网、未读取 Cookie，也未调用真实 Zotero 写 API。
+
+## 2026-07-11 15:19:25 +08:00 — Zotero 9 插件 Task 4 条目解析、标识符导入与可用 PDF
+
+- 本次任务目标：在一次批次确认之后，安全查找已有 Zotero 条目、必要时按 DOI 调用 Zotero 标识符导入、加入批次集合，并仅为缺少本地 PDF 的条目调用一次 Zotero“可用 PDF”能力。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/content/bridge-runtime.js`、`zotero_bridge_plugin/tests/bridge-runtime.test.cjs` 与本 `CHANGELOG.md`；未新增或删除其他文件，未修改原始文献清单或 PDF。
+- 具体修改内容：新增并公开 `resolveItem()`、`findPDFAttachment()`、`importByDOI()`、`ensureCollection()`、`addAvailablePDFOnce()` 和 `processItem()`；DOI 查找使用目标 `libraryID` 内的精确条件并再次规范化复核，多个精确命中返回 `metadata_uncertain`；无 DOI 时只使用有年份或第一作者佐证的严格标题匹配；排除 feed、附件/笔记/批注等非普通条目、已删除条目及跨文库候选；导入使用 `Zotero.Translate.Search.setIdentifier({ DOI })` 与 `translate({ libraryID, collections: [collectionID], saveAttachments: false })`，导入后再次核验 DOI；集合使用 Zotero 9.0.6 的 `Collections.getByLibrary()` 精确查名，避免把条目搜索结果误当集合 ID；已有本地 PDF 直接返回 `existing_pdf`，否则只调用一次 `Attachments.addAvailablePDF()`，成功返回 `downloaded`，无附件返回 `no_pdf`；每个条目独立捕获安全错误，单条失败不会中止后续条目。
+- 修改原因：实现用户“给清单后尽量自动获得最终 PDF”的 Zotero 端核心动作，同时避免模糊匹配、重复 DOI、错误文库、非本地路径或既有附件被改写；本机 Zotero 9.0.6 静态源码核对发现原计划的集合搜索示例会混淆条目 ID 与集合 ID，因此改用其真实集合 API。
+- 如何运行：聚焦测试 `node --test zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；全部插件回归 `node --test zotero_bridge_plugin/tests/*.test.cjs`；语法检查 `node --check zotero_bridge_plugin/content/bridge-runtime.js`。
+- 生成的输出文件：真实启用后每个作业会在 outbox 原子发布严格结果 JSON，并把处理完的请求移入 archive；成功行只返回 Zotero 条目 ID 与现有/新下载附件的绝对 Windows 路径。此次测试仅使用内存 Zotero/文件系统替身，未创建真实集合、条目、附件、PDF、队列文件、Cookie、XPI 或打包文件。
+- 如何检查是否成功：23 项运行时测试和插件侧合计 30 项测试全部通过；覆盖已有 PDF 零导入/零下载调用、集合成员只加一次、标识符导入不保存翻译器附件、导入 DOI 二次校验、候选资格过滤、重复 DOI/标题歧义零写入、单条异常隔离、无 PDF、API 缺失零 Zotero 写入，以及 URL/相对路径/非 PDF 附件拒绝；语法、差异与安全扫描均通过。另已从本机 Zotero 9.0.6 自带源码确认 Translate 选项、`getByLibrary()`、`addAvailablePDF()`、附件路径方法和集合成员方法签名。
+- 注意事项或潜在风险：本阶段尚未安装或调用真实插件，因此 Zotero 的登录状态、机构授权、网络、出版商限制与 CAPTCHA 仍未实测且不会被绕过；`addAvailablePDF()` 真实运行时可能联网，但本次没有联网或启动 Chrome/Edge/Codex 浏览器。崩溃发生在 Zotero 写入之后、结果 JSON 发布之前时的逐项检查点，以及新建条目/附件/集合成员的可审计撤销账本仍属于 Task 5；在该保护完成前不会打包或安装插件。

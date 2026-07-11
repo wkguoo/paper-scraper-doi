@@ -117,7 +117,7 @@ function createMemoryIO() {
   };
 }
 
-async function makeHarness({ requests = [], confirm = true } = {}) {
+async function makeHarness({ requests = [], confirm = true, zoteroOptions = {} } = {}) {
   const io = createMemoryIO();
   const prompt = {
     calls: [],
@@ -131,15 +131,144 @@ async function makeHarness({ requests = [], confirm = true } = {}) {
     },
   };
   const errors = [];
+  const items = (zoteroOptions.items || []).map(value => ({
+    ...value,
+    attachments: (value.attachments || []).map(attachment => ({ ...attachment })),
+    collections: [...(value.collections || [])],
+  }));
+  const collections = (zoteroOptions.collections || []).map(value => ({ ...value }));
+  let nextItemID = Math.max(1000, ...items.map(item => Number(item.id) || 0)) + 1;
+  let nextCollectionID = Math.max(700, ...collections.map(value => Number(value.id) || 0)) + 1;
   const zotero = {
     pluginVersion: "0.1.0-test",
     version: "9.0.6-test",
     writeCalls: [],
+    searchCalls: [],
+    importCalls: [],
+    collectionCalls: [],
+    membershipCalls: [],
+    availablePDFCalls: [],
+    items,
+    collections,
     async getLibraryName(libraryID) {
       return libraryID === 1 ? "我的文库" : `文库 ${libraryID}`;
     },
     reportError(error) {
       errors.push(error);
+    },
+    async assertProcessingAPI() {
+      if (zoteroOptions.availablePDFAPI === false) {
+        throw new Error("zotero_api_unavailable");
+      }
+    },
+    async searchByDOI(libraryID, doi) {
+      this.searchCalls.push({ type: "doi", libraryID, value: doi });
+      const configuredError = zoteroOptions.searchErrors?.[doi];
+      if (configuredError) throw new Error(configuredError);
+      const configuredIDs = zoteroOptions.searchDOIResultIDs?.[doi];
+      if (configuredIDs) {
+        return configuredIDs.map(id => this.items.find(item => item.id === id)).filter(Boolean);
+      }
+      return this.items.filter(item => (
+        item.libraryID === libraryID && core.normalizeDOI(item.doi) === doi
+      ));
+    },
+    async searchByTitle(libraryID, fragment) {
+      this.searchCalls.push({ type: "title", libraryID, value: fragment });
+      const wanted = String(fragment).toLocaleLowerCase("und");
+      return this.items.filter(item => (
+        item.libraryID === libraryID
+        && String(item.title || "").toLocaleLowerCase("und").includes(wanted)
+      ));
+    },
+    async describeItem(item, libraryID) {
+      return {
+        item,
+        id: item.id,
+        libraryID: item.libraryID,
+        eligible: item.libraryID === libraryID
+          && item.regular !== false
+          && item.feed !== true
+          && item.deleted !== true,
+        doi: String(item.doi || ""),
+        title: String(item.title || ""),
+        firstCreator: String(item.firstCreator || ""),
+        year: String(item.year || ""),
+      };
+    },
+    async listAttachments(item) {
+      return item.attachments || [];
+    },
+    async describeAttachment(attachment, item) {
+      return {
+        attachment,
+        id: attachment.id,
+        eligible: attachment.deleted !== true
+          && attachment.isAttachment !== false
+          && (attachment.libraryID ?? item.libraryID) === item.libraryID
+          && (attachment.parentItemID ?? item.id) === item.id,
+        contentType: String(attachment.contentType || ""),
+        path: attachment.path || "",
+      };
+    },
+    async ensureCollection(libraryID, name) {
+      this.collectionCalls.push({ libraryID, name });
+      const matches = this.collections.filter(collection => (
+        collection.libraryID === libraryID
+        && collection.name === name
+        && collection.deleted !== true
+      ));
+      if (matches.length > 1) throw new Error("metadata_uncertain");
+      if (matches.length === 1) return matches[0];
+      const collection = { id: nextCollectionID++, libraryID, name, deleted: false };
+      this.collections.push(collection);
+      this.writeCalls.push({ type: "create_collection", id: collection.id });
+      return collection;
+    },
+    async translateByDOI(doi, libraryID, collectionID) {
+      this.importCalls.push({ doi, libraryID, collectionID, saveAttachments: false });
+      const configuredError = zoteroOptions.importErrors?.[doi];
+      if (configuredError) throw new Error(configuredError);
+      const configured = zoteroOptions.translationsByDOI?.[doi];
+      if (!configured) return [];
+      const translated = (Array.isArray(configured) ? configured : [configured]).map(value => {
+        const item = {
+          ...value,
+          id: value.id || nextItemID++,
+          libraryID,
+          attachments: (value.attachments || []).map(attachment => ({ ...attachment })),
+          collections: Array.from(new Set([...(value.collections || []), collectionID])),
+        };
+        this.items.push(item);
+        this.writeCalls.push({ type: "import_item", id: item.id });
+        return item;
+      });
+      return translated;
+    },
+    async addToCollection(item, collectionID) {
+      this.membershipCalls.push({ itemID: item.id, collectionID });
+      item.collections ||= [];
+      if (item.collections.includes(collectionID)) return false;
+      item.collections.push(collectionID);
+      this.writeCalls.push({ type: "add_membership", itemID: item.id, collectionID });
+      return true;
+    },
+    async addAvailablePDF(item) {
+      this.availablePDFCalls.push(item.id);
+      const configuredError = zoteroOptions.availablePDFErrors?.[item.id];
+      if (configuredError) throw new Error(configuredError);
+      const configured = zoteroOptions.availablePDFByItemID?.[item.id];
+      if (!configured) return false;
+      const attachment = {
+        ...configured,
+        id: configured.id || nextItemID++,
+        libraryID: item.libraryID,
+        parentItemID: item.id,
+      };
+      item.attachments ||= [];
+      item.attachments.push(attachment);
+      this.writeCalls.push({ type: "add_available_pdf", itemID: item.id, attachmentID: attachment.id });
+      return attachment;
     },
   };
   const clock = {
@@ -444,4 +573,410 @@ test("publishJSON writes a random temporary file then uses a no-overwrite move",
     target,
     noOverwrite: true,
   });
+});
+
+test("exact DOI hit with an existing PDF performs no import or available-PDF call", async () => {
+  const request = await job();
+  const collectionID = 701;
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      collections: [{
+        id: collectionID,
+        libraryID: 1,
+        name: request.collection_name,
+      }],
+      items: [{
+        id: 101,
+        libraryID: 1,
+        doi: "https://doi.org/10.1000/EXAMPLE-1",
+        title: "Example Paper 1",
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [],
+        attachments: [{
+          id: 201,
+          contentType: "application/pdf",
+          path: "C:\\Zotero\\storage\\EXISTING\\paper.pdf",
+        }],
+      }],
+    },
+  });
+
+  for (const method of [
+    "resolveItem",
+    "findPDFAttachment",
+    "importByDOI",
+    "ensureCollection",
+    "addAvailablePDFOnce",
+    "processItem",
+  ]) {
+    assert.equal(typeof harness.runtime[method], "function");
+  }
+  await harness.runtime.scanNow();
+
+  const [result] = harness.results();
+  assert.equal(result.rows[0].status, "existing_pdf");
+  assert.equal(result.rows[0].zotero_item_id, "101");
+  assert.equal(result.rows[0].attachment_path, "C:\\Zotero\\storage\\EXISTING\\paper.pdf");
+  assert.equal(harness.zotero.importCalls.length, 0);
+  assert.equal(harness.zotero.availablePDFCalls.length, 0);
+  assert.deepEqual(harness.zotero.membershipCalls, [{ itemID: 101, collectionID }]);
+  assert.deepEqual(harness.zotero.writeCalls, [{
+    type: "add_membership",
+    itemID: 101,
+    collectionID,
+  }]);
+});
+
+test("DOI resolution rejects ineligible candidates and refuses multiple exact items", async () => {
+  const request = await job();
+  const doi = core.normalizeDOI(request.items[0].doi);
+  const collectionID = 701;
+  const common = {
+    doi,
+    title: request.items[0].title,
+    firstCreator: "Smith",
+    year: "2025",
+    collections: [collectionID],
+    attachments: [],
+  };
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      collections: [{ id: collectionID, libraryID: 1, name: request.collection_name }],
+      items: [{ id: 301, libraryID: 2, ...common }, {
+        id: 302, libraryID: 1, feed: true, ...common,
+      }, {
+        id: 303, libraryID: 1, regular: false, ...common,
+      }, {
+        id: 304, libraryID: 1, deleted: true, ...common,
+      }, {
+        id: 305,
+        libraryID: 1,
+        ...common,
+        attachments: [{
+          id: 405,
+          contentType: "application/pdf",
+          path: "C:\\Zotero\\storage\\ELIGIBLE\\paper.pdf",
+        }],
+      }],
+      searchDOIResultIDs: { [doi]: [301, 302, 303, 304, 305] },
+    },
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.equal(harness.results()[0].rows[0].status, "existing_pdf");
+  assert.equal(harness.results()[0].rows[0].zotero_item_id, "305");
+  assert.equal(harness.zotero.importCalls.length, 0);
+
+  const duplicateRequest = await job({ number: 2 });
+  const duplicateDOI = core.normalizeDOI(duplicateRequest.items[0].doi);
+  const duplicateHarness = await makeHarness({
+    requests: [duplicateRequest],
+    zoteroOptions: {
+      items: [401, 402].map(id => ({
+        id,
+        libraryID: 1,
+        doi: duplicateDOI,
+        title: duplicateRequest.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [],
+        attachments: [],
+      })),
+      searchDOIResultIDs: { [duplicateDOI]: [401, 402] },
+    },
+  });
+  await duplicateHarness.runtime.scanNow();
+  assert.equal(duplicateHarness.results()[0].rows[0].status, "metadata_uncertain");
+  assert.equal(duplicateHarness.zotero.writeCalls.length, 0);
+  assert.equal(duplicateHarness.zotero.collectionCalls.length, 0);
+});
+
+test("existing item without PDF is collected once and requests available PDF once", async () => {
+  const request = await job();
+  const collectionID = 701;
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      collections: [{ id: collectionID, libraryID: 1, name: request.collection_name }],
+      items: [{
+        id: 102,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [],
+        attachments: [],
+      }],
+      availablePDFByItemID: {
+        102: {
+          id: 202,
+          contentType: "application/pdf",
+          path: "D:\\Zotero\\storage\\NEWPDF\\paper.pdf",
+        },
+      },
+    },
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.equal(harness.results()[0].rows[0].status, "downloaded");
+  assert.deepEqual(harness.zotero.availablePDFCalls, [102]);
+  assert.deepEqual(harness.zotero.membershipCalls, [{ itemID: 102, collectionID }]);
+  assert.equal(harness.zotero.importCalls.length, 0);
+  const callsAfterCompletion = {
+    memberships: harness.zotero.membershipCalls.length,
+    available: harness.zotero.availablePDFCalls.length,
+  };
+  await harness.runtime.scanNow();
+  assert.deepEqual({
+    memberships: harness.zotero.membershipCalls.length,
+    available: harness.zotero.availablePDFCalls.length,
+  }, callsAfterCompletion);
+});
+
+test("missing DOI imports exactly one matching item without translator attachments", async () => {
+  const request = await job();
+  const doi = core.normalizeDOI(request.items[0].doi);
+  const collectionID = 701;
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      collections: [{ id: collectionID, libraryID: 1, name: request.collection_name }],
+      translationsByDOI: {
+        [doi]: {
+          id: 103,
+          doi: "https://doi.org/10.1000/EXAMPLE-1",
+          title: request.items[0].title,
+          firstCreator: "Smith",
+          year: "2025",
+        },
+      },
+      availablePDFByItemID: {
+        103: {
+          id: 203,
+          contentType: "application/pdf",
+          path: "C:\\Zotero\\storage\\IMPORTED\\paper.pdf",
+        },
+      },
+    },
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.equal(harness.results()[0].rows[0].status, "downloaded");
+  assert.deepEqual(harness.zotero.importCalls, [{
+    doi,
+    libraryID: 1,
+    collectionID,
+    saveAttachments: false,
+  }]);
+  assert.equal(
+    core.normalizeDOI(harness.zotero.items.find(item => item.id === 103).doi),
+    doi,
+  );
+  assert.deepEqual(harness.zotero.availablePDFCalls, [103]);
+});
+
+test("identifier import rejects a translated item whose DOI is not exact", async () => {
+  const request = await job();
+  const doi = core.normalizeDOI(request.items[0].doi);
+  const collectionID = 701;
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      collections: [{ id: collectionID, libraryID: 1, name: request.collection_name }],
+      translationsByDOI: {
+        [doi]: {
+          id: 104,
+          doi: "10.1000/a-different-paper",
+          title: "Wrong Translation",
+          firstCreator: "Other",
+          year: "2020",
+        },
+      },
+    },
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.equal(harness.results()[0].rows[0].status, "not_found");
+  assert.equal(harness.zotero.importCalls.length, 1);
+  assert.equal(harness.zotero.availablePDFCalls.length, 0);
+});
+
+test("title-only ambiguity returns metadata_uncertain with zero library writes", async () => {
+  const request = await job({
+    items: [{
+      task_id: "paper-0001",
+      doi: "",
+      title: "Ambiguous Titanium Paper",
+      authors: "Smith, J.",
+      year: "2025",
+    }],
+  });
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      items: [1, 2].map(id => ({
+        id: 110 + id,
+        libraryID: 1,
+        doi: "",
+        title: "Ambiguous Titanium Paper",
+        firstCreator: "Smith",
+        year: "2025",
+        attachments: [],
+        collections: [],
+      })),
+    },
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.equal(harness.results()[0].rows[0].status, "metadata_uncertain");
+  assert.equal(harness.zotero.writeCalls.length, 0);
+  assert.equal(harness.zotero.collectionCalls.length, 0);
+  assert.equal(harness.zotero.importCalls.length, 0);
+  assert.equal(harness.zotero.availablePDFCalls.length, 0);
+});
+
+test("one item failure does not stop the next item", async () => {
+  const request = await job({
+    items: [{
+      task_id: "paper-0001",
+      doi: "10.1000/error",
+      title: "Broken Search",
+      authors: "Smith, J.",
+      year: "2025",
+    }, {
+      task_id: "paper-0002",
+      doi: "10.1000/good",
+      title: "Good Paper",
+      authors: "Jones, J.",
+      year: "2024",
+    }],
+  });
+  const collectionID = 701;
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      collections: [{ id: collectionID, libraryID: 1, name: request.collection_name }],
+      searchErrors: { "10.1000/error": "download_failed" },
+      items: [{
+        id: 120,
+        libraryID: 1,
+        doi: "10.1000/good",
+        title: "Good Paper",
+        firstCreator: "Jones",
+        year: "2024",
+        collections: [collectionID],
+        attachments: [{
+          id: 220,
+          contentType: "application/pdf",
+          path: "C:\\Zotero\\storage\\GOOD\\paper.pdf",
+        }],
+      }],
+    },
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.deepEqual(harness.results()[0].rows.map(row => row.status), [
+    "download_failed",
+    "existing_pdf",
+  ]);
+});
+
+test("no available PDF returns no_pdf after exactly one attempt", async () => {
+  const request = await job();
+  const collectionID = 701;
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      collections: [{ id: collectionID, libraryID: 1, name: request.collection_name }],
+      items: [{
+        id: 130,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [collectionID],
+        attachments: [],
+      }],
+    },
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.equal(harness.results()[0].rows[0].status, "no_pdf");
+  assert.equal(harness.results()[0].rows[0].reason, "no_available_pdf");
+  assert.deepEqual(harness.zotero.availablePDFCalls, [130]);
+});
+
+test("URL, relative, and non-PDF attachments are never reported as existing PDFs", async () => {
+  const request = await job();
+  const collectionID = 701;
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      collections: [{ id: collectionID, libraryID: 1, name: request.collection_name }],
+      items: [{
+        id: 131,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [collectionID],
+        attachments: [{
+          id: 231,
+          contentType: "application/pdf",
+          path: "https://example.invalid/paper.pdf",
+        }, {
+          id: 232,
+          contentType: "application/pdf",
+          path: "relative\\paper.pdf",
+        }, {
+          id: 233,
+          contentType: "text/html",
+          path: "C:\\Zotero\\storage\\HTML\\paper.pdf",
+        }],
+      }],
+      availablePDFByItemID: {
+        131: {
+          id: 234,
+          contentType: "application/pdf",
+          path: "C:\\Zotero\\storage\\VALID\\paper.pdf",
+        },
+      },
+    },
+  });
+
+  await harness.runtime.scanNow();
+
+  const row = harness.results()[0].rows[0];
+  assert.equal(row.status, "downloaded");
+  assert.equal(row.attachment_path, "C:\\Zotero\\storage\\VALID\\paper.pdf");
+  assert.deepEqual(harness.zotero.availablePDFCalls, [131]);
+});
+
+test("missing available-PDF API fails before every Zotero item write", async () => {
+  const request = await job();
+  const harness = await makeHarness({
+    requests: [request],
+    zoteroOptions: { availablePDFAPI: false },
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.equal(harness.results()[0].rows[0].status, "zotero_api_unavailable");
+  assert.equal(harness.zotero.writeCalls.length, 0);
+  assert.equal(harness.zotero.searchCalls.length, 0);
+  assert.equal(harness.zotero.importCalls.length, 0);
+  assert.equal(harness.zotero.availablePDFCalls.length, 0);
 });
