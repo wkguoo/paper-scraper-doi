@@ -1084,3 +1084,14 @@
 - 生成的输出文件：仅新增插件源码和测试文件；未创建 XPI、未安装插件、未改写 Zotero 配置/数据库/集合/条目/附件，也未读取 Cookie 或启动浏览器。
 - 如何检查是否成功：结构测试验证 manifest 仅目标 Zotero 9.0.x，bootstrap 包含完整生命周期且不含 `fetch`、`XMLHttpRequest`、`ServerSocket` 或 `WebSocket`；本次 2 项测试和语法检查均通过。
 - 注意事项或潜在风险：当前 `scanNow()` 仍为空实现，菜单不会导入或下载文献；XPI 构建与安装仍需后续明确的集成审批，且本项目不会自动打包。
+
+## 2026-07-11 14:47:34 +08:00 — Zotero 9 插件 Task 2 纯 JavaScript 契约核心
+
+- 本次任务目标：在任何 Zotero 写入或用户确认之前，用可离线测试的纯 JavaScript 核心严格复核项目侧桥接请求，并提供确定性的条目匹配和结果行构造规则。
+- 新增、修改或删除的文件：新增 `zotero_bridge_plugin/content/bridge-core.js` 与 `zotero_bridge_plugin/tests/bridge-core.test.cjs`；修改 `zotero_bridge_plugin/bootstrap.js` 和本 `CHANGELOG.md`；未删除文件。
+- 具体修改内容：新增 UMD 形式的纯函数核心，严格校验请求字段、UUID v4、UTC 时间、分块参数、任务数量/长度、重复任务、过期时间和 `payload_sha256`；以稳定递归键排序和 UTF-8 Web Crypto SHA-256 与 Python 端规范 JSON 保持逐字节一致；新增 DOI、NFKC 标题、第一作者规范化及“标题 + 年份或第一作者”的唯一候选匹配；新增恰好五个字符串字段的成功/失败结果行辅助函数；bootstrap 在运行时之前加载该核心。
+- 修改原因：让插件在接触真实 Zotero 文库前即可拒绝未知字段、篡改、过期、重复或歧义请求，并确保 JavaScript 与项目侧 Python 对同一请求计算相同摘要。
+- 如何运行：`node --test zotero_bridge_plugin/tests/bridge-core.test.cjs`；结构回归：`node --test zotero_bridge_plugin/tests/plugin-structure.test.cjs`；可选语法检查：`node --check zotero_bridge_plugin/content/bridge-core.js`。
+- 生成的输出文件：仅新增插件源码与离线测试；未创建桥接队列、结果 JSON、Zotero 条目/集合/附件、PDF、Cookie、XPI 或打包文件。
+- 如何检查是否成功：5 项核心测试和 2 项结构测试均通过；固定跨语言样本摘要为 `a937810801620e767e03abb42e5af6699a2e7a3102a0252aed610144c0864219`，Node 与 Python 一致；`git diff --check` 退出码为 0。
+- 注意事项或潜在风险：`validateRequest()` 因使用 Web Crypto 为异步函数，后续运行时必须 `await`；当前核心不读写文件、不联网、不调用 SQLite、`eval` 或外部命令，也尚未提示确认、处理队列或写入真实 Zotero。未启动 Chrome/Edge/Codex 浏览器，未安装或打包插件。

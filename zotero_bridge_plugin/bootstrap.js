@@ -9,6 +9,10 @@ function install() {}
 async function startup(data) {
   bridgeRootURI = data.rootURI || data.resourceURI.spec;
   Services.scriptloader.loadSubScriptWithOptions(
+    bridgeRootURI + "content/bridge-core.js",
+    { target: globalThis, charset: "UTF-8", ignoreCache: true },
+  );
+  Services.scriptloader.loadSubScriptWithOptions(
     bridgeRootURI + "content/bridge-runtime.js",
     { target: globalThis, charset: "UTF-8", ignoreCache: true },
   );
