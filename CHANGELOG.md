@@ -1095,3 +1095,14 @@
 - 生成的输出文件：仅新增插件源码与离线测试；未创建桥接队列、结果 JSON、Zotero 条目/集合/附件、PDF、Cookie、XPI 或打包文件。
 - 如何检查是否成功：5 项核心测试和 2 项结构测试均通过；固定跨语言样本摘要为 `a937810801620e767e03abb42e5af6699a2e7a3102a0252aed610144c0864219`，Node 与 Python 一致；`git diff --check` 退出码为 0。
 - 注意事项或潜在风险：`validateRequest()` 因使用 Web Crypto 为异步函数，后续运行时必须 `await`；当前核心不读写文件、不联网、不调用 SQLite、`eval` 或外部命令，也尚未提示确认、处理队列或写入真实 Zotero。未启动 Chrome/Edge/Codex 浏览器，未安装或打包插件。
+
+## 2026-07-11 15:01:54 +08:00 — Zotero 9 插件 Task 3 文件队列、分块屏障与一次确认
+
+- 本次任务目标：让 Zotero 插件安全消费固定的本地桥接队列，只在同一 `run_id` 的全部分块完整且一致时确认一次，并保证取消时不产生任何 Zotero 文库写入。
+- 新增、修改或删除的文件：重构 `zotero_bridge_plugin/content/bridge-runtime.js`；新增 `zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；修改本 `CHANGELOG.md`；未删除文件。
+- 具体修改内容：将运行时改为 Node/Zotero 共用的依赖注入工厂；固定 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1` 的 inbox/processing/outbox/archive/state 路径；使用严格文件名、JSON、请求摘要与状态文件校验；按 `run_id` 聚合并校验共享文库、集合、时间、分块总数、唯一分块位置和跨分块任务 ID；不完整批次原地等待，不一致批次不弹窗并输出 `plugin_error`；完整批次只显示一次含文库名称/ID、总条数、集合名和“现有附件不会被修改”的原生确认；取消时为每项生成 `user_cancelled` 严格结果并归档请求；确认凭据仅在作业 ID 与摘要数组完全相同时复用；并发扫描合并为同一个内存 Promise，防止定时器积压。
+- 修改原因：避免分块尚未齐全、请求被篡改、状态损坏、重复扫描或用户取消时误写 Zotero，同时为后续条目解析和 PDF 获取提供可恢复的 processing 状态。
+- 如何运行：`node --test zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；全部插件测试：`node --test zotero_bridge_plugin/tests/*.test.cjs`；语法检查：`node --check zotero_bridge_plugin/content/bridge-runtime.js`；压力测试可将运行时测试循环执行 50 次。
+- 生成的输出文件：真实启用后可在固定桥接根目录原子创建 `plugin-state.json` 和 `<job_id>.result.json`，并在队列目录间排他移动请求；本次测试全部使用内存假 I/O，未写真实 `%LOCALAPPDATA%`、Zotero 文库、集合、条目、附件、PDF、Cookie、XPI 或打包文件。
+- 如何检查是否成功：13 项运行时测试与插件侧合计 20 项测试通过；测试确认不完整分块零提示、无效/不一致分块零 Zotero 写入、取消逐任务返回、状态精确持久化、并发扫描共享一个 Promise、结果文件不覆盖既有字节且临时文件通过 `noOverwrite` 移动发布；本机 Zotero 9.0.6 自带源码静态核对确认 `IOUtils.move(..., { noOverwrite: true })`、`mode: "create"`、`tmpPath` 与 `PathUtils.filename()` 可用。
+- 注意事项或潜在风险：当前已确认批次会安全停留在 processing，真正的 Zotero 条目解析、集合写入和可用 PDF 操作属于 Task 4，尚未执行；进度检查点与撤销账本属于后续任务。插件仍未打包或安装，未启动 Chrome/Edge/Codex 浏览器，未联网、未读取 Cookie，也未调用真实 Zotero 写 API。
