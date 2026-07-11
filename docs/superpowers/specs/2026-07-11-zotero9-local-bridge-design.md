@@ -114,6 +114,8 @@ Web API 可以修改文库，Local API 可以读取本机数据，但两者无�
   "expires_at": "ISO-8601",
   "run_id": "paper_batch_YYYYMMDD_HHMMSS",
   "library_id": 1,
+  "chunk_index": 1,
+  "chunk_count": 1,
   "collection_name": "Codex下载回退_YYYYMMDD_HHMMSS",
   "items": []
 }
@@ -142,6 +144,9 @@ Web API 可以修改文库，Local API 可以读取本机数据，但两者无�
 - `library_id` 必须是可编辑的用户文库，插件确认窗口显示文库名称与 ID；
 - 相同 `job_id` 只能对应相同 `payload_sha256`，否则拒绝为 `job_id_conflict`。
 
+- `chunk_index` and `chunk_count` are one-based positive integers. Every subjob for one logical batch shares `run_id`, library, collection name, creation/expiry instants, and `chunk_count`; all indices from `1` through `chunk_count` must be present exactly once before one confirmation can be shown.
+- Project-side replay is bound to `working\zotero_bridge_jobs.json`, which records ordered job IDs, payload hashes, chunk positions, and task IDs. It fails closed if current fallback rows no longer rebuild the same manifest.
+
 ## Zotero 插件行为
 
 插件源代码放在项目的 `zotero_bridge_plugin/`，使用 Zotero 9 的 bootstrapped WebExtension 结构：
@@ -169,6 +174,8 @@ zotero_bridge_plugin\
 8. 作业完成后原子发布结果到 `outbox`，请求和结果副本进入 `archive`。
 
 用户取消时不执行任何文库写入，结果为 `user_cancelled`，批次保持可恢复。插件不会不断弹窗；同一 job 被取消或失败后，只有项目显式创建新的 retry job 才会再次请求确认。
+
+For a multi-chunk `run_id`, the plugin keeps an incomplete group in `inbox`/`awaiting_chunks` with zero prompts and zero Zotero writes. Duplicate chunk positions or inconsistent shared metadata are rejected as `bridge_run_chunks_invalid` with zero prompts and zero Zotero writes. A complete group aggregates its item count into one native confirmation, then retains per-job checkpoints and result files.
 
 ## 条目解析与 PDF 检索
 
@@ -225,12 +232,14 @@ zotero_bridge_plugin\
 - 排他创建 canonical 或时间戳 retry CSV，绝不覆盖已有结果；
 - 校验完成后才调用现有 `finalize_batch()`。
 
+- For multiple subjobs, the project validates every result and the global task-ID set before it creates one ordered five-column CSV. A missing, malformed, duplicate, or mismatched subjob result leaves state and all CSV outputs untouched.
+
 ## 状态机与恢复
 
 项目状态：
 
 ```text
-fallback_ready -> bridge_queued -> awaiting_confirmation
+fallback_ready -> bridge_queued -> awaiting_chunks -> awaiting_confirmation
   -> bridge_running -> bridge_result_ready -> finalized
 ```
 
@@ -328,4 +337,3 @@ fallback_ready -> bridge_queued -> awaiting_confirmation
 - 不依赖 LLM for Zotero 写入确认 UI，不使用影子来源，不绕过 CAPTCHA。
 - 离线自动测试、插件测试和 Zotero 9 测试配置人工验收均通过。
 - 主 Zotero 安装必须另经用户确认，Windows 项目不自动打包。
-

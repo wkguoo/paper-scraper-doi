@@ -971,3 +971,24 @@
 - 生成的输出文件：真实异常时会生成或保留 `pdf_download_report.csv`、`run_summary.txt`、`run_summary.json` 与学生交接文件；本次仅在测试临时目录生成并自动清理这些文件。
 - 如何检查是否成功：回归测试先在修复前稳定抛出 `FileNotFoundError`（RED），修复后验证报告状态为 `failed`、原因精确为 `download_exception_FileNotFoundError`、摘要失败数为 1（GREEN）；上层批处理随后可读取报告并把条目交给后续 Zotero 回退，而不是因缺失报告抛异常。
 - 注意事项或潜在风险：异常类型会保留用于排查，但不写入异常消息、路径、Cookie 或机构会话信息。已下载的部分结果若下载器在抛错前未返回结构化结果，出于安全性会被记录为失败而不推测成功。未联网、未启动 Edge/Chrome、未自动处理 CAPTCHA、未打包。
+
+## 2026-07-11 09:01:41 +08:00 — Zotero 9 本地桥接实施计划
+
+- 本次任务目标：把已确认的 Zotero 9 本地桥接设计拆分为可独立验收的项目端、插件端和端到端集成实施计划，供后续逐任务编码与测试使用。
+- 新增、修改或删除的文件：新增 `docs/superpowers/plans/2026-07-11-zotero9-project-bridge.md`、`docs/superpowers/plans/2026-07-11-zotero9-plugin.md`、`docs/superpowers/plans/2026-07-11-zotero9-bridge-integration.md`；追加本 `CHANGELOG.md`；未修改产品逻辑、数据、PDF、Zotero 配置或打包文件。
+- 具体修改内容：项目端计划定义 LocalAppData 文件队列、严格 JSON schema、原子发布、重复作业保护、结果 CSV 转换与 `paper_batch.py zotero`；插件计划定义 Zotero 9 生命周期、纯 JS 合同测试、一次确认、条目解析、可用 PDF、检查点和受限撤销；集成计划定义离线假插件验收、Skill/文档迁移以及只针对 `Zotero test` 配置的显式安装门禁。计划自检修正了测试 fixture 的完整 BatchOptions 合同和原子发布避免可见空结果文件的要求。
+- 修改原因：正常 LLM for Zotero 写入确认 UI 在桌面 Codex 回合不可用，用户已同意开发更稳定的本地桥接；实现需要在不触碰主 Zotero 文库前先锁定可测试的接口与验收边界。
+- 如何运行：本次为计划文档，无运行产物；后续按文档逐项执行 `..\\..\\.venv\\Scripts\\python.exe -m unittest ...` 与 `node --test ...`。任何 XPI 生成或测试配置安装都必须在文档 Task 4 的用户明确批准后才执行。
+- 生成的输出文件：仅生成上述 Markdown 计划；没有创建桥接 JSON、CSV、PDF、XPI、Zotero 集合、条目或附件。
+- 如何检查是否成功：三份计划均具备标准 Header、Goal、Architecture、Tech Stack、Global Constraints 和可勾选任务；占位词扫描无匹配，计划内容覆盖 schema、一次确认、恢复、PDF 复验、安全约束、离线测试、测试配置验收和主配置门禁。
+- 注意事项或潜在风险：计划本身不等于实现；当前仍不安装插件、不生成 XPI、不操作主 Zotero 配置。未自动打包。
+
+## 2026-07-11 09:16:00 +08:00 — Zotero 9 bridge multi-chunk contract revision
+
+- 任务目标：补齐实施计划中的大批量回退文献分块边界，确保超过 100 条时仍只出现一次 Zotero 确认。
+- 修改文件：`docs/superpowers/specs/2026-07-11-zotero9-local-bridge-design.md`、三份 `docs/superpowers/plans/2026-07-11-zotero9-*.md` 与本 `CHANGELOG.md`；未改动产品代码、原始数据、PDF、Zotero 配置或打包文件。
+- 具体修改：请求合同新增 `chunk_index/chunk_count`；项目端将以 `working\zotero_bridge_jobs.json` 保存有序清单，分块为每件最多 100 条；插件须在所有分块完整到达后再显示一次确认；项目端仅在所有结果验证后创建一份五列 CSV。
+- 修改原因：旧计划只持久化单个 job，无法安全恢复超过 100 条的逻辑批次，并可能导致分块逐个到达时重复确认。
+- 如何运行：本次仅更新设计与实施计划；后续按计划中的 Python/Node 离线测试命令执行。
+- 输出与检查：未生成队列、CSV、PDF、XPI 或 Zotero 写入；审查请求字段、清单、插件分组、集成测试和手工验收项是否都覆盖 101 条两分块场景。
+- 注意事项：未联网、未启动 Edge 或 Chrome、未操作 Zotero、未处理 CAPTCHA，且未自动打包。
