@@ -1392,3 +1392,4 @@
 - 注意事项或潜在风险：本次仅整理本地分支，不推送远程；删除 worktree 和冗余分支前必须确认其工作区干净且功能已被 `main` 覆盖。
 - 清理前补充保护：从综合 worktree 合入 Windows PowerShell 5.1 不支持 `System.IO.Path.GetRelativePath` 的兼容修复，并增加静态回归断言；将 beginner CLI worktree 中未跟踪的 Task 6 报告保存为 `.superpowers/sdd/task-6-report.md`，避免清理 worktree 时丢失记录。
 - 补充检查方法：运行 `\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge_packaging -v`；测试不得在仓库中留下 `.xpi`。本次没有执行构建脚本，也没有自动打包。
+- 最终清理结果：已移除 `.worktrees/codex-task6-beginner-cli`、`.worktrees/codex-zotero-paper-download`、`.worktrees/codex-zotero9-plugin-only`，并删除对应三个本地分支；保留 `main` 与 `origin/main`，未删除远程分支，未推送。
