@@ -53,3 +53,17 @@ Git history currently shows only an initial release, so no detailed convention i
 ## Security & Configuration Tips
 
 Never commit `cookies.json`, browser cookie exports, downloaded PDFs, or generated result tables. Treat institutional cookies as credentials. Keep sample commands generic and avoid hard-coded local user paths in committed documentation or code.
+
+## Agent skills
+
+### Issue tracker
+
+Project work is tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the repository's default five-label triage vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository; read root `CONTEXT.md` and relevant `docs/adr/` files when they exist. See `docs/agents/domain.md`.

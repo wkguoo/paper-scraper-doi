@@ -1018,3 +1018,14 @@
 - 生成的输出文件：测试仅在系统临时目录创建短暂文件；未创建真实 LocalAppData 桥接 JSON、Zotero 集合/条目/附件、PDF、结果 CSV、XPI 或打包文件。
 - 如何检查是否成功：新增测试必须覆盖 101 条 100/1 分块、任意 rows 注入、state 不匹配、重复 UUID、非 UTC/倒置时间和布尔整数；所有离线测试通过且差异检查为空。
 - 注意事项或潜在风险：本次仍未联网、未启动 Chrome/Edge/Codex 浏览器、未访问或写入 Zotero、未处理 CAPTCHA、未读取 Cookie，且未自动打包；真实队列发布和 Zotero 插件处理仍属于后续任务。
+
+## 2026-07-11 13:19:16 +08:00 — Ask Matt 工程协作配置
+
+- 本次任务目标：按用户确认的 `$ask-matt` 流程，为本项目建立 GitHub Issues、默认 triage 标签和单上下文领域文档的协作约定。
+- 新增、修改或删除的文件：修改 `AGENTS.md` 与本 `CHANGELOG.md`；新增 `docs/agents/issue-tracker.md`、`docs/agents/triage-labels.md`、`docs/agents/domain.md`；未删除任何文件。
+- 具体修改内容：在既有项目规则中增加 Agent skills 索引；记录 GitHub Issues 为 tracker、PR 不作为自动 triage 来源、五个默认标签和单上下文领域文档读取规则。
+- 修改原因：后续 `/implement`、`/tdd`、`/code-review` 等 Matt 工程流程需要明确的 tracker、标签和领域文档位置。
+- 如何运行：本次为本地文档配置，无需运行产品命令；可阅读上述文件确认配置内容。
+- 生成的输出文件：仅生成协作配置 Markdown；未创建 GitHub issue、PDF、桥接 JSON、XPI、Zotero 集合/条目/附件或打包文件。
+- 如何检查是否成功：`AGENTS.md` 包含唯一的 `## Agent skills` 区块，三份 `docs/agents/*.md` 文件存在并准确指向 GitHub Issues、默认标签和单上下文规则。
+- 注意事项或潜在风险：未联网、未调用 `gh` 写入、未启动浏览器、未访问 Zotero、未读取 Cookie，且未自动打包；GitHub 中的实际标签仅在后续明确需要时创建或变更。
