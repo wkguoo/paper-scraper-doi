@@ -1073,3 +1073,14 @@
 - 生成的输出文件：真实完成的桥接批次会在批次 `working\\zotero_bridge_history\\` 保存不可覆盖的旧清单硬链接；本次测试仅在系统临时目录创建并自动清理文件，未写入真实 Zotero、PDF、Cookie、XPI 或打包文件。
 - 如何检查是否成功：双轴复审无硬性规范违规；修复后聚焦桥接/CLI 测试 75 项通过，完整离线回归连续两次各 348 项通过、2 项 Windows 符号链接权限跳过；安全扫描未匹配命令执行、网络下载、影子文献源或 SQLite 访问。
 - 注意事项或潜在风险：归档只处理项目自动生成的 `zotero_bridge_jobs.json`，不会移动 Zotero 附件或用户 PDF；桥接结果完成后若仍有失败项，下一次 `zotero` 命令会创建新的确认批次。真实 Zotero 9 插件、测试配置文件安装和真实文献下载仍未执行。
+
+## 2026-07-11 14:20:01 +08:00 — Zotero 9 插件 Task 1 骨架与生命周期
+
+- 本次任务目标：建立只兼容 Zotero 9.0.x 的本地桥接插件骨架、菜单生命周期和可离线验证的 Node 测试入口。
+- 新增、修改或删除的文件：新增 `zotero_bridge_plugin/manifest.json`、`bootstrap.js`、`content/bridge-runtime.js`、`locale/zh-CN/bridge.ftl`、`tests/plugin-structure.test.cjs`、`package.json`；修改本 `CHANGELOG.md`；未删除文件。
+- 具体修改内容：固定插件 ID 与 Zotero 9.0.x 兼容范围；添加 install/startup/shutdown 等生命周期钩子和“立即检查/状态/撤销”Tools 菜单；运行时暂只维护定时器与中文状态提示，尚未处理队列或 Zotero 文库；添加中文 Fluent 文案及无 npm 依赖的测试脚本。
+- 修改原因：先建立可加载、可测试且不含网络能力的最小容器，再逐步加入严格契约和受确认保护的写入逻辑。
+- 如何运行：`node --test zotero_bridge_plugin/tests/plugin-structure.test.cjs`；可选语法检查：`node --check zotero_bridge_plugin/bootstrap.js` 与 `node --check zotero_bridge_plugin/content/bridge-runtime.js`。
+- 生成的输出文件：仅新增插件源码和测试文件；未创建 XPI、未安装插件、未改写 Zotero 配置/数据库/集合/条目/附件，也未读取 Cookie 或启动浏览器。
+- 如何检查是否成功：结构测试验证 manifest 仅目标 Zotero 9.0.x，bootstrap 包含完整生命周期且不含 `fetch`、`XMLHttpRequest`、`ServerSocket` 或 `WebSocket`；本次 2 项测试和语法检查均通过。
+- 注意事项或潜在风险：当前 `scanNow()` 仍为空实现，菜单不会导入或下载文献；XPI 构建与安装仍需后续明确的集成审批，且本项目不会自动打包。
