@@ -37,6 +37,27 @@ function Test-PathInside {
         $Candidate.StartsWith("$Parent$separator", $comparison)
 }
 
+function Get-RelativePathInside {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Parent
+    )
+
+    # Windows PowerShell 5.1 runs on .NET Framework, which does not provide
+    # System.IO.Path.GetRelativePath. The builder only needs paths that are
+    # already required to be inside one staging directory, so a checked prefix
+    # removal is both compatible and unambiguous.
+    $pathFull = Resolve-FullPath $Path
+    $parentFull = Resolve-FullPath $Parent
+    $comparison = [StringComparison]::OrdinalIgnoreCase
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $prefix = "$parentFull$separator"
+    if (-not $pathFull.StartsWith($prefix, $comparison)) {
+        throw "Path is outside the expected parent directory: $pathFull"
+    }
+    return $pathFull.Substring($prefix.Length)
+}
+
 function Assert-NoReparsePointInPath {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -170,7 +191,7 @@ try {
 
     $stagedFiles = Get-ChildItem -LiteralPath $staging -File -Recurse
     foreach ($file in $stagedFiles) {
-        $relative = [System.IO.Path]::GetRelativePath($staging, $file.FullName).Replace('\', '/')
+        $relative = (Get-RelativePathInside -Path $file.FullName -Parent $staging).Replace('\', '/')
         $allowed = $AllowedRootFiles -contains $relative
         if (-not $allowed) {
             $allowed = $AllowedDirectories | Where-Object {

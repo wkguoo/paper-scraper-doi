@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -167,6 +168,7 @@ try {
         self.assertIn("[System.IO.Path]::GetPathRoot($fullPath)", text)
         self.assertIn("$fullPath.Equals($volumeRoot", text)
         self.assertNotIn("GetFullPath($expanded).TrimEnd", text)
+        self.assertNotIn("[System.IO.Path]::GetRelativePath", text)
 
     def test_builder_uses_only_an_explicit_plugin_source_allowlist(self) -> None:
         text = self.builder_text()
