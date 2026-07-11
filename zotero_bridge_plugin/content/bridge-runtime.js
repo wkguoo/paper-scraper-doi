@@ -90,6 +90,7 @@
         Zotero.Libraries?.get,
         Zotero.Items?.getAsync,
         Zotero.Collections?.getByLibrary,
+        Zotero.Collections?.getAsync,
         Zotero.Attachments?.addAvailablePDF,
       ];
       if (
@@ -190,30 +191,46 @@
         path: path || "",
       };
     },
-    async ensureCollection(libraryID, name) {
+    async findCollectionByName(libraryID, name) {
       const matches = Zotero.Collections.getByLibrary(libraryID, true, false)
         .filter(collection => !collection.deleted && collection.name === name);
       if (matches.length > 1) throw new Error("metadata_uncertain");
-      if (matches.length === 1) return matches[0];
+      return matches.length === 1 ? matches[0] : null;
+    },
+    async createCollection(libraryID, name) {
       const collection = new Zotero.Collection();
       collection.libraryID = libraryID;
       collection.name = name;
       await collection.saveTx();
       return collection;
     },
-    async translateByDOI(doi, libraryID, collectionID) {
+    async getCollectionByID(libraryID, collectionID) {
+      const matches = await Zotero.Collections.getAsync([collectionID]);
+      const collection = Array.isArray(matches) ? matches[0] : matches;
+      if (
+        !collection
+        || collection.deleted
+        || collection.libraryID !== libraryID
+        || collection.id !== collectionID
+      ) {
+        return null;
+      }
+      return collection;
+    },
+    async translateByDOI(doi, libraryID, collectionID, beforeWrite = null) {
       const translate = new Zotero.Translate.Search();
       translate.setIdentifier({ DOI: doi });
       const translators = await translate.getTranslators();
       if (!translators.length) throw new Error("not_found");
       translate.setTranslator(translators);
+      if (typeof beforeWrite === "function") await beforeWrite();
       return translate.translate({
         libraryID,
         collections: [collectionID],
         saveAttachments: false,
       });
     },
-    async addToCollection(item, collectionID) {
+    async addToCollection(item, collectionID, beforeWrite = null) {
       if (
         !item
         || typeof item.getCollections !== "function"
@@ -223,6 +240,7 @@
         apiUnavailable();
       }
       if (item.getCollections(false).includes(collectionID)) return false;
+      if (typeof beforeWrite === "function") await beforeWrite();
       item.addToCollection(collectionID);
       await item.saveTx();
       return true;
@@ -310,6 +328,8 @@
 })(function createRuntime({ core, io, env, prompt, clock, zotero }) {
   const JOB_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/;
   const PROGRESS_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.progress\.json$/;
+  const CANCELLATION_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.cancelled\.json$/;
+  const COLLECTION_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.collection\.json$/;
   const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   const SHA256_RE = /^[0-9a-f]{64}$/;
   const UTC_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/;
@@ -330,6 +350,25 @@
     "created_item_ids",
     "created_attachment_ids",
     "added_memberships",
+    "pending_write",
+  ]);
+  const PENDING_IMPORT_FIELDS = new Set([
+    "kind",
+    "task_id",
+    "doi",
+    "collection_id",
+  ]);
+  const PENDING_MEMBERSHIP_FIELDS = new Set([
+    "kind",
+    "task_id",
+    "item_id",
+    "collection_id",
+  ]);
+  const PENDING_ATTACHMENT_FIELDS = new Set([
+    "kind",
+    "task_id",
+    "item_id",
+    "preexisting_attachment_ids",
   ]);
   const RESULT_FIELDS = new Set([
     "schema_version",
@@ -340,6 +379,25 @@
     "started_at",
     "finished_at",
     "rows",
+  ]);
+  const CANCELLATION_FIELDS = new Set([
+    "schema_version",
+    "run_id",
+    "job_ids",
+    "payload_sha256",
+    "cancelled_at",
+  ]);
+  const COLLECTION_FIELDS = new Set([
+    "schema_version",
+    "run_id",
+    "job_ids",
+    "payload_sha256",
+    "library_id",
+    "collection_id",
+    "collection_name",
+    "created",
+    "phase",
+    "recorded_at",
   ]);
   const UNDO_LEDGER_FIELDS = new Set([
     "run_id",
@@ -357,9 +415,19 @@
     "success_count",
     "failure_count",
     "completed_at",
+    "undo_started_at",
+    "undo_progress",
     "undone",
     "undo_result",
   ]);
+  const UNDO_PROGRESS_FIELDS = new Set([
+    "pending_action",
+    "removed_memberships",
+    "deleted_attachment_ids",
+    "deleted_item_ids",
+    "skipped_ids",
+  ]);
+  const UNDO_ACTION_FIELDS = new Set(["kind", "id", "collection_id"]);
   const UNDO_RESULT_FIELDS = new Set([
     "finished_at",
     "removed_memberships",
@@ -399,7 +467,9 @@
     "describeItem",
     "listAttachments",
     "describeAttachment",
-    "ensureCollection",
+    "findCollectionByName",
+    "createCollection",
+    "getCollectionByID",
     "translateByDOI",
     "addToCollection",
     "addAvailablePDF",
@@ -438,6 +508,7 @@
 
   let timer = null;
   let scanInFlight = null;
+  let undoInFlight = null;
   let temporaryCounter = 0;
   let lastStatus = "插件已启动，尚无已处理批次。";
   let lastRunSummary = null;
@@ -455,6 +526,17 @@
   function errorCode(error, fallback = "plugin_error") {
     const message = typeof error?.message === "string" ? error.message : "";
     return ERROR_CODE_RE.test(message) ? message : fallback;
+  }
+
+  function fatalBridgeError(error, fallback = "bridge_checkpoint_failed") {
+    let fatal = error instanceof Error ? error : new Error(fallback);
+    try {
+      fatal.bridgeFatal = true;
+    } catch (_error) {
+      fatal = new Error(errorCode(error, fallback));
+      fatal.bridgeFatal = true;
+    }
+    return fatal;
   }
 
   function now() {
@@ -591,6 +673,23 @@
       && validIDArray(value.skipped_ids);
   }
 
+  function validateUndoAction(value) {
+    if (!hasExactFields(value, UNDO_ACTION_FIELDS)) return false;
+    if (!isPositiveInteger(value.id)) return false;
+    if (value.kind === "membership") return isPositiveInteger(value.collection_id);
+    return (value.kind === "attachment" || value.kind === "item")
+      && value.collection_id === null;
+  }
+
+  function validateUndoProgress(value) {
+    if (!hasExactFields(value, UNDO_PROGRESS_FIELDS)) return false;
+    return (value.pending_action === null || validateUndoAction(value.pending_action))
+      && validMemberships(value.removed_memberships)
+      && validIDArray(value.deleted_attachment_ids)
+      && validIDArray(value.deleted_item_ids)
+      && validIDArray(value.skipped_ids);
+  }
+
   function validateUndoLedger(value) {
     if (!hasExactFields(value, UNDO_LEDGER_FIELDS)) return false;
     if (
@@ -622,8 +721,14 @@
       || value.failure_count < 0
       || value.total_count !== value.success_count + value.failure_count
       || !validUTCTimestamp(value.completed_at)
+      || !(value.undo_started_at === null || validUTCTimestamp(value.undo_started_at))
+      || !(value.undo_progress === null || validateUndoProgress(value.undo_progress))
       || typeof value.undone !== "boolean"
+      || (value.undone && value.undo_started_at === null)
       || (value.undone ? !validateUndoResult(value.undo_result) : value.undo_result !== null)
+      || (value.undo_started_at === null && value.undo_progress !== null)
+      || (value.undo_started_at !== null && !value.undone && value.undo_progress === null)
+      || (value.undone && value.undo_progress !== null)
       || (
         (
           value.created_item_ids.length
@@ -636,6 +741,33 @@
     ) {
       return false;
     }
+    const membershipKeys = new Set(value.added_memberships.map(pair => pair.join(":")));
+    const createdItemIDs = new Set(value.created_item_ids);
+    const createdAttachmentIDs = new Set(value.created_attachment_ids);
+    const ownedIDs = new Set([
+      ...value.created_item_ids,
+      ...value.created_attachment_ids,
+      ...value.added_memberships.map(pair => pair[0]),
+    ]);
+    const outcomeBelongsToLedger = outcome => (
+      outcome.removed_memberships.every(pair => membershipKeys.has(pair.join(":")))
+      && outcome.deleted_attachment_ids.every(id => createdAttachmentIDs.has(id))
+      && outcome.deleted_item_ids.every(id => createdItemIDs.has(id))
+      && outcome.skipped_ids.every(id => ownedIDs.has(id))
+    );
+    if (value.undo_progress) {
+      if (!outcomeBelongsToLedger(value.undo_progress)) return false;
+      const pending = value.undo_progress.pending_action;
+      if (pending) {
+        const owned = pending.kind === "membership"
+          ? membershipKeys.has(`${pending.id}:${pending.collection_id}`)
+          : pending.kind === "attachment"
+            ? createdAttachmentIDs.has(pending.id)
+            : createdItemIDs.has(pending.id);
+        if (!owned) return false;
+      }
+    }
+    if (value.undo_result && !outcomeBelongsToLedger(value.undo_result)) return false;
     return true;
   }
 
@@ -782,7 +914,7 @@
     return target;
   }
 
-  async function collectRequests(paths) {
+  async function collectRequests(paths, state) {
     const entries = [];
     for (const [location, directory] of [
       ["inbox", paths.inbox],
@@ -791,7 +923,16 @@
       const children = [...await io.list(directory)].sort();
       for (const path of children) {
         const name = io.basename(path);
-        if (location === "processing" && PROGRESS_FILE_RE.test(name)) continue;
+        if (
+          location === "processing"
+          && (
+            PROGRESS_FILE_RE.test(name)
+            || CANCELLATION_FILE_RE.test(name)
+            || COLLECTION_FILE_RE.test(name)
+          )
+        ) {
+          continue;
+        }
         try {
           if (!JOB_FILE_RE.test(name)) throw new Error("bridge_request_filename_invalid");
           const request = await readRequest(path);
@@ -804,6 +945,69 @@
           } catch (archiveError) {
             reportError(errorCode(archiveError), { file: "rejected" });
           }
+        }
+      }
+    }
+    const activeByRun = new Map();
+    for (const entry of entries) {
+      const runID = entry.request.run_id;
+      if (!activeByRun.has(runID)) activeByRun.set(runID, []);
+      activeByRun.get(runID).push(entry);
+    }
+    const knownJobIDs = new Set(entries.map(entry => entry.request.job_id));
+    const recoveryIdentities = Object.entries(state?.runs || {}).map(([runID, run]) => ({
+      runID,
+      job_ids: run.job_ids,
+      payload_sha256: run.payload_sha256,
+    }));
+    const cancellationRunIDs = new Set();
+    for (const [runID, activeEntries] of activeByRun) {
+      const stateRun = state?.runs?.[runID];
+      const stateMatchesActive = stateRun && activeEntries.some(entry => {
+        const index = stateRun.job_ids.indexOf(entry.request.job_id);
+        return index !== -1
+          && stateRun.payload_sha256[index] === entry.request.payload_sha256;
+      });
+      if (stateMatchesActive) continue;
+      if (!activeEntries.some(entry => entry.location === "processing")) continue;
+      const declaredChunks = activeEntries[0]?.request.chunk_count;
+      const activeChunks = new Set(activeEntries.map(entry => entry.request.chunk_index));
+      if (Number.isInteger(declaredChunks) && activeChunks.size < declaredChunks) {
+        cancellationRunIDs.add(runID);
+      }
+    }
+    if (cancellationRunIDs.size) {
+      recoveryIdentities.push(
+        ...await cancellationRecoveryIdentities(paths, cancellationRunIDs),
+      );
+    }
+    for (const run of recoveryIdentities) {
+      const runID = run.runID;
+      const activeEntries = activeByRun.get(runID);
+      if (!activeEntries?.length) continue;
+      const activeMatchesLedger = activeEntries.some(entry => {
+        const index = run.job_ids.indexOf(entry.request.job_id);
+        return index !== -1
+          && run.payload_sha256[index] === entry.request.payload_sha256;
+      });
+      if (!activeMatchesLedger) continue;
+      for (let index = 0; index < run.job_ids.length; index += 1) {
+        const jobID = run.job_ids[index];
+        if (knownJobIDs.has(jobID)) continue;
+        const path = io.join(paths.archive, `${jobID}.json`);
+        if (!await io.exists(path)) continue;
+        try {
+          const request = await readRequest(path);
+          if (
+            request.run_id !== runID
+            || request.payload_sha256 !== run.payload_sha256[index]
+          ) {
+            throw new Error("bridge_request_identity_invalid");
+          }
+          entries.push({ location: "archive", path, request });
+          knownJobIDs.add(jobID);
+        } catch (error) {
+          reportError(errorCode(error), { file: `${jobID}.json` });
         }
       }
     }
@@ -878,6 +1082,7 @@
 
   async function archiveEntries(paths, entries) {
     for (const entry of entries) {
+      if (entry.location === "archive") continue;
       await archiveRejected(paths, entry.path, io.basename(entry.path));
       entry.location = "archive";
     }
@@ -897,7 +1102,31 @@
       created_item_ids: [],
       created_attachment_ids: [],
       added_memberships: [],
+      pending_write: null,
     };
+  }
+
+  function validatePendingWrite(value, request, rowCount) {
+    if (value === null) return true;
+    const requestItem = request.items[rowCount];
+    if (!requestItem || value.task_id !== requestItem.task_id) return false;
+    if (value.kind === "import") {
+      return hasExactFields(value, PENDING_IMPORT_FIELDS)
+        && core.normalizeDOI(value.doi) === core.normalizeDOI(requestItem.doi)
+        && Boolean(core.normalizeDOI(value.doi))
+        && isPositiveInteger(value.collection_id);
+    }
+    if (value.kind === "membership") {
+      return hasExactFields(value, PENDING_MEMBERSHIP_FIELDS)
+        && isPositiveInteger(value.item_id)
+        && isPositiveInteger(value.collection_id);
+    }
+    if (value.kind === "attachment") {
+      return hasExactFields(value, PENDING_ATTACHMENT_FIELDS)
+        && isPositiveInteger(value.item_id)
+        && validIDArray(value.preexisting_attachment_ids);
+    }
+    return false;
   }
 
   function validateProgress(value, request) {
@@ -909,6 +1138,7 @@
       || value.confirmed !== true
       || !Array.isArray(value.rows)
       || value.rows.length > request.items.length
+      || !validatePendingWrite(value.pending_write, request, value.rows.length)
     ) {
       throw new Error("bridge_progress_invalid");
     }
@@ -1009,6 +1239,190 @@
     }
   }
 
+  function cancellationMarkerName(group) {
+    const identity = identityFor(group.entries);
+    return `${identity.job_ids[0]}.cancelled.json`;
+  }
+
+  function validateCancellationIdentity(value, expectedFirstJobID = null) {
+    if (
+      !hasExactFields(value, CANCELLATION_FIELDS)
+      || value.schema_version !== 1
+      || typeof value.run_id !== "string"
+      || !value.run_id
+      || value.run_id.length > MAX_BRIDGE_TEXT_LENGTH
+      || !Array.isArray(value.job_ids)
+      || !value.job_ids.length
+      || !value.job_ids.every(id => typeof id === "string" && JOB_ID_RE.test(id))
+      || new Set(value.job_ids).size !== value.job_ids.length
+      || !Array.isArray(value.payload_sha256)
+      || value.payload_sha256.length !== value.job_ids.length
+      || !value.payload_sha256.every(hash => (
+        typeof hash === "string" && SHA256_RE.test(hash)
+      ))
+      || !validUTCTimestamp(value.cancelled_at)
+      || (expectedFirstJobID !== null && value.job_ids[0] !== expectedFirstJobID)
+    ) {
+      throw new Error("bridge_cancellation_invalid");
+    }
+    return value;
+  }
+
+  async function cancellationRecoveryIdentities(paths, wantedRunIDs) {
+    const identities = new Map();
+    for (const directory of [paths.processing, paths.archive]) {
+      for (const path of await io.list(directory)) {
+        const name = io.basename(path);
+        const match = CANCELLATION_FILE_RE.exec(name);
+        if (!match) continue;
+        try {
+          const marker = validateCancellationIdentity(
+            JSON.parse(await io.readUTF8(path)),
+            match[1],
+          );
+          if (!wantedRunIDs.has(marker.run_id)) continue;
+          const key = JSON.stringify([
+            marker.run_id,
+            marker.job_ids,
+            marker.payload_sha256,
+          ]);
+          identities.set(key, {
+            runID: marker.run_id,
+            job_ids: marker.job_ids,
+            payload_sha256: marker.payload_sha256,
+          });
+        } catch (error) {
+          reportError(errorCode(error), { file: name });
+        }
+      }
+    }
+    return [...identities.values()];
+  }
+
+  function validateCancellationMarker(value, group) {
+    const identity = identityFor(group.entries);
+    validateCancellationIdentity(value, identity.job_ids[0]);
+    if (
+      value.run_id !== group.runID
+      || !arraysEqual(value.job_ids, identity.job_ids)
+      || !arraysEqual(value.payload_sha256, identity.payload_sha256)
+    ) {
+      throw new Error("bridge_cancellation_invalid");
+    }
+    return value;
+  }
+
+  async function loadCancellationMarker(paths, group) {
+    const name = cancellationMarkerName(group);
+    const candidates = [
+      { path: io.join(paths.processing, name), location: "processing" },
+      { path: io.join(paths.archive, name), location: "archive" },
+    ];
+    const existing = [];
+    for (const candidate of candidates) {
+      if (await io.exists(candidate.path)) existing.push(candidate);
+    }
+    if (existing.length > 1) throw new Error("bridge_cancellation_conflict");
+    if (!existing.length) return null;
+    let value;
+    try {
+      value = JSON.parse(await io.readUTF8(existing[0].path));
+    } catch (_error) {
+      throw new Error("bridge_cancellation_invalid");
+    }
+    validateCancellationMarker(value, group);
+    return { ...existing[0], value };
+  }
+
+  async function ensureCancellationMarker(paths, group) {
+    const existing = await loadCancellationMarker(paths, group);
+    if (existing) return existing;
+    const identity = identityFor(group.entries);
+    const marker = {
+      schema_version: 1,
+      run_id: group.runID,
+      job_ids: identity.job_ids,
+      payload_sha256: identity.payload_sha256,
+      cancelled_at: nowISO(),
+    };
+    const path = io.join(paths.processing, cancellationMarkerName(group));
+    await publishJSON(path, marker);
+    return { path, location: "processing", value: marker };
+  }
+
+  async function archiveCancellationMarker(paths, marker) {
+    if (marker.location === "archive") return;
+    const target = io.join(paths.archive, io.basename(marker.path));
+    await io.move(marker.path, target, { noOverwrite: true });
+    marker.path = target;
+    marker.location = "archive";
+  }
+
+  function collectionMarkerName(group) {
+    const identity = identityFor(group.entries);
+    return `${identity.job_ids[0]}.collection.json`;
+  }
+
+  function validateCollectionMarker(value, group) {
+    const identity = identityFor(group.entries);
+    const request = group.entries[0].request;
+    if (
+      !hasExactFields(value, COLLECTION_FIELDS)
+      || value.schema_version !== 1
+      || value.run_id !== group.runID
+      || !arraysEqual(value.job_ids, identity.job_ids)
+      || !arraysEqual(value.payload_sha256, identity.payload_sha256)
+      || value.library_id !== request.library_id
+      || value.collection_name !== request.collection_name
+      || !(
+        (
+          value.phase === "pending"
+          && value.collection_id === null
+          && value.created === null
+        )
+        || (
+          value.phase === "complete"
+          && isPositiveInteger(value.collection_id)
+          && typeof value.created === "boolean"
+        )
+      )
+      || !validUTCTimestamp(value.recorded_at)
+    ) {
+      throw new Error("bridge_collection_invalid");
+    }
+    return value;
+  }
+
+  async function loadCollectionMarker(paths, group) {
+    const name = collectionMarkerName(group);
+    const candidates = [
+      { path: io.join(paths.processing, name), location: "processing" },
+      { path: io.join(paths.archive, name), location: "archive" },
+    ];
+    const existing = [];
+    for (const candidate of candidates) {
+      if (await io.exists(candidate.path)) existing.push(candidate);
+    }
+    if (existing.length > 1) throw new Error("bridge_collection_conflict");
+    if (!existing.length) return null;
+    let value;
+    try {
+      value = JSON.parse(await io.readUTF8(existing[0].path));
+    } catch (_error) {
+      throw new Error("bridge_collection_invalid");
+    }
+    validateCollectionMarker(value, group);
+    return { ...existing[0], value };
+  }
+
+  async function archiveCollectionMarker(paths, marker) {
+    if (!marker || marker.location === "archive") return;
+    const target = io.join(paths.archive, io.basename(marker.path));
+    await io.move(marker.path, target, { noOverwrite: true });
+    marker.path = target;
+    marker.location = "archive";
+  }
+
   function resultDocument(request, rows, startedAt, finishedAt) {
     return {
       schema_version: 1,
@@ -1056,7 +1470,13 @@
     return path;
   }
 
-  async function publishFailureGroup(paths, entries, status, reason) {
+  async function publishFailureGroup(
+    paths,
+    entries,
+    status,
+    reason,
+    { archive = true } = {},
+  ) {
     const startedAt = nowISO();
     for (const entry of entries) {
       const finishedAt = nowISO();
@@ -1071,7 +1491,7 @@
         rows,
       );
     }
-    await archiveEntries(paths, entries);
+    if (archive) await archiveEntries(paths, entries);
   }
 
   async function confirmRun(group) {
@@ -1161,14 +1581,47 @@
     return selected ? selected.item : null;
   }
 
-  async function ensureCollection(libraryID, name) {
-    const collection = await zotero.ensureCollection(libraryID, name);
+  function validateCollectionObject(collection, libraryID, name) {
     if (
       !collection
-      || collection.id === undefined
-      || collection.id === null
+      || !isPositiveInteger(Number(collection.id))
       || collection.libraryID !== libraryID
       || collection.name !== name
+      || collection.deleted === true
+    ) {
+      throw new Error("plugin_error");
+    }
+    return collection;
+  }
+
+  async function findCollectionByName(libraryID, name) {
+    const collection = await zotero.findCollectionByName(libraryID, name);
+    return collection === null
+      ? null
+      : validateCollectionObject(collection, libraryID, name);
+  }
+
+  async function createCollection(libraryID, name) {
+    return validateCollectionObject(
+      await zotero.createCollection(libraryID, name),
+      libraryID,
+      name,
+    );
+  }
+
+  async function ensureCollection(libraryID, name) {
+    const existing = await findCollectionByName(libraryID, name);
+    if (existing) return { collection: existing, created: false };
+    return { collection: await createCollection(libraryID, name), created: true };
+  }
+
+  async function getCollectionByID(libraryID, collectionID) {
+    const collection = await zotero.getCollectionByID(libraryID, collectionID);
+    if (collection === null) return null;
+    if (
+      !collection
+      || collection.id !== collectionID
+      || collection.libraryID !== libraryID
       || collection.deleted === true
     ) {
       throw new Error("plugin_error");
@@ -1192,17 +1645,78 @@
     return pair;
   }
 
-  async function importByDOI(doi, libraryID, collectionID, progress = null) {
+  async function beginPendingWrite(context, pendingWrite) {
+    if (context.progress.pending_write !== null) {
+      throw fatalBridgeError(new Error("bridge_progress_invalid"));
+    }
+    context.progress.pending_write = pendingWrite;
+    await context.checkpoint();
+  }
+
+  async function finishPendingWrite(context, recordOwnership = null) {
+    if (typeof recordOwnership === "function") recordOwnership();
+    context.progress.pending_write = null;
+    await context.checkpoint();
+  }
+
+  async function importByDOI(
+    doi,
+    libraryID,
+    collectionID,
+    progress = null,
+    checkpoint = null,
+    taskID = "",
+  ) {
     const normalized = core.normalizeDOI(doi);
     if (!normalized) throw new Error("not_found");
-    const translated = await zotero.translateByDOI(normalized, libraryID, collectionID);
-    const descriptors = await eligibleItemDescriptors(translated, libraryID);
+    const beforeWrite = progress && typeof checkpoint === "function"
+      ? async () => {
+        if (progress.pending_write !== null) {
+          throw fatalBridgeError(new Error("bridge_progress_invalid"));
+        }
+        progress.pending_write = {
+          kind: "import",
+          task_id: taskID,
+          doi: normalized,
+          collection_id: collectionID,
+        };
+        try {
+          await checkpoint();
+        } catch (error) {
+          throw fatalBridgeError(error);
+        }
+      }
+      : null;
+    let translated;
+    try {
+      translated = await zotero.translateByDOI(
+        normalized,
+        libraryID,
+        collectionID,
+        beforeWrite,
+      );
+    } catch (error) {
+      if (progress?.pending_write?.kind === "import") throw fatalBridgeError(error);
+      throw error;
+    }
+    if (!Array.isArray(translated)) {
+      const error = new Error("zotero_api_unavailable");
+      if (progress?.pending_write?.kind === "import") throw fatalBridgeError(error);
+      throw error;
+    }
     if (progress) {
-      for (const descriptor of descriptors) {
-        const itemID = recordID(progress.created_item_ids, descriptor.id);
-        recordMembership(progress.added_memberships, itemID, collectionID);
+      try {
+        for (const item of translated) {
+          const itemID = recordID(progress.created_item_ids, item?.id);
+          recordMembership(progress.added_memberships, itemID, collectionID);
+        }
+        progress.pending_write = null;
+        if (typeof checkpoint === "function") await checkpoint();
+      } catch (error) {
+        throw fatalBridgeError(error);
       }
     }
+    const descriptors = await eligibleItemDescriptors(translated, libraryID);
     const exact = descriptors.filter(candidate => (
       core.normalizeDOI(candidate.doi) === normalized
     ));
@@ -1243,8 +1757,56 @@
     return null;
   }
 
-  async function addAvailablePDFOnce(item) {
-    const created = await zotero.addAvailablePDF(item);
+  async function addAvailablePDFOnce(
+    item,
+    progress = null,
+    checkpoint = null,
+    taskID = "",
+  ) {
+    if (progress && typeof checkpoint === "function") {
+      if (progress.pending_write !== null) {
+        throw fatalBridgeError(new Error("bridge_progress_invalid"));
+      }
+      const attachments = await zotero.listAttachments(item);
+      if (!Array.isArray(attachments)) throw new Error("zotero_api_unavailable");
+      progress.pending_write = {
+        kind: "attachment",
+        task_id: taskID,
+        item_id: Number(item.id),
+        preexisting_attachment_ids: uniqueSortedIDs(
+          attachments.map(attachment => attachment?.id),
+        ),
+      };
+      try {
+        await checkpoint();
+      } catch (error) {
+        throw fatalBridgeError(error);
+      }
+    }
+    let created;
+    try {
+      created = await zotero.addAvailablePDF(item);
+    } catch (error) {
+      if (progress?.pending_write?.kind === "attachment") throw fatalBridgeError(error);
+      throw error;
+    }
+    if (created) {
+      if (progress) {
+        try {
+          recordID(progress.created_attachment_ids, created.id);
+        } catch (error) {
+          throw fatalBridgeError(error);
+        }
+      }
+    }
+    if (progress) {
+      try {
+        progress.pending_write = null;
+        if (typeof checkpoint === "function") await checkpoint();
+      } catch (error) {
+        throw fatalBridgeError(error);
+      }
+    }
     if (created) {
       const direct = await describePDFAttachment(created, item);
       if (direct) return direct;
@@ -1254,7 +1816,93 @@
 
   async function collectionForContext(context) {
     if (!context.collectionPromise) {
-      const pending = ensureCollection(context.libraryID, context.collectionName);
+      const pending = (async () => {
+        const identity = identityFor(context.group.entries);
+        const markerPath = io.join(
+          context.paths.processing,
+          collectionMarkerName(context.group),
+        );
+        const markerValue = (phase, collectionID, created) => ({
+          schema_version: 1,
+          run_id: context.group.runID,
+          job_ids: identity.job_ids,
+          payload_sha256: identity.payload_sha256,
+          library_id: context.libraryID,
+          collection_id: collectionID,
+          collection_name: context.collectionName,
+          created,
+          phase,
+          recorded_at: nowISO(),
+        });
+        const completeMarker = async (record, collection, created) => {
+          const value = markerValue("complete", Number(collection.id), created);
+          validateCollectionMarker(value, context.group);
+          if (record) {
+            await replaceJSON(record.path, value);
+            record.value = value;
+          } else {
+            await publishJSON(markerPath, value);
+            record = { path: markerPath, location: "processing", value };
+          }
+          context.collectionMarker = record;
+          return collection;
+        };
+
+        if (context.collectionMarker) {
+          if (context.collectionMarker.value.phase === "pending") {
+            throw fatalBridgeError(new Error("write_outcome_uncertain"));
+          }
+          let collection;
+          try {
+            collection = await getCollectionByID(
+              context.libraryID,
+              context.collectionMarker.value.collection_id,
+            );
+          } catch (error) {
+            throw fatalBridgeError(error, "bridge_collection_invalid");
+          }
+          if (
+            !collection
+            || collection.id !== context.collectionMarker.value.collection_id
+            || collection.libraryID !== context.libraryID
+            || collection.name !== context.collectionName
+            || collection.deleted === true
+          ) {
+            throw fatalBridgeError(new Error("bridge_collection_invalid"));
+          }
+          return collection;
+        }
+
+        let existing;
+        try {
+          existing = await findCollectionByName(context.libraryID, context.collectionName);
+        } catch (error) {
+          if (errorCode(error) === "metadata_uncertain") throw error;
+          throw fatalBridgeError(error, "bridge_collection_invalid");
+        }
+        if (existing) {
+          try {
+            return await completeMarker(null, existing, false);
+          } catch (error) {
+            throw fatalBridgeError(error, "bridge_collection_invalid");
+          }
+        }
+
+        const marker = markerValue("pending", null, null);
+        const record = { path: markerPath, location: "processing", value: marker };
+        try {
+          validateCollectionMarker(marker, context.group);
+          await publishJSON(markerPath, marker);
+          context.collectionMarker = record;
+          const collection = await createCollection(
+            context.libraryID,
+            context.collectionName,
+          );
+          return await completeMarker(record, collection, true);
+        } catch (error) {
+          throw fatalBridgeError(error, "bridge_collection_invalid");
+        }
+      })();
       context.collectionPromise = pending.catch(error => {
         context.collectionPromise = null;
         throw error;
@@ -1272,10 +1920,12 @@
   }
 
   async function processItem(requestItem, context) {
+    if (context.progress.pending_write !== null) {
+      throw fatalBridgeError(new Error("write_outcome_uncertain"));
+    }
     let item = await resolveItem(requestItem, context.libraryID);
     let collection = null;
-    let imported = false;
-    if (item) {
+    if (item && !context.progress.created_item_ids.includes(Number(item.id))) {
       context.preexistingItemIDs.add(Number(item.id));
     }
     if (!item) {
@@ -1287,13 +1937,38 @@
         context.libraryID,
         collection.id,
         context.progress,
+        context.checkpoint,
+        requestItem.task_id,
       );
-      imported = true;
     }
     if (!collection) collection = await collectionForContext(context);
-    const membershipAdded = await zotero.addToCollection(item, collection.id);
-    if (membershipAdded || imported) {
-      recordMembership(context.progress.added_memberships, item.id, collection.id);
+    let membershipAdded;
+    try {
+      membershipAdded = await zotero.addToCollection(
+        item,
+        collection.id,
+        async () => beginPendingWrite(context, {
+          kind: "membership",
+          task_id: requestItem.task_id,
+          item_id: Number(item.id),
+          collection_id: collection.id,
+        }),
+      );
+    } catch (error) {
+      if (context.progress.pending_write?.kind === "membership") {
+        throw fatalBridgeError(error);
+      }
+      throw error;
+    }
+    if (membershipAdded) {
+      if (context.progress.pending_write?.kind !== "membership") {
+        throw fatalBridgeError(new Error("bridge_progress_invalid"));
+      }
+      await finishPendingWrite(context, () => {
+        recordMembership(context.progress.added_memberships, item.id, collection.id);
+      });
+    } else if (context.progress.pending_write !== null) {
+      throw fatalBridgeError(new Error("bridge_progress_invalid"));
     }
 
     const existing = await findPDFAttachment(item);
@@ -1308,7 +1983,12 @@
       );
     }
 
-    const downloaded = await addAvailablePDFOnce(item);
+    const downloaded = await addAvailablePDFOnce(
+      item,
+      context.progress,
+      context.checkpoint,
+      requestItem.task_id,
+    );
     if (downloaded) {
       recordID(context.progress.created_attachment_ids, downloaded.attachmentID);
       return core.successRow(
@@ -1377,6 +2057,7 @@
     }
     if (collectionIDs.size > 1) throw new Error("bridge_progress_invalid");
     const createdItems = new Set(createdItemIDs);
+    const createdAttachments = new Set(createdAttachmentIDs);
     const successfulItemIDs = rows
       .filter(row => row.status === "existing_pdf" || row.status === "downloaded")
       .map(row => Number(row.zotero_item_id));
@@ -1397,11 +2078,14 @@
       created_attachment_ids: createdAttachmentIDs,
       added_memberships: addedMemberships,
       preexisting_item_ids: preexistingItemIDs,
-      preexisting_attachment_ids: uniqueSortedIDs([...context.preexistingAttachmentIDs]),
+      preexisting_attachment_ids: uniqueSortedIDs([...context.preexistingAttachmentIDs])
+        .filter(id => !createdAttachments.has(id)),
       total_count: summary.totalCount,
       success_count: summary.successCount,
       failure_count: summary.failureCount,
       completed_at: nowISO(),
+      undo_started_at: null,
+      undo_progress: null,
       undone: false,
       undo_result: null,
     };
@@ -1432,14 +2116,21 @@
     return updated;
   }
 
-  async function processRun(group, { confirmed, paths = queuePaths() } = {}) {
+  async function processRun(
+    group,
+    { confirmed, paths = queuePaths(), cancellationMarker = null } = {},
+  ) {
     if (!confirmed) {
+      const marker = cancellationMarker || await ensureCancellationMarker(paths, group);
       await publishFailureGroup(
         paths,
         group.entries,
         "user_cancelled",
         "user_cancelled",
+        { archive: false },
       );
+      await archiveCancellationMarker(paths, marker);
+      await archiveEntries(paths, group.entries);
       const totalCount = group.entries.reduce((total, entry) => (
         total + entry.request.items.length
       ), 0);
@@ -1459,6 +2150,46 @@
     for (const entry of group.entries) {
       progressRecords.push(await loadProgress(paths, entry));
     }
+    const collectionMarker = await loadCollectionMarker(paths, group);
+    const collectionWriteUncertain = collectionMarker?.value.phase === "pending";
+    let sealedUncertainWrite = false;
+    for (const record of progressRecords) {
+      const { entry, progress } = record;
+      if (collectionWriteUncertain) {
+        const remaining = entry.request.items.slice(progress.rows.length);
+        if (remaining.length) {
+          for (const requestItem of remaining) {
+            reportError("write_outcome_uncertain", {
+              run_id: group.runID,
+              task_id: requestItem.task_id,
+            });
+            progress.rows.push(core.failureRow(
+              requestItem.task_id,
+              "plugin_error",
+              "write_outcome_uncertain",
+            ));
+          }
+          progress.pending_write = null;
+          await saveProgress(record);
+          sealedUncertainWrite = true;
+        }
+      } else if (progress.pending_write !== null) {
+        const requestItem = entry.request.items[progress.rows.length];
+        reportError("write_outcome_uncertain", {
+          run_id: group.runID,
+          task_id: requestItem.task_id,
+        });
+        progress.rows.push(core.failureRow(
+          requestItem.task_id,
+          "plugin_error",
+          "write_outcome_uncertain",
+        ));
+        progress.pending_write = null;
+        await saveProgress(record);
+        sealedUncertainWrite = true;
+      }
+    }
+
     const existingRows = progressRecords.flatMap(record => record.progress.rows);
     const existingSuccesses = existingRows.filter(row => (
       row.status === "existing_pdf" || row.status === "downloaded"
@@ -1470,18 +2201,35 @@
       successCount: existingSuccesses,
       failureCount: existingRows.length - existingSuccesses,
     };
+    const hasRemainingItems = progressRecords.some(record => (
+      record.progress.rows.length < record.entry.request.items.length
+    ));
+    if (sealedUncertainWrite && hasRemainingItems) {
+      lastStatus = `批次 ${group.runID} 已本地封存不确定写入，等待下一次安全扫描。`;
+      return {
+        status: "write_outcome_uncertain",
+        runID: group.runID,
+        rows: existingRows,
+      };
+    }
     let preflightError = null;
-    try {
-      await assertProcessingAPI(first.library_id);
-    } catch (error) {
-      preflightError = error;
+    if (hasRemainingItems) {
+      try {
+        await assertProcessingAPI(first.library_id);
+      } catch (error) {
+        preflightError = error;
+      }
     }
 
     const context = {
+      group,
+      paths,
       libraryID: first.library_id,
       collectionName: first.collection_name,
       collectionPromise: null,
-      collectionID: null,
+      collectionMarker,
+      collectionID: collectionMarker?.value.collection_id ?? null,
+      checkpoint: null,
       preexistingItemIDs: new Set(),
       preexistingAttachmentIDs: new Set(),
     };
@@ -1490,6 +2238,13 @@
     for (const record of progressRecords) {
       const { entry, progress } = record;
       context.progress = progress;
+      context.checkpoint = async () => {
+        try {
+          await saveProgress(record);
+        } catch (error) {
+          throw fatalBridgeError(error);
+        }
+      };
       for (let index = progress.rows.length; index < entry.request.items.length; index += 1) {
         const requestItem = entry.request.items[index];
         let row;
@@ -1499,6 +2254,7 @@
           try {
             row = await processItem(requestItem, context);
           } catch (error) {
+            if (error?.bridgeFatal === true) throw error;
             row = failureRowFromError(requestItem.task_id, error);
           }
         }
@@ -1515,6 +2271,7 @@
       );
     }
     await saveRunCompletion(paths, group, progressRecords, context);
+    await archiveCollectionMarker(paths, context.collectionMarker);
     await archiveProgressRecords(paths, progressRecords);
     await archiveEntries(paths, group.entries);
     if (preflightError) {
@@ -1544,7 +2301,7 @@
       };
     }
 
-    const groups = groupRequests(await collectRequests(paths));
+    const groups = groupRequests(await collectRequests(paths, state));
     let completeRuns = 0;
     let incompleteRuns = 0;
     for (const group of groups) {
@@ -1579,17 +2336,32 @@
       completeRuns += 1;
       try {
         await moveToProcessing(paths, group.entries);
-        const alreadyConfirmed = confirmationMatches(state, group.runID, group.entries);
-        let confirmed = alreadyConfirmed;
-        if (!alreadyConfirmed) {
-          confirmed = await confirmRun(group);
-          if (confirmed) {
-            state = await saveConfirmation(paths, state, group.runID, group.entries);
+        const cancellationMarker = await loadCancellationMarker(paths, group);
+        if (cancellationMarker) {
+          await processRun(group, {
+            confirmed: false,
+            paths,
+            cancellationMarker,
+          });
+        } else {
+          const alreadyConfirmed = confirmationMatches(state, group.runID, group.entries);
+          let confirmed = alreadyConfirmed;
+          if (!alreadyConfirmed) {
+            confirmed = await confirmRun(group);
+            if (confirmed) {
+              state = await saveConfirmation(paths, state, group.runID, group.entries);
+            }
           }
+          await processRun(group, { confirmed, paths });
         }
-        await processRun(group, { confirmed, paths });
       } catch (error) {
         reportError(errorCode(error), { run_id: group.runID });
+      }
+      try {
+        state = await loadState(paths);
+      } catch (error) {
+        reportError(errorCode(error), { run_id: group.runID });
+        return { status: "state_invalid", completeRuns, incompleteRuns };
       }
     }
 
@@ -1600,7 +2372,7 @@
 
   function scanNow() {
     if (scanInFlight) return scanInFlight;
-    const current = Promise.resolve().then(scanOnce);
+    const current = Promise.resolve(undoInFlight).then(scanOnce);
     scanInFlight = current;
     current.then(
       () => {
@@ -1649,7 +2421,7 @@
     return message;
   }
 
-  async function undoLastBatch() {
+  async function performUndoLastBatch() {
     const paths = await ensureQueue();
     let state;
     try {
@@ -1679,23 +2451,26 @@
       return { status: "already_undone", runID: ledger.run_id };
     }
 
-    const message = [
-      `将撤销批次：${ledger.run_id}`,
-      `新增条目：${ledger.created_item_ids.length}`,
-      `新增附件：${ledger.created_attachment_ids.length}`,
-      `集合成员关系：${ledger.added_memberships.length}`,
-      "",
-      "只会处理该批次账本中记录且身份仍匹配的对象。是否继续？",
-    ].join("\n");
-    const accepted = await prompt.confirm({
-      kind: "undo",
-      runID: ledger.run_id,
-      itemCount: ledger.created_item_ids.length,
-      attachmentCount: ledger.created_attachment_ids.length,
-      membershipCount: ledger.added_memberships.length,
-      message,
-    });
-    if (!accepted) return { status: "cancelled", runID: ledger.run_id };
+    const resuming = ledger.undo_started_at !== null;
+    if (!resuming) {
+      const message = [
+        `将撤销批次：${ledger.run_id}`,
+        `新增条目：${ledger.created_item_ids.length}`,
+        `新增附件：${ledger.created_attachment_ids.length}`,
+        `集合成员关系：${ledger.added_memberships.length}`,
+        "",
+        "只会处理该批次账本中记录且身份仍匹配的对象。是否继续？",
+      ].join("\n");
+      const accepted = await prompt.confirm({
+        kind: "undo",
+        runID: ledger.run_id,
+        itemCount: ledger.created_item_ids.length,
+        attachmentCount: ledger.created_attachment_ids.length,
+        membershipCount: ledger.added_memberships.length,
+        message,
+      });
+      if (!accepted) return { status: "cancelled", runID: ledger.run_id };
+    }
 
     if (
       typeof zotero?.assertUndoAPI !== "function"
@@ -1712,6 +2487,48 @@
       return { status: "api_unavailable", runID: ledger.run_id };
     }
 
+    if (!resuming) {
+      const startedLedger = {
+        ...cloneUndoLedger(ledger),
+        undo_started_at: nowISO(),
+        undo_progress: {
+          pending_action: null,
+          removed_memberships: [],
+          deleted_attachment_ids: [],
+          deleted_item_ids: [],
+          skipped_ids: [],
+        },
+      };
+      const startedState = {
+        schema_version: 1,
+        runs: cloneRuns(state.runs),
+        last_undo: startedLedger,
+      };
+      validateState(startedState);
+      await replaceJSON(paths.state, startedState);
+      state = startedState;
+      ledger.undo_started_at = startedLedger.undo_started_at;
+      ledger.undo_progress = startedLedger.undo_progress;
+    }
+
+    async function checkpointUndoProgress() {
+      const updated = {
+        schema_version: 1,
+        runs: cloneRuns(state.runs),
+        last_undo: cloneUndoLedger(ledger),
+      };
+      validateState(updated);
+      await replaceJSON(paths.state, updated);
+      state = updated;
+    }
+
+    const undoProgress = ledger.undo_progress;
+    if (undoProgress.pending_action) {
+      recordID(undoProgress.skipped_ids, undoProgress.pending_action.id);
+      undoProgress.pending_action = null;
+      await checkpointUndoProgress();
+    }
+
     const preexistingItems = new Set(ledger.preexisting_item_ids);
     const preexistingAttachments = new Set(ledger.preexisting_attachment_ids);
     const createdItems = ledger.created_item_ids.filter(id => !preexistingItems.has(id));
@@ -1726,64 +2543,99 @@
       collectionID: ledger.collection_id,
       batchItemIDs,
     };
-    const removedMemberships = [];
-    const deletedAttachmentIDs = [];
-    const deletedItemIDs = [];
-    const skippedIDs = [];
-
     for (const [itemID, collectionID] of [...ledger.added_memberships].reverse()) {
       if (createdItems.includes(itemID)) continue;
+      if (
+        undoProgress.removed_memberships.some(pair => (
+          pair[0] === itemID && pair[1] === collectionID
+        ))
+        || undoProgress.skipped_ids.includes(itemID)
+      ) {
+        continue;
+      }
+      undoProgress.pending_action = {
+        kind: "membership",
+        id: itemID,
+        collection_id: collectionID,
+      };
+      await checkpointUndoProgress();
       try {
         if (await zotero.removeMembershipIfOwned(itemID, collectionID, ledger.library_id)) {
-          removedMemberships.push([itemID, collectionID]);
+          recordMembership(undoProgress.removed_memberships, itemID, collectionID);
         } else {
           reportError("undo_identity_mismatch", { run_id: ledger.run_id, object_id: itemID });
-          skippedIDs.push(itemID);
+          recordID(undoProgress.skipped_ids, itemID);
         }
       } catch (error) {
+        if (error?.bridgeFatal === true) throw error;
         reportError(errorCode(error), { run_id: ledger.run_id });
-        skippedIDs.push(itemID);
+        recordID(undoProgress.skipped_ids, itemID);
       }
+      undoProgress.pending_action = null;
+      await checkpointUndoProgress();
     }
     for (const id of [...createdAttachments].reverse()) {
+      if (
+        undoProgress.deleted_attachment_ids.includes(id)
+        || undoProgress.skipped_ids.includes(id)
+      ) {
+        continue;
+      }
+      undoProgress.pending_action = { kind: "attachment", id, collection_id: null };
+      await checkpointUndoProgress();
       try {
         if (await zotero.eraseCreatedObject(id, "attachment", ledger.library_id, identity)) {
-          deletedAttachmentIDs.push(id);
+          recordID(undoProgress.deleted_attachment_ids, id);
         } else {
           reportError("undo_identity_mismatch", { run_id: ledger.run_id, object_id: id });
-          skippedIDs.push(id);
+          recordID(undoProgress.skipped_ids, id);
         }
       } catch (error) {
+        if (error?.bridgeFatal === true) throw error;
         reportError(errorCode(error), { run_id: ledger.run_id });
-        skippedIDs.push(id);
+        recordID(undoProgress.skipped_ids, id);
       }
+      undoProgress.pending_action = null;
+      await checkpointUndoProgress();
     }
     for (const id of [...createdItems].reverse()) {
+      if (
+        undoProgress.deleted_item_ids.includes(id)
+        || undoProgress.skipped_ids.includes(id)
+      ) {
+        continue;
+      }
+      undoProgress.pending_action = { kind: "item", id, collection_id: null };
+      await checkpointUndoProgress();
       try {
         if (await zotero.eraseCreatedObject(id, "item", ledger.library_id, identity)) {
-          deletedItemIDs.push(id);
+          recordID(undoProgress.deleted_item_ids, id);
         } else {
           reportError("undo_identity_mismatch", { run_id: ledger.run_id, object_id: id });
-          skippedIDs.push(id);
+          recordID(undoProgress.skipped_ids, id);
         }
       } catch (error) {
+        if (error?.bridgeFatal === true) throw error;
         reportError(errorCode(error), { run_id: ledger.run_id });
-        skippedIDs.push(id);
+        recordID(undoProgress.skipped_ids, id);
       }
+      undoProgress.pending_action = null;
+      await checkpointUndoProgress();
     }
 
     const undoResult = {
       finished_at: nowISO(),
-      removed_memberships: removedMemberships,
-      deleted_attachment_ids: deletedAttachmentIDs,
-      deleted_item_ids: deletedItemIDs,
-      skipped_ids: uniqueSortedIDs(skippedIDs),
+      removed_memberships: undoProgress.removed_memberships,
+      deleted_attachment_ids: undoProgress.deleted_attachment_ids,
+      deleted_item_ids: undoProgress.deleted_item_ids,
+      skipped_ids: uniqueSortedIDs(undoProgress.skipped_ids),
     };
     const updated = {
       schema_version: 1,
       runs: cloneRuns(state.runs),
       last_undo: {
         ...cloneUndoLedger(ledger),
+        undo_progress: null,
         undone: true,
         undo_result: undoResult,
       },
@@ -1801,6 +2653,22 @@
     return { status: "undone", runID: ledger.run_id, result: undoResult };
   }
 
+  function undoLastBatch() {
+    if (undoInFlight) return undoInFlight;
+    undoInFlight = Promise.resolve(scanInFlight).then(performUndoLastBatch);
+    undoInFlight = undoInFlight.then(
+      result => {
+        undoInFlight = null;
+        return result;
+      },
+      error => {
+        undoInFlight = null;
+        throw error;
+      },
+    );
+    return undoInFlight;
+  }
+
   return {
     queuePaths,
     readRequest,
@@ -1812,6 +2680,7 @@
     findPDFAttachment,
     importByDOI,
     ensureCollection,
+    getCollectionByID,
     addAvailablePDFOnce,
     processItem,
     startup,

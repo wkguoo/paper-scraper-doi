@@ -151,17 +151,17 @@ Example title copied from a bibliography
 
 ## 统一批处理：项目优先，Zotero 仅处理失败项
 
-当 DOI 与题名混合列表需要先走项目已有流程、再把剩余失败项交给 Zotero 时，可在 Codex 中使用这套批处理。开始前必须打开 Zotero，并确认 Codex 连接可用。
+当 DOI 与题名混合列表需要先走项目已有流程、再把剩余失败项交给 Zotero 9 时，使用本地文件桥接。打开 Zotero 并启用“文献下载桥接”插件；正常路径不再使用直接 Zotero MCP 写入。
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
 .\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
-.\.venv\Scripts\python.exe paper_batch.py finalize --run-dir "<run-dir>" --zotero-results "<run-dir>\working\zotero_results.csv"
+.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
 ```
 
-`start` 创建批次；只有 `working\manual_retry.csv` 出现数据行且你已在浏览器完成所需操作时，才运行一次 `resume`；随后由 Codex 处理 `zotero_fallback.csv`，再用 `finalize` 汇总。输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：最终 PDF 在 `pdfs\`，报告在 `reports\`，可恢复文件在 `working\`，其中包括 `zotero_results.csv`。临时 Zotero 集合会保留供复核；最终流程只复制有效 PDF，不移动原附件，也不覆盖已有 PDF。
+`start` 创建批次；只有 `working\manual_retry.csv` 有数据且你完成了项目提示的浏览器操作时，才运行一次 `resume`。只有 `zotero_fallback.csv` 的剩余行进入固定队列 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。若 `zotero` 返回退出码 `3`，保持 Zotero 打开并接受 one confirmation（一次确认）；多个分块仍是 one confirmation per batch。插件完成后只重跑同一条 `paper_batch.py zotero`，项目会自动校验结果并 finalize。
 
-能读取 Zotero 个人文库，不代表从桌面 Codex 发起的回合能显示写入确认 UI。涉及 Zotero 写入确认时，请从 Zotero 的 Codex 面板发起回合；若创建集合提示确认 UI 不可用，请仅新开一次 Zotero 发起的回合并说“继续该批次”。保留原有 `run-dir`，不要重新下载项目论文，也不要再次运行 `resume`。
+输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：最终 PDF 在 `pdfs\`，报告在 `reports\`。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。当前只完成源码和离线测试；先验收 Zotero test profile，do not install to the main profile yet。未经明确批准不生成 XPI。详细步骤见 [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)。
 
 ## 图形界面用法
 

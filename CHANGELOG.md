@@ -1139,3 +1139,80 @@
 - 生成的输出文件：仅生成构建脚本、README 和测试源码；仓库内仍无 `.xpi`，`dist` 未因本任务创建或修改，也未安装任何 Zotero 扩展。
 - 如何检查是否成功：构建契约先因脚本/README 缺失按预期 5 项失败，实施后 7 项全部通过；PowerShell AST 解析无语法错误；递归检查确认仓库内无 XPI；现有启动、Skill 安装和 UI 打包脚本均不引用该构建器。
 - 注意事项或潜在风险：构建器本身尚未实际执行，因此真实 zip/xpi 内容和 Zotero 加载仍必须在用户明确批准打包后验证；`-Force` 会替换用户明确指定输出目录中的同版本 XPI，请仅在确认旧产物可替换时使用。未联网、未启动浏览器、未访问真实 Zotero/Cookie/PDF。
+
+## 2026-07-11 17:18:52 +08:00 — Zotero 9 插件双轴复审与耐久性加固
+
+- 本次任务目标：根据 Ask Matt 的 Standards/Spec 双轴独立复审，加固 Zotero 9 本地桥接在崩溃、取消、分块归档、撤销与构建替换边界上的可恢复性，并以生产适配器测试确认关键 Zotero 9 API 参数。
+- 新增、修改或删除的文件：修改 `build_zotero_bridge_xpi.ps1`、`tests/test_zotero_bridge_packaging.py`、`zotero_bridge_plugin/README.md`、`zotero_bridge_plugin/content/bridge-runtime.js` 与 `zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；新增 `zotero_bridge_plugin/tests/zotero-adapter.test.cjs`；修改本 `CHANGELOG.md`。未删除原始数据、PDF、Cookie、Zotero 条目或用户文件。
+- 具体修改内容：构建器保留 Windows 卷根并用同卷 `File.Replace` 完成 `-Force` 原子替换，扩大队列/账本禁止项并动态验证输出落入源码树时会在归档前拒绝；取消标记在结果与归档前持久化，重启可无二次确认完成；导入条目、集合成员和新附件在每次 Zotero 写入后立即检查点；新建集合写入严格、不可变的 `.collection.json` 账本并按数值 ID 恢复；撤销在首次写入前持久化 `undo_started_at`，并发撤销共享一个 Promise，扫描与撤销串行；每个批次处理后重新加载 state，防止同次扫描覆盖前一批完成状态；确认批次及取消批次均可从严格身份账本补读已归档分块，修复“只归档第一块后崩溃”永久 `incomplete`；重启后的新附件仍保留“本批次创建”身份并可安全撤销；生产 IIFE 通过 VM 测试精确验证 `translate({ libraryID, collections: [id], saveAttachments: false })`、集合创建标志及 `Collections.getAsync([id])` 恢复调用。
+- 修改原因：独立复审发现状态对象陈旧、逐次写入与检查点之间的恢复窗口、分块请求部分归档、取消批次缺少 state 身份、创建附件重启后被误列为预存、构建替换非原子等问题；这些问题可能导致重复提示、重复下载、账本遗漏、无法撤销或批次永久等待。
+- 如何运行：`node --test zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；`node --test zotero_bridge_plugin/tests/*.test.cjs`；`node --check zotero_bridge_plugin/content/bridge-runtime.js`；`..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge_packaging -v`；PowerShell AST 仅解析 `build_zotero_bridge_xpi.ps1`；安全扫描仅覆盖插件生产代码。
+- 生成的输出文件：只新增或修改插件源码、构建脚本、说明和离线测试；测试使用内存文件系统或系统临时目录。未生成 XPI，未写真实 `%LOCALAPPDATA%` 队列、Zotero 主/测试配置、文库、附件、PDF 或 Cookie，也未启动浏览器。
+- 如何检查是否成功：新增问题均先以失败用例复现再修复；当前运行时 43 项、插件合计 53 项通过，生产适配器 3 项通过；此前构建契约 10 项、PowerShell AST、源码安全扫描与递归无 XPI 检查均通过。最终提交前仍会再跑两次插件回归、完整 Python 回归、compileall、`git diff --check` 与无 XPI 检查。
+- 注意事项或潜在风险：真实 Zotero 9 API、真实机构访问和真实磁盘崩溃窗口尚未在隔离配置中验收；必须获得用户下一次明确批准后才可生成测试 XPI，并且只能先安装到 `Zotero test` 配置。历史提交 `c14a75a` 只追踪 Task 1 变更记录中已列出的文件，没有额外内容修改或 Git 历史重写；真实构建仍按明确审批门禁延期。
+
+## 2026-07-11 17:19:12 +08:00 — 项目—Zotero 桥接离线端到端验收
+
+- 本次任务目标：通过公开 CLI/桥接接口验证“项目先下载，只有失败项进入 Zotero，结果回到项目并只复制最终 PDF”的完整离线路径，确认无需修改现有生产 Python 代码即可闭环。
+- 新增、修改或删除的文件：新增 `tests/test_zotero_bridge_integration.py`；修改本 `CHANGELOG.md`。未修改项目生产 Python、原始文献清单或真实 PDF。
+- 具体修改内容：新增三条端到端用例：其一组合项目已有 PDF、假 Zotero 已有 PDF 和 `no_pdf`，验证最终 `pdfs\` 只含两个内容哈希唯一的 PDF、源文件字节不变、报告齐全且重复运行完全幂等；其二注入摘要不匹配、未知字段、重复任务和超长非法附件路径，验证 state、PDF 与报告不被污染；其三把 101 条失败项分为 100/1 两个作业，验证部分结果不会创建 `zotero_results.csv` 或调用 finalize，齐全后按原任务顺序生成 101 行并且只 finalize 一次。
+- 修改原因：把项目侧与插件侧此前分别验证的严格协议连成一个可复现的验收边界，防止“单模块测试通过但最终 PDF 汇总、分块屏障或幂等性失效”。
+- 如何运行：`..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge_integration tests.test_zotero_bridge tests.test_batch_workflow.BatchEndToEndTests -v`；完整回归使用 `..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v`。
+- 生成的输出文件：测试只在系统临时目录创建假批次、假 PDF、桥接 JSON/CSV 与报告并自动清理；不会联网、调用真实 Zotero、读取 Cookie、启动浏览器或生成 XPI。
+- 如何检查是否成功：严格 TDD 的 RED 阶段先因集成测试模块缺失失败；实现后聚焦端到端/桥接/批次测试 59 项通过，随后完整 Python 离线回归 364 项通过、2 项按环境跳过。最终提交前将再次完整验证。
+- 注意事项或潜在风险：离线替身能验证协议、排序、摘要、路径和非覆盖行为，但不能替代 Zotero 9 真实插件加载、权限、机构网络、出版社限制或 CAPTCHA 验收；这些仍受隔离测试配置与用户明确批准约束。
+
+## 2026-07-11 17:21:18 +08:00 — paper-download bridge-first Skill 与新手文档
+
+- 本次任务目标：把 `paper-download` 的正常 Zotero 回退从直接 LLM/MCP 写入改为项目—插件本地文件桥，并为已有批次提供不可歧义、最少人工操作的继续入口。
+- 新增、修改或删除的文件：修改 `skills/paper-download/SKILL.md`、`tests/test_skills_packaging.py`、`README.md`、`README_zh.md` 与 `MANUAL_QA.md`；新增 `docs/zotero_bridge_beginner_guide.md`；修改本 `CHANGELOG.md`。未删除原始清单、PDF 或用户资料。
+- 具体修改内容：正常流程固定为 `paper_batch.py start`、最多一次 `resume`、再执行 `paper_batch.py zotero`；只有 `working\zotero_fallback.csv` 行进入桥接，退出码 3 只要求保持 Zotero 打开并批准一次批次确认，随后重跑同一 `zotero` 命令自动消费结果和 finalize；禁止正常路径直接 Zotero MCP 写入、手工构造插件结果或重复导入。对已给出 `<run-dir>` 且人工 retry 已完成的场景，首要规则明确覆盖后续所有章节：不查看/运行 `paper_skill.py`，不猜 `zotero-fallback`、`--input`、`--wait`，第一条且唯一可执行命令就是 `paper_batch.py zotero --run-dir "<run-dir>"`。保留桥不可用时严格五列 CSV、排他创建和 `zotero_unavailable` 的可恢复分支。中英文 README、新手指南和隔离 QA 统一说明队列、最终 `pdfs\`/`reports\`、非覆盖边界与测试配置门禁。
+- 修改原因：旧 Skill 依赖工具代理自行拼接 Zotero 操作，容易多次确认、猜错 CLI 或重跑已完成阶段；本地桥可把确认、分块、摘要、状态和 PDF 汇总交给确定性代码。
+- 如何运行：`..\..\.venv\Scripts\python.exe -m unittest tests.test_skills_packaging -v`；`python -X utf8 C:\Users\wkguopro\.codex\skills\.system\skill-creator\scripts\quick_validate.py skills\paper-download`；正向测试使用全新只读代理完整读取 Skill 后回答已有批次场景。
+- 生成的输出文件：只新增/修改 Skill、测试和文档；没有创建真实批次、桥接队列、PDF、Cookie、XPI 或 Zotero 对象，也没有启动浏览器。
+- 如何检查是否成功：Skill 合同 23 项通过，`quick_validate.py` 返回 `Skill is valid!`；初始正向测试暴露旧入口猜测后，新增首要覆盖规则和静态断言；最终全新代理只返回 `.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "C:\Research\results\paper_batch_20260711_090000"`，并把退出码 3 后的人工动作限定为保持 Zotero 打开和批准唯一一次确认。
+- 注意事项或潜在风险：Skill 只能编排已实现的本地桥，不能替代尚未进行的真实 Zotero 9 插件加载验收；桥不可用、权限不足或无可用 PDF 时必须保留失败状态，不能报告为完成。文档不会授权绕过登录、CAPTCHA、机构权限或出版商限制。
+
+## 2026-07-11 17:43:16 +08:00 — 第二轮安全复审：写前意图、撤销防重放与嵌套构建排除
+
+- 本次任务目标：修复 Spec/Safety 复核发现的 Zotero 写入—账本极短窗口、撤销动作重放和允许目录内嵌套禁止项进入 XPI 三个边界问题。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/content/bridge-runtime.js`、`zotero_bridge_plugin/tests/bridge-runtime.test.cjs`、`zotero_bridge_plugin/tests/zotero-adapter.test.cjs`、`zotero_bridge_plugin/README.md`、`build_zotero_bridge_xpi.ps1`、`tests/test_zotero_bridge_packaging.py`、`MANUAL_QA.md` 与本 `CHANGELOG.md`；未删除文件或用户数据。
+- 具体修改内容：进度格式增加严格 `pending_write`，在集合创建、DOI translator 导入、集合成员保存和可用 PDF 写入前先原子记录意图；集合标记区分 `pending/complete`，附件意图记录写前 ID 快照；重启以 DOI、任务、文库、集合 ID、条目 ID、成员状态和新增附件差集对账，只有一致时才恢复本批所有权，歧义时保持可恢复并安全停止。撤销账本增加严格 `undo_progress`，每个成员删除、附件删除和条目删除前记录 `pending_action`，动作后逐项落盘；若崩溃后结果无法证明，重启把账本对象记为 `skipped` 且绝不重放破坏性动作。构建器新增 `Test-ForbiddenArchivePath`，对路径每一级 segment 应用 `tests`、`.git`、日志、状态/结果/Cookie 等禁止模式，并在 staging 与临时 archive 两次验证。
+- 修改原因：只做“写后检查点”仍可能在 Zotero 已提交而文件账本尚未落盘时把本批对象误判为预存；撤销只记录开始/结束会在重启时再次删除用户刚恢复的成员关系；旧 glob 只覆盖根级或末尾名称，`content/tests/...` 与 `content/.git/...` 可能绕过。
+- 如何运行：`node --test --test-name-pattern "ownership survives a crash" zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；`node --test --test-name-pattern "never replays a membership removal" zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；`node --test zotero_bridge_plugin/tests/*.test.cjs`；`..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge_packaging -v`；`node --check zotero_bridge_plugin/content/bridge-runtime.js`；PowerShell AST 解析构建器。
+- 生成的输出文件：仅源码、说明与离线内存/静态测试发生变化；未构建 XPI，未写真实 Zotero、队列、PDF、Cookie 或浏览器配置。
+- 如何检查是否成功：四种“Zotero 写入已发生、所有权检查点尚未完成”用例均先失败后通过；“成员已删除后崩溃、用户重新加入、重启不得再删”用例先失败后通过；生产适配器验证顺序为 `checkpoint:intent → translate → checkpoint:complete`；当前插件 59 项、运行时 48 项、生产适配器 4 项和构建契约 11 项全部通过，语法检查通过。提交前仍会运行第二遍插件测试及完整 Python 回归。
+- 注意事项或潜在风险：写前意图能把进程崩溃窗口转为可审计对账，但真实 Zotero 9 在极端断电、外部并发人工编辑或 API 非标准返回下仍必须在隔离测试配置验证；无法唯一证明的对象会安全停止或标为跳过，而不会猜测所有权或删除。真实打包和安装继续等待用户明确批准。
+
+## 2026-07-11 17:51:59 +08:00 — 取消恢复 archive 轮询与同名 state 身份加固
+
+- 本次任务目标：消除 Zotero 插件空闲轮询对历史 archive 的无上限 I/O，并确保旧的同名 `run_id` state 不会阻止新取消批次的部分归档恢复。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/content/bridge-runtime.js`、`zotero_bridge_plugin/tests/bridge-runtime.test.cjs` 与本 `CHANGELOG.md`；未删除文件或数据。
+- 具体修改内容：内存 I/O 增加独立 list/read 审计；只有当活动 run 没有匹配的 state job/hash 身份、至少一个请求已在 processing、且活动 chunk 数少于声明数时才扫描取消标记；完全空闲、普通不完整 inbox 和已有匹配 state 的确认批次均不访问 archive。门控不再只看 `run_id` 名称，而是要求 state 中某个 `job_id` 及其对应 `payload_sha256` 与活动请求实际匹配；同名但不同身份时仍允许从严格取消标记恢复归档分块。
+- 修改原因：插件每秒轮询，旧实现即使空闲也会重复列举并解析持续增长的历史取消标记；第一次门控又可能被同名旧 state 误导，使新的取消批次永久停在 `incomplete`。
+- 如何运行：`node --test --test-name-pattern "idle polling never|old state with the same run id|multi-chunk cancellation interrupted" zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；全套插件测试 `node --test zotero_bridge_plugin/tests/*.test.cjs`。
+- 生成的输出文件：仅运行内存队列测试；未访问真实 archive、Zotero、PDF、Cookie、XPI 或浏览器。
+- 如何检查是否成功：空闲回归在修复前记录 3 次 archive 枚举，修复后连续 3 次 scan 为 0 次枚举和 0 次历史标记读取；同名旧 state 用例在修复前 `completeRuns=0`，修复后 `completeRuns=1`、`incompleteRuns=0`、仅一次提示且两分块均归档；当前插件 61 项全部通过。
+- 注意事项或潜在风险：真正需要恢复“取消后部分归档”的罕见场景仍会按需扫描 archive，这是找回未知首分块 job ID 所必需的审计路径；正常空闲轮询不会承担该成本。真实配置验收与 XPI 门禁不变。
+
+## 2026-07-11 18:08:52 +08:00 — 并发歧义保守封存与 reparse 路径防护
+
+- 本次任务目标：修正写前意图在外部并发编辑下仍可能误认所有权的问题，并阻止 junction/symlink 绕过构建器的源码目录保护。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/content/bridge-runtime.js`、`zotero_bridge_plugin/tests/bridge-runtime.test.cjs`、`zotero_bridge_plugin/README.md`、`build_zotero_bridge_xpi.ps1`、`tests/test_zotero_bridge_packaging.py`、`MANUAL_QA.md` 与本 `CHANGELOG.md`；未删除文件或用户数据。
+- 具体修改内容：本记录明确替代 17:43 记录中“根据当前 Zotero 状态恢复未完成写入所有权”的乐观策略。任何未完成 `pending_write` 或 pending collection marker 都不再读取当前对象来猜测归属，也不再重试 Zotero 写入；插件把“清除 pending + `plugin_error/write_outcome_uncertain` 行”放入同一次原子 progress 替换，随后只保留审计失败，所有 created/added 撤销账本为空。构建器新增 `Assert-NoReparsePointInPath`，在创建输出目录前逐级检查插件路径与输出路径的每个现存祖先，并递归拒绝源码树内任何 `FileAttributes.ReparsePoint`；因此外部 junction 指向插件源码和内部 symlink 均会停止。
+- 修改原因：写前意图只能证明插件准备执行，不能证明随后观察到的对象一定由插件创建；外部并发新增会被误认并在撤销时删除，外部删除又可能触发二次 import、成员写入或 PDF 请求。词法 `GetFullPath` 也不能识别 junction 的最终目标，单纯字符串前缀检查可被绕过。
+- 如何运行：`node --test --test-name-pattern "an uncertain" zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；`node --test zotero_bridge_plugin/tests/bridge-runtime.test.cjs`；`..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge_packaging.ZoteroBridgePackagingTests.test_builder_rejects_reparse_points_before_creating_output tests.test_zotero_bridge_packaging.ZoteroBridgePackagingTests.test_reparse_guard_rejects_a_real_junction_without_building_xpi -v`；PowerShell AST 解析构建器。
+- 生成的输出文件：离线运行时测试只使用内存对象；junction 反例只在忽略的 `.codex-test-tmp` 创建唯一临时 target/link，直接提取并执行保护函数，不执行构建器主体，随后用非递归删除清理。未生成 XPI、Zotero 对象、真实队列、PDF、Cookie 或浏览器状态。
+- 如何检查是否成功：四个并发/删除反例修复前分别出现误认、二次 import/成员/PDF 写入，修复后全部得到 `write_outcome_uncertain`，Zotero 写调用不增加且撤销账本不认领对象；运行时 50 项通过。静态顺序测试确认 reparse 检查早于输出 `New-Item`，真实 junction 保护函数反例返回 `REPARSE_REJECT_OK`；构建器 AST 通过，仓库 XPI 数量为 0。
+- 注意事项或潜在风险：该策略优先保护用户文库，代价是极罕见的写入—检查点崩溃任务会作为失败保留，可能需要在隔离配置中人工判断是否已有可用对象；插件不会自动猜测、自动重试或删除。真实 XPI 构建与安装仍等待用户明确批准。
+
+## 2026-07-11 18:19:36 +08:00 — 最终离线验收与双轴复核结论
+
+- 本次任务目标：在提交前汇总并复跑项目、插件、构建器、Skill 与安全边界，确认没有剩余审查 finding，且不越过真实 XPI/Zotero 测试配置审批门禁。
+- 新增、修改或删除的文件：仅追加本 `CHANGELOG.md` 验证记录；本次验收未再修改生产代码、测试逻辑、原始清单或 PDF。
+- 具体修改内容：最终 uncertain 恢复封存已提前到任何 `assertProcessingAPI()` 之前；同批仍有正常任务时，本次扫描只做本地原子封存并返回，下一次扫描才恢复 Zotero 访问。独立 Ask Matt Standards 与 Spec/Safety 审查者最终均明确返回 `no findings`；混合任务反例的 preflight 计数为 `1 → 1 → 2`。
+- 修改原因：为后续隔离 Zotero 配置验收提供可审计基线，避免把单次聚焦测试、静态检查或审查中间状态误当成最终完成。
+- 如何运行：Python 全套 `..\..\.venv\Scripts\python.exe -m unittest discover -s tests`；插件全套连续两次 `node --test zotero_bridge_plugin/tests/*.test.cjs`；构建器 `..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge_packaging -v` 与 PowerShell AST；`node --check zotero_bridge_plugin/content/bridge-runtime.js`；`git diff --check`；生产代码安全 `rg` 扫描；Skill 使用系统 `python -X utf8 ...\quick_validate.py skills\paper-download`；递归 XPI 计数。
+- 生成的输出文件：测试仅使用系统临时目录、内存替身和已忽略的 `.codex-test-tmp`，临时 junction 已清理；没有生成 XPI、真实桥接队列、Zotero 条目/集合/附件、PDF、Cookie 或浏览器配置。
+- 如何检查是否成功：Python 367 项通过、2 项按环境跳过；聚焦桥接/Skill/构建此前 93 项通过；插件连续两次各 61 项通过，其中 runtime 50 项、生产适配器 4 项；构建器 13 项通过；compileall、Skill validator、PowerShell AST、JavaScript 语法、`git diff --check` 与安全扫描均通过；XPI 数量为 0。完整 Python 测试中的 Edge/浏览器文字来自 mock 日志，本次未启动任何浏览器。
+- 注意事项或潜在风险：项目 venv 缺少 Skill validator 所需的 `PyYAML`，因此使用机器上已配置且可成功校验的系统 Python，没有安装新依赖。所有结论仍是源码与离线替身层面的；真实 Zotero 9.0.x 加载、真实 API 行为、登录/机构授权、出版商限制和 PDF 可得性必须在用户明确批准后，仅于 `Zotero test` 配置验收。

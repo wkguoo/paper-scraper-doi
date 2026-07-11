@@ -69,6 +69,8 @@ function undoState() {
       success_count: 2,
       failure_count: 0,
       completed_at: "2026-07-11T09:30:00.000Z",
+      undo_started_at: null,
+      undo_progress: null,
       undone: false,
       undo_result: null,
     },
@@ -117,6 +119,7 @@ function createMemoryIO(sharedFiles = null) {
   const files = sharedFiles || new Map();
   const directories = new Set();
   const operations = [];
+  const audit = { lists: [], reads: [] };
 
   function join(...parts) {
     return parts
@@ -135,6 +138,7 @@ function createMemoryIO(sharedFiles = null) {
   return {
     files,
     operations,
+    audit,
     join,
     basename,
     async makeDir(path) {
@@ -142,6 +146,7 @@ function createMemoryIO(sharedFiles = null) {
     },
     async list(path) {
       const directory = normalizePath(path);
+      audit.lists.push(directory);
       return Array.from(files.keys()).filter(candidate => {
         const normalized = normalizePath(candidate);
         return normalized.slice(0, normalized.lastIndexOf("/")) === directory;
@@ -152,6 +157,7 @@ function createMemoryIO(sharedFiles = null) {
     },
     async readUTF8(path) {
       const normalized = normalizePath(path);
+      audit.reads.push(normalized);
       if (!files.has(normalized)) throw new Error("bridge_file_missing");
       return files.get(normalized);
     },
@@ -192,6 +198,12 @@ async function makeHarness({
   sharedFiles = null,
   sharedZotero = null,
   crashAfter = null,
+  crashAfterCancellationMarker = false,
+  crashAfterUndoStart = false,
+  crashAfterLedgerWrite = null,
+  crashAfterCollectionMarker = false,
+  crashAfterArchivedRequest = false,
+  runConfirmationBarrier = null,
   initialState = null,
 } = {}) {
   const io = createMemoryIO(sharedFiles);
@@ -210,11 +222,95 @@ async function makeHarness({
       }
     };
   }
+  if (crashAfterCancellationMarker) {
+    const move = io.move.bind(io);
+    let cancellationCrashTriggered = false;
+    io.move = async (source, target, options) => {
+      await move(source, target, options);
+      if (!cancellationCrashTriggered && target.endsWith(".cancelled.json")) {
+        cancellationCrashTriggered = true;
+        throw new Error("fixture_cancel_crash");
+      }
+    };
+  }
+  if (crashAfterUndoStart) {
+    const replaceUTF8 = io.replaceUTF8.bind(io);
+    let undoCrashTriggered = false;
+    io.replaceUTF8 = async (path, text, temporaryPath) => {
+      await replaceUTF8(path, text, temporaryPath);
+      const value = JSON.parse(text);
+      if (
+        !undoCrashTriggered
+        && path.endsWith("plugin-state.json")
+        && value.last_undo?.undo_started_at
+        && value.last_undo.undone === false
+      ) {
+        undoCrashTriggered = true;
+        throw new Error("fixture_undo_crash");
+      }
+    };
+  }
+  if (crashAfterLedgerWrite) {
+    const replaceUTF8 = io.replaceUTF8.bind(io);
+    let ledgerCrashTriggered = false;
+    io.replaceUTF8 = async (path, text, temporaryPath) => {
+      await replaceUTF8(path, text, temporaryPath);
+      if (ledgerCrashTriggered || !path.endsWith(".progress.json")) return;
+      const value = JSON.parse(text);
+      const shouldCrash = (
+        crashAfterLedgerWrite === "item"
+          ? value.created_item_ids.length > 0
+          : crashAfterLedgerWrite === "membership"
+            ? value.created_item_ids.length === 0 && value.added_memberships.length > 0
+            : crashAfterLedgerWrite === "attachment"
+              ? value.created_attachment_ids.length > 0
+              : false
+      );
+      if (shouldCrash) {
+        ledgerCrashTriggered = true;
+        throw new Error("fixture_ledger_crash");
+      }
+    };
+  }
+  if (crashAfterCollectionMarker) {
+    const replaceUTF8 = io.replaceUTF8.bind(io);
+    let collectionCrashTriggered = false;
+    io.replaceUTF8 = async (path, text, temporaryPath) => {
+      await replaceUTF8(path, text, temporaryPath);
+      if (
+        !collectionCrashTriggered
+        && path.endsWith(".collection.json")
+        && JSON.parse(text).phase === "complete"
+      ) {
+        collectionCrashTriggered = true;
+        throw new Error("fixture_collection_crash");
+      }
+    };
+  }
+  if (crashAfterArchivedRequest) {
+    const move = io.move.bind(io);
+    let archiveCrashTriggered = false;
+    io.move = async (source, target, options) => {
+      await move(source, target, options);
+      const name = String(target).replaceAll("\\", "/").split("/").at(-1);
+      if (
+        !archiveCrashTriggered
+        && target.includes("/archive/")
+        && /^[0-9a-f-]{36}\.json$/.test(name)
+      ) {
+        archiveCrashTriggered = true;
+        throw new Error("fixture_archive_crash");
+      }
+    };
+  }
   const prompt = {
     calls: [],
     alerts: [],
     async confirm(details) {
       this.calls.push(details);
+      if (details.kind !== "undo" && runConfirmationBarrier) {
+        await runConfirmationBarrier;
+      }
       return details.kind === "undo" ? undoConfirm : confirm;
     },
     alert(title, message) {
@@ -222,6 +318,31 @@ async function makeHarness({
     },
   };
   const errors = [];
+  let undoWriteCrashTriggered = false;
+  let zoteroWriteCrashTriggered = false;
+  let zoteroPreWriteCrashTriggered = false;
+  function maybeCrashBeforeZoteroWrite(kind) {
+    if (
+      zoteroOptions.crashBeforeZoteroWrite === kind
+      && !zoteroPreWriteCrashTriggered
+    ) {
+      zoteroPreWriteCrashTriggered = true;
+      const error = new Error(`fixture_${kind}_pre_write_crash`);
+      error.bridgeFatal = true;
+      throw error;
+    }
+  }
+  function maybeCrashAfterZoteroWrite(kind) {
+    if (
+      zoteroOptions.crashAfterZoteroWrite === kind
+      && !zoteroWriteCrashTriggered
+    ) {
+      zoteroWriteCrashTriggered = true;
+      const error = new Error(`fixture_${kind}_write_crash`);
+      error.bridgeFatal = true;
+      throw error;
+    }
+  }
   const items = (zoteroOptions.items || []).map(value => ({
     ...value,
     attachments: (value.attachments || []).map(attachment => ({ ...attachment })),
@@ -237,8 +358,10 @@ async function makeHarness({
     searchCalls: [],
     importCalls: [],
     collectionCalls: [],
+    collectionLookupCalls: [],
     membershipCalls: [],
     availablePDFCalls: [],
+    processingAPICalls: [],
     deletedIDs: [],
     removedMemberships: [],
     items,
@@ -250,6 +373,7 @@ async function makeHarness({
       errors.push(error);
     },
     async assertProcessingAPI() {
+      this.processingAPICalls.push(1);
       if (zoteroOptions.availablePDFAPI === false) {
         throw new Error("zotero_api_unavailable");
       }
@@ -304,7 +428,7 @@ async function makeHarness({
         path: attachment.path || "",
       };
     },
-    async ensureCollection(libraryID, name) {
+    async findCollectionByName(libraryID, name) {
       this.collectionCalls.push({ libraryID, name });
       const matches = this.collections.filter(collection => (
         collection.libraryID === libraryID
@@ -312,18 +436,30 @@ async function makeHarness({
         && collection.deleted !== true
       ));
       if (matches.length > 1) throw new Error("metadata_uncertain");
-      if (matches.length === 1) return matches[0];
+      return matches.length === 1 ? matches[0] : null;
+    },
+    async createCollection(libraryID, name) {
       const collection = { id: nextCollectionID++, libraryID, name, deleted: false };
       this.collections.push(collection);
       this.writeCalls.push({ type: "create_collection", id: collection.id });
+      maybeCrashAfterZoteroWrite("collection");
       return collection;
     },
-    async translateByDOI(doi, libraryID, collectionID) {
+    async getCollectionByID(libraryID, collectionID) {
+      this.collectionLookupCalls.push({ libraryID, collectionID });
+      return this.collections.find(collection => (
+        collection.id === collectionID
+        && collection.libraryID === libraryID
+        && collection.deleted !== true
+      )) || null;
+    },
+    async translateByDOI(doi, libraryID, collectionID, beforeWrite = null) {
       this.importCalls.push({ doi, libraryID, collectionID, saveAttachments: false });
       const configuredError = zoteroOptions.importErrors?.[doi];
       if (configuredError) throw new Error(configuredError);
       const configured = zoteroOptions.translationsByDOI?.[doi];
       if (!configured) return [];
+      if (typeof beforeWrite === "function") await beforeWrite();
       const translated = (Array.isArray(configured) ? configured : [configured]).map(value => {
         const item = {
           ...value,
@@ -336,14 +472,21 @@ async function makeHarness({
         this.writeCalls.push({ type: "import_item", id: item.id });
         return item;
       });
+      maybeCrashAfterZoteroWrite("item");
       return translated;
     },
-    async addToCollection(item, collectionID) {
+    async hasCollectionMembership(item, collectionID) {
+      return (item.collections || []).includes(collectionID);
+    },
+    async addToCollection(item, collectionID, beforeWrite = null) {
       this.membershipCalls.push({ itemID: item.id, collectionID });
       item.collections ||= [];
       if (item.collections.includes(collectionID)) return false;
+      if (typeof beforeWrite === "function") await beforeWrite();
+      maybeCrashBeforeZoteroWrite("membership");
       item.collections.push(collectionID);
       this.writeCalls.push({ type: "add_membership", itemID: item.id, collectionID });
+      maybeCrashAfterZoteroWrite("membership");
       return true;
     },
     async addAvailablePDF(item) {
@@ -361,6 +504,7 @@ async function makeHarness({
       item.attachments ||= [];
       item.attachments.push(attachment);
       this.writeCalls.push({ type: "add_available_pdf", itemID: item.id, attachmentID: attachment.id });
+      maybeCrashAfterZoteroWrite("attachment");
       return attachment;
     },
     async assertUndoAPI() {},
@@ -379,6 +523,15 @@ async function makeHarness({
       item.collections = item.collections.filter(id => id !== collectionID);
       this.removedMemberships.push([itemID, collectionID]);
       this.writeCalls.push({ type: "remove_membership", itemID, collectionID });
+      if (
+        zoteroOptions.crashAfterUndoWrite === "membership"
+        && !undoWriteCrashTriggered
+      ) {
+        undoWriteCrashTriggered = true;
+        const error = new Error("fixture_undo_write_crash");
+        error.bridgeFatal = true;
+        throw error;
+      }
       return true;
     },
     async eraseCreatedObject(id, kind, libraryID, identity) {
@@ -500,6 +653,33 @@ test("uses only the fixed LocalAppData bridge directories", async () => {
   });
 });
 
+test("idle polling never enumerates or rereads the historical archive", async () => {
+  const harness = await makeHarness();
+  const markerPath = harness.io.join(
+    harness.paths.archive,
+    `${JOB_IDS[0]}.cancelled.json`,
+  );
+  harness.files.set(markerPath, JSON.stringify({
+    schema_version: 1,
+    run_id: "historical-cancelled-run",
+    job_ids: [JOB_IDS[0]],
+    payload_sha256: ["a".repeat(64)],
+    cancelled_at: "2026-07-11T09:00:00.000Z",
+  }));
+  harness.io.audit.lists.length = 0;
+  harness.io.audit.reads.length = 0;
+
+  await harness.runtime.scanNow();
+  await harness.runtime.scanNow();
+  await harness.runtime.scanNow();
+
+  assert.equal(
+    harness.io.audit.lists.filter(path => path === harness.paths.archive).length,
+    0,
+  );
+  assert.equal(harness.io.audit.reads.includes(markerPath), false);
+});
+
 test("does not prompt for an incomplete declared run", async () => {
   const first = await job({ number: 1, chunkIndex: 1, chunkCount: 2 });
   const second = await job({ number: 2, chunkIndex: 2, chunkCount: 2 });
@@ -598,7 +778,150 @@ test("cancel emits one row per task and performs zero Zotero writes", async () =
     "user_cancelled",
   ]);
   assert.equal((await harness.io.list(harness.paths.processing)).length, 0);
-  assert.equal((await harness.io.list(harness.paths.archive)).length, 1);
+  const archived = await harness.io.list(harness.paths.archive);
+  assert.equal(archived.some(path => path.endsWith(`${request.job_id}.json`)), true);
+  assert.equal(archived.some(path => path.endsWith(".cancelled.json")), true);
+});
+
+test("restart completes a durably marked cancellation without prompting or writing", async () => {
+  const request = await job();
+  const first = await makeHarness({
+    requests: [request],
+    confirm: false,
+    crashAfterCancellationMarker: true,
+  });
+
+  await first.runtime.scanNow();
+
+  assert.equal(first.prompt.calls.length, 1);
+  assert.equal(first.results().length, 0);
+  assert.equal(first.zotero.writeCalls.length, 0);
+  assert.equal(first.errors.some(error => error.code === "fixture_cancel_crash"), true);
+  assert.equal(Array.from(first.files.keys()).some(path => path.endsWith(".cancelled.json")), true);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+    confirm: true,
+  });
+  await second.runtime.scanNow();
+
+  assert.equal(first.prompt.calls.length + second.prompt.calls.length, 1);
+  assert.equal(second.zotero.writeCalls.length, 0);
+  assert.equal(second.results()[0].rows[0].status, "user_cancelled");
+  assert.equal((await second.io.list(second.paths.archive)).some(path => (
+    path.endsWith(".cancelled.json")
+  )), true);
+});
+
+test("restart completes a multi-chunk cancellation interrupted during request archiving", async () => {
+  const firstRequest = await job({
+    number: 1,
+    runID: "run-cancel-archive-recovery",
+    chunkIndex: 1,
+    chunkCount: 2,
+  });
+  const secondRequest = await job({
+    number: 2,
+    runID: "run-cancel-archive-recovery",
+    chunkIndex: 2,
+    chunkCount: 2,
+  });
+  const first = await makeHarness({
+    requests: [firstRequest, secondRequest],
+    confirm: false,
+    crashAfterArchivedRequest: true,
+  });
+
+  await first.runtime.scanNow();
+
+  assert.equal(first.prompt.calls.length, 1);
+  assert.equal(first.zotero.writeCalls.length, 0);
+  assert.equal(first.errors.some(error => error.code === "fixture_archive_crash"), true);
+  const processingAfterCrash = (await first.io.list(first.paths.processing)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(first.io.basename(path))
+  ));
+  const archivedAfterCrash = (await first.io.list(first.paths.archive)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(first.io.basename(path))
+  ));
+  assert.equal(processingAfterCrash.length, 1);
+  assert.equal(archivedAfterCrash.length, 1);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+    confirm: true,
+  });
+  const outcome = await second.runtime.scanNow();
+
+  const processingAfterRestart = (await second.io.list(second.paths.processing)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(second.io.basename(path))
+  ));
+  const archivedAfterRestart = (await second.io.list(second.paths.archive)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(second.io.basename(path))
+  ));
+  assert.equal(outcome.completeRuns, 1);
+  assert.equal(outcome.incompleteRuns, 0);
+  assert.equal(processingAfterRestart.length, 0);
+  assert.equal(archivedAfterRestart.length, 2);
+  assert.equal(first.prompt.calls.length + second.prompt.calls.length, 1);
+  assert.equal(second.zotero.writeCalls.length, 0);
+  assert.deepEqual(
+    second.results().flatMap(result => result.rows.map(row => row.status)),
+    ["user_cancelled", "user_cancelled"],
+  );
+});
+
+test("old state with the same run id cannot block cancellation archive recovery", async () => {
+  const runID = "run-cancel-reused-id";
+  const firstRequest = await job({
+    number: 1,
+    runID,
+    chunkIndex: 1,
+    chunkCount: 2,
+  });
+  const secondRequest = await job({
+    number: 2,
+    runID,
+    chunkIndex: 2,
+    chunkCount: 2,
+  });
+  const first = await makeHarness({
+    requests: [firstRequest, secondRequest],
+    confirm: false,
+    crashAfterArchivedRequest: true,
+    initialState: {
+      schema_version: 1,
+      runs: {
+        [runID]: {
+          job_ids: [JOB_IDS[3]],
+          payload_sha256: ["b".repeat(64)],
+          confirmed_at: "2026-07-11T08:00:00.000Z",
+          completed: true,
+        },
+      },
+      last_undo: null,
+    },
+  });
+
+  await first.runtime.scanNow();
+  assert.equal(first.errors.some(error => error.code === "fixture_archive_crash"), true);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  const outcome = await second.runtime.scanNow();
+
+  assert.equal(outcome.completeRuns, 1);
+  assert.equal(outcome.incompleteRuns, 0);
+  assert.equal(first.prompt.calls.length + second.prompt.calls.length, 1);
+  assert.equal((await second.io.list(second.paths.processing)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(second.io.basename(path))
+  )).length, 0);
+  assert.equal((await second.io.list(second.paths.archive)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(second.io.basename(path))
+  )).length, 2);
 });
 
 test("unknown field and hash mismatch are archived without prompting", async () => {
@@ -694,6 +1017,8 @@ test("persists exact completion state and reuses confirmation only for identical
       success_count: 0,
       failure_count: 1,
       completed_at: "2026-07-11T10:00:00.000Z",
+      undo_started_at: null,
+      undo_progress: null,
       undone: false,
       undo_result: null,
     },
@@ -721,6 +1046,72 @@ test("serializes overlapping scans so one run receives at most one prompt", asyn
   assert.equal(scans[1], scans[2]);
   await Promise.all(scans);
   assert.equal(harness.prompt.calls.length, 1);
+});
+
+test("one scan preserves completion state for two independent runs", async () => {
+  const first = await job({ number: 1, runID: "run-a" });
+  const second = await job({ number: 2, runID: "run-b" });
+  const harness = await makeHarness({
+    requests: [first, second],
+    zoteroOptions: { availablePDFAPI: false },
+  });
+
+  await harness.runtime.scanNow();
+
+  const state = JSON.parse(await harness.io.readUTF8(harness.paths.state));
+  assert.equal(state.runs["run-a"].completed, true);
+  assert.equal(state.runs["run-b"].completed, true);
+  assert.equal(harness.prompt.calls.length, 2);
+});
+
+test("restart completes a multi-chunk run interrupted during request archiving", async () => {
+  const firstRequest = await job({
+    number: 1,
+    runID: "run-archive-recovery",
+    chunkIndex: 1,
+    chunkCount: 2,
+  });
+  const secondRequest = await job({
+    number: 2,
+    runID: "run-archive-recovery",
+    chunkIndex: 2,
+    chunkCount: 2,
+  });
+  const first = await makeHarness({
+    requests: [firstRequest, secondRequest],
+    crashAfterArchivedRequest: true,
+    zoteroOptions: { availablePDFAPI: false },
+  });
+
+  await first.runtime.scanNow();
+
+  assert.equal(first.errors.some(error => error.code === "fixture_archive_crash"), true);
+  const processingAfterCrash = (await first.io.list(first.paths.processing)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(first.io.basename(path))
+  ));
+  const archivedAfterCrash = (await first.io.list(first.paths.archive)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(first.io.basename(path))
+  ));
+  assert.equal(processingAfterCrash.length, 1);
+  assert.equal(archivedAfterCrash.length, 1);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  const processingAfterRestart = (await second.io.list(second.paths.processing)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(second.io.basename(path))
+  ));
+  const archivedAfterRestart = (await second.io.list(second.paths.archive)).filter(path => (
+    /^[0-9a-f-]{36}\.json$/.test(second.io.basename(path))
+  ));
+  assert.equal(processingAfterRestart.length, 0);
+  assert.equal(archivedAfterRestart.length, 2);
+  assert.equal(first.prompt.calls.length + second.prompt.calls.length, 1);
+  const state = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.equal(state.runs["run-archive-recovery"].completed, true);
 });
 
 test("publishJSON never overwrites an existing result", async () => {
@@ -1229,6 +1620,7 @@ test("restart resumes after the last completed task without a second prompt", as
     "created_item_ids",
     "created_attachment_ids",
     "added_memberships",
+    "pending_write",
   ]);
   assert.equal(firstProgress.rows.length, 1);
 
@@ -1254,6 +1646,370 @@ test("restart resumes after the last completed task without a second prompt", as
   );
   const completedState = JSON.parse(await second.io.readUTF8(second.paths.state));
   assert.equal(completedState.runs[request.run_id].completed, true);
+});
+
+test("collection creation is durably ledgered and reused after restart", async () => {
+  const request = await job();
+  const first = await makeHarness({
+    requests: [request],
+    crashAfterCollectionMarker: true,
+    zoteroOptions: {
+      items: [{
+        id: 601,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [],
+        attachments: [],
+      }],
+    },
+  });
+
+  await first.runtime.scanNow();
+
+  assert.equal(first.results().length, 0);
+  assert.equal(first.errors.some(error => error.code === "fixture_collection_crash"), true);
+  assert.equal(first.zotero.writeCalls.filter(call => call.type === "create_collection").length, 1);
+  const markerName = `${request.job_id}.collection.json`;
+  const markerPath = first.io.join(first.paths.processing, markerName);
+  const marker = JSON.parse(await first.io.readUTF8(markerPath));
+  assert.deepEqual(Object.keys(marker), [
+    "schema_version",
+    "run_id",
+    "job_ids",
+    "payload_sha256",
+    "library_id",
+    "collection_id",
+    "collection_name",
+    "created",
+    "phase",
+    "recorded_at",
+  ]);
+  assert.equal(marker.created, true);
+  assert.equal(marker.collection_id, 701);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  assert.equal(second.zotero.writeCalls.filter(call => call.type === "create_collection").length, 1);
+  assert.deepEqual(second.zotero.collectionLookupCalls, [{ libraryID: 1, collectionID: 701 }]);
+  assert.equal(second.results()[0].rows[0].status, "no_pdf");
+  assert.equal(await second.io.exists(markerPath), false);
+  assert.equal(await second.io.exists(second.io.join(second.paths.archive, markerName)), true);
+});
+
+test("restart after an imported-item checkpoint does not import the item twice", async () => {
+  const request = await job();
+  const doi = core.normalizeDOI(request.items[0].doi);
+  const first = await makeHarness({
+    requests: [request],
+    crashAfterLedgerWrite: "item",
+    zoteroOptions: {
+      collections: [{ id: 701, libraryID: 1, name: request.collection_name }],
+      translationsByDOI: {
+        [doi]: {
+          id: 610,
+          doi,
+          title: request.items[0].title,
+          firstCreator: "Smith",
+          year: "2025",
+        },
+      },
+    },
+  });
+
+  await first.runtime.scanNow();
+
+  assert.equal(first.results().length, 0);
+  assert.equal(first.errors.some(error => error.code === "fixture_ledger_crash"), true);
+  assert.equal(first.zotero.importCalls.length, 1);
+  const progressPath = first.io.join(
+    first.paths.processing,
+    `${request.job_id}.progress.json`,
+  );
+  const checkpoint = JSON.parse(await first.io.readUTF8(progressPath));
+  assert.deepEqual(checkpoint.created_item_ids, [610]);
+  assert.deepEqual(checkpoint.added_memberships, [[610, 701]]);
+  assert.deepEqual(checkpoint.rows, []);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  assert.equal(second.zotero.importCalls.length, 1);
+  assert.deepEqual(second.zotero.availablePDFCalls, [610]);
+  assert.equal(second.results()[0].rows[0].status, "no_pdf");
+});
+
+test("restart after a membership checkpoint does not add the membership twice", async () => {
+  const request = await job();
+  const first = await makeHarness({
+    requests: [request],
+    crashAfterLedgerWrite: "membership",
+    zoteroOptions: {
+      collections: [{ id: 702, libraryID: 1, name: request.collection_name }],
+      items: [{
+        id: 620,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [],
+        attachments: [],
+      }],
+    },
+  });
+
+  await first.runtime.scanNow();
+
+  assert.equal(first.results().length, 0);
+  assert.equal(first.errors.some(error => error.code === "fixture_ledger_crash"), true);
+  assert.equal(first.zotero.writeCalls.filter(call => call.type === "add_membership").length, 1);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  assert.equal(second.zotero.writeCalls.filter(call => call.type === "add_membership").length, 1);
+  assert.deepEqual(second.zotero.availablePDFCalls, [620]);
+  assert.equal(second.results()[0].rows[0].status, "no_pdf");
+});
+
+test("restart after an attachment checkpoint does not request the PDF twice", async () => {
+  const request = await job();
+  const first = await makeHarness({
+    requests: [request],
+    crashAfterLedgerWrite: "attachment",
+    zoteroOptions: {
+      collections: [{ id: 703, libraryID: 1, name: request.collection_name }],
+      items: [{
+        id: 630,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [],
+        attachments: [],
+      }],
+      availablePDFByItemID: {
+        630: {
+          id: 631,
+          contentType: "application/pdf",
+          path: "C:\\Zotero\\storage\\CHECKPOINT\\paper.pdf",
+        },
+      },
+    },
+  });
+
+  await first.runtime.scanNow();
+
+  assert.equal(first.results().length, 0);
+  assert.equal(first.errors.some(error => error.code === "fixture_ledger_crash"), true);
+  assert.deepEqual(first.zotero.availablePDFCalls, [630]);
+  const progressPath = first.io.join(
+    first.paths.processing,
+    `${request.job_id}.progress.json`,
+  );
+  const checkpoint = JSON.parse(await first.io.readUTF8(progressPath));
+  assert.deepEqual(checkpoint.created_attachment_ids, [631]);
+  assert.deepEqual(checkpoint.rows, []);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  assert.deepEqual(second.zotero.availablePDFCalls, [630]);
+  assert.equal(second.results()[0].rows[0].status, "existing_pdf");
+  const state = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.deepEqual(state.last_undo.created_attachment_ids, [631]);
+  assert.deepEqual(state.last_undo.preexisting_attachment_ids, []);
+
+  const undo = await second.runtime.undoLastBatch();
+  assert.equal(undo.status, "undone");
+  assert.equal(second.zotero.deletedIDs.includes(631), true);
+});
+
+test("an uncertain collection write is not recreated or claimed after restart", async () => {
+  const request = await job();
+  const first = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      crashAfterZoteroWrite: "collection",
+      items: [{
+        id: 640,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [],
+        attachments: [],
+      }],
+    },
+  });
+
+  await first.runtime.scanNow();
+
+  assert.equal(first.results().length, 0);
+  assert.equal(first.zotero.writeCalls.filter(call => call.type === "create_collection").length, 1);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  assert.equal(first.prompt.calls.length + second.prompt.calls.length, 1);
+  assert.equal(second.zotero.writeCalls.filter(call => call.type === "create_collection").length, 1);
+  assert.equal(second.results()[0].rows[0].status, "plugin_error");
+  assert.equal(second.results()[0].rows[0].reason, "write_outcome_uncertain");
+  const markerPath = (await second.io.list(second.paths.archive)).find(path => (
+    path.endsWith(".collection.json")
+  ));
+  const marker = JSON.parse(await second.io.readUTF8(markerPath));
+  assert.equal(marker.phase, "pending");
+  assert.equal(marker.created, null);
+  assert.equal(marker.collection_id, null);
+});
+
+test("an uncertain import is not retried after its created item is externally removed", async () => {
+  const request = await job();
+  const doi = core.normalizeDOI(request.items[0].doi);
+  const first = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      crashAfterZoteroWrite: "item",
+      collections: [{ id: 704, libraryID: 1, name: request.collection_name }],
+      translationsByDOI: {
+        [doi]: {
+          id: 650,
+          doi,
+          title: request.items[0].title,
+          firstCreator: "Smith",
+          year: "2025",
+        },
+      },
+    },
+  });
+
+  await first.runtime.scanNow();
+  assert.equal(first.results().length, 0);
+  assert.equal(first.zotero.importCalls.length, 1);
+  const preflightCallsAfterCrash = first.zotero.processingAPICalls.length;
+  first.zotero.items = first.zotero.items.filter(item => item.id !== 650);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  assert.equal(second.zotero.importCalls.length, 1);
+  assert.equal(second.zotero.processingAPICalls.length, preflightCallsAfterCrash);
+  assert.equal(second.results()[0].rows[0].status, "plugin_error");
+  assert.equal(second.results()[0].rows[0].reason, "write_outcome_uncertain");
+  const state = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.deepEqual(state.last_undo.created_item_ids, []);
+  assert.deepEqual(state.last_undo.added_memberships, []);
+  assert.deepEqual(state.last_undo.preexisting_item_ids, []);
+});
+
+test("an uncertain membership is not claimed when an external actor adds it", async () => {
+  const request = await job();
+  const first = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      crashBeforeZoteroWrite: "membership",
+      collections: [{ id: 705, libraryID: 1, name: request.collection_name }],
+      items: [{
+        id: 660,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [],
+        attachments: [],
+      }],
+    },
+  });
+
+  await first.runtime.scanNow();
+  assert.equal(first.results().length, 0);
+  assert.equal(first.zotero.writeCalls.filter(call => call.type === "add_membership").length, 0);
+  first.zotero.items.find(item => item.id === 660).collections.push(705);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  assert.equal(second.zotero.writeCalls.filter(call => call.type === "add_membership").length, 0);
+  assert.equal(second.results()[0].rows[0].status, "plugin_error");
+  assert.equal(second.results()[0].rows[0].reason, "write_outcome_uncertain");
+  const state = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.deepEqual(state.last_undo.added_memberships, []);
+  assert.deepEqual(state.last_undo.preexisting_item_ids, []);
+});
+
+test("an uncertain attachment is not requested again after external removal", async () => {
+  const request = await job();
+  const first = await makeHarness({
+    requests: [request],
+    zoteroOptions: {
+      crashAfterZoteroWrite: "attachment",
+      collections: [{ id: 706, libraryID: 1, name: request.collection_name }],
+      items: [{
+        id: 670,
+        libraryID: 1,
+        doi: request.items[0].doi,
+        title: request.items[0].title,
+        firstCreator: "Smith",
+        year: "2025",
+        collections: [706],
+        attachments: [],
+      }],
+      availablePDFByItemID: {
+        670: {
+          id: 671,
+          contentType: "application/pdf",
+          path: "C:\\Zotero\\storage\\WRITEAHEAD\\paper.pdf",
+        },
+      },
+    },
+  });
+
+  await first.runtime.scanNow();
+  assert.equal(first.results().length, 0);
+  assert.deepEqual(first.zotero.availablePDFCalls, [670]);
+  first.zotero.items.find(item => item.id === 670).attachments = [];
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  await second.runtime.scanNow();
+
+  assert.deepEqual(second.zotero.availablePDFCalls, [670]);
+  assert.equal(second.results()[0].rows[0].status, "plugin_error");
+  assert.equal(second.results()[0].rows[0].reason, "write_outcome_uncertain");
+  const state = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.deepEqual(state.last_undo.created_attachment_ids, []);
+  assert.deepEqual(state.last_undo.preexisting_attachment_ids, []);
 });
 
 test("tampered progress is rejected without reprocessing or publishing a result", async () => {
@@ -1394,6 +2150,122 @@ test("undo touches only IDs created or memberships added by the last batch", asy
     deleted_item_ids: [901],
     skipped_ids: [],
   });
+});
+
+test("undo persists an in-progress marker before writes and resumes without another prompt", async () => {
+  const first = await makeHarness({
+    initialState: undoState(),
+    crashAfterUndoStart: true,
+    zoteroOptions: { items: undoItems() },
+  });
+
+  await assert.rejects(first.runtime.undoLastBatch(), /fixture_undo_crash/);
+
+  assert.equal(first.prompt.calls.length, 1);
+  assert.equal(first.zotero.writeCalls.length, 0);
+  const interrupted = JSON.parse(await first.io.readUTF8(first.paths.state));
+  assert.equal(interrupted.last_undo.undo_started_at, "2026-07-11T10:00:00.000Z");
+  assert.equal(interrupted.last_undo.undone, false);
+  assert.equal(interrupted.last_undo.undo_result, null);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  const outcome = await second.runtime.undoLastBatch();
+
+  assert.equal(second.prompt.calls.length, 0);
+  assert.equal(outcome.status, "undone");
+  assert.deepEqual(second.zotero.removedMemberships, [[304, 77]]);
+  assert.deepEqual(second.zotero.deletedIDs, [902, 901]);
+  const completed = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.equal(completed.last_undo.undo_started_at, "2026-07-11T10:00:00.000Z");
+  assert.equal(completed.last_undo.undone, true);
+});
+
+test("undo restart never replays a membership removal whose outcome was not checkpointed", async () => {
+  const first = await makeHarness({
+    initialState: undoState(),
+    zoteroOptions: {
+      items: undoItems(),
+      crashAfterUndoWrite: "membership",
+    },
+  });
+
+  await assert.rejects(first.runtime.undoLastBatch(), /fixture_undo_write_crash/);
+
+  assert.equal(first.prompt.calls.length, 1);
+  assert.deepEqual(first.zotero.removedMemberships, [[304, 77]]);
+  const interrupted = JSON.parse(await first.io.readUTF8(first.paths.state));
+  assert.equal(interrupted.last_undo.undo_progress.pending_action.kind, "membership");
+  const existingItem = first.zotero.items.find(item => item.id === 304);
+  existingItem.collections.push(77);
+
+  const second = await makeHarness({
+    sharedFiles: first.files,
+    sharedZotero: first.zotero,
+  });
+  const outcome = await second.runtime.undoLastBatch();
+
+  assert.equal(second.prompt.calls.length, 0);
+  assert.equal(outcome.status, "undone");
+  assert.deepEqual(existingItem.collections, [77]);
+  assert.deepEqual(second.zotero.removedMemberships, [[304, 77]]);
+  const completed = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.equal(completed.last_undo.undone, true);
+  assert.deepEqual(completed.last_undo.undo_result.removed_memberships, []);
+  assert.deepEqual(completed.last_undo.undo_result.skipped_ids, [304]);
+});
+
+test("concurrent undo calls share one promise and one mutation sequence", async () => {
+  const harness = await makeHarness({
+    initialState: undoState(),
+    zoteroOptions: { items: undoItems() },
+  });
+
+  const first = harness.runtime.undoLastBatch();
+  const second = harness.runtime.undoLastBatch();
+
+  assert.equal(first, second);
+  const [firstOutcome, secondOutcome] = await Promise.all([first, second]);
+  assert.deepEqual(firstOutcome, secondOutcome);
+  assert.equal(firstOutcome.status, "undone");
+  assert.equal(harness.prompt.calls.length, 1);
+  assert.deepEqual(harness.zotero.removedMemberships, [[304, 77]]);
+  assert.deepEqual(harness.zotero.deletedIDs, [902, 901]);
+});
+
+test("scan and undo are serialized so their state and Zotero writes cannot overlap", async () => {
+  let releaseConfirmation;
+  const runConfirmationBarrier = new Promise(resolve => {
+    releaseConfirmation = resolve;
+  });
+  const request = await job({ number: 2, runID: "run-after-undo-ledger" });
+  const harness = await makeHarness({
+    requests: [request],
+    initialState: undoState(),
+    runConfirmationBarrier,
+    zoteroOptions: { items: undoItems() },
+  });
+
+  const scan = harness.runtime.scanNow();
+  for (let attempt = 0; attempt < 20 && harness.prompt.calls.length === 0; attempt += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(harness.prompt.calls.length, 1);
+  assert.notEqual(harness.prompt.calls[0].kind, "undo");
+
+  const undo = harness.runtime.undoLastBatch();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.prompt.calls.length, 1);
+
+  releaseConfirmation();
+  await scan;
+  const outcome = await undo;
+
+  assert.equal(outcome.status, "undone");
+  assert.equal(harness.prompt.calls.filter(call => call.kind === "undo").length, 1);
+  assert.equal(outcome.runID, request.run_id);
 });
 
 test("generated ledger undo preserves an existing item and removes imported artifacts", async () => {

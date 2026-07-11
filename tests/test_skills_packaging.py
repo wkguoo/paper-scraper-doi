@@ -54,105 +54,140 @@ class SkillPackagingTests(unittest.TestCase):
         for required in (
             "paper_batch.py start",
             "paper_batch.py resume",
+            "paper_batch.py zotero",
             "paper_batch.py finalize",
             "manual_retry.csv",
             "zotero_fallback.csv",
             "zotero_results.csv",
-            'library_search(entity:"libraries", mode:"list")',
-            "library_import",
-            "library_update",
-            "Codex下载回退_YYYYMMDD_HHMMSS",
-            "Zotero.Attachments.addAvailablePDF",
-            "env.addUndoStep",
+            "%LOCALAPPDATA%\\PaperScraperDOI\\zotero-bridge\\v1",
+            "one Zotero confirmation per batch",
+            "Exit code `3`",
             "metadata_uncertain",
             "zotero_unavailable",
             "zotero_api_unavailable",
             "existing_pdf",
             "downloaded",
             "no_pdf",
-            "codex-download-success",
-            "codex-download-failed",
             "task_id,zotero_item_id,attachment_path,status,reason",
-            "run exactly one retry",
-            "absolute Windows path",
-            "reparse point",
-            "must not overwrite",
+            "run exactly one",
+            "reparse-point safety",
+            "Never truncate, overwrite, append",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, text)
 
         self.assertRegex(
             text,
-            r"(?s)paper_batch\.py start.*paper_batch\.py resume.*paper_batch\.py finalize",
+            r"(?s)paper_batch\.py start.*paper_batch\.py resume.*paper_batch\.py zotero",
         )
         for forbidden in ("Sci-Hub", "Anna's Archive", "LibGen"):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
-    def test_paper_download_skill_stops_for_unavailable_zotero_write_confirmation(self) -> None:
+    def test_paper_download_skill_uses_zotero_bridge(self) -> None:
+        skill_text = (
+            PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+
+        required = (
+            "paper_batch.py zotero --run-dir",
+            "Only `zotero_fallback.csv` rows enter the bridge.",
+            "one Zotero confirmation per batch",
+            "zotero_results.csv",
+            "Do not use direct Zotero MCP writes for normal bridge execution.",
+            "Never run `paper_skill.py` for an existing batch run directory.",
+            "This rule overrides every later section",
+            "Do not inspect `paper_skill.py --help`",
+            "Do not invent `zotero-fallback`, `--input`, or `--wait`",
+            "the first and only executable command",
+            "<run-dir>\\working\\zotero_fallback.csv",
+            "zotero_unavailable",
+            "finalize revalidates PDF content and reparse-point safety",
+        )
+        for phrase in required:
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, skill_text)
+        for obsolete_normal_path in (
+            'collection_update(action:"create"',
+            'library_import(kind:"identifiers"',
+            'library_update(kind:"collections"',
+        ):
+            with self.subTest(obsolete=obsolete_normal_path):
+                self.assertNotIn(obsolete_normal_path, skill_text)
+
+    def test_zotero_bridge_beginner_docs(self) -> None:
+        paths = (
+            PROJECT_ROOT / "docs" / "zotero_bridge_beginner_guide.md",
+            PROJECT_ROOT / "README_zh.md",
+        )
+        required = (
+            "paper_batch.py start",
+            "paper_batch.py resume",
+            "paper_batch.py zotero",
+            "one confirmation",
+            "%LOCALAPPDATA%\\PaperScraperDOI\\zotero-bridge\\v1",
+            "pdfs\\",
+            "reports\\",
+            "do not overwrite",
+            "Zotero test profile",
+            "do not install to the main profile yet",
+        )
+        for path in paths:
+            with self.subTest(path=path.relative_to(PROJECT_ROOT)):
+                self.assertTrue(path.is_file())
+                text = path.read_text(encoding="utf-8")
+                for phrase in required:
+                    self.assertIn(phrase, text)
+
+    def test_paper_download_skill_preserves_bridge_unavailable_recovery(self) -> None:
         text = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(
             encoding="utf-8"
         )
 
         required = (
-            "Zotero-readable does not imply Zotero writes can show a confirmation UI.",
-            "collection_update(action:\"create\", name:\"Codex下载回退_YYYYMMDD_HHMMSS\", libraryID:<libraryID>)",
-            "Zotero MCP confirmation UI is unavailable for this Codex turn.",
-            "Start a new Codex turn from Zotero and try again.",
-            "stop all remaining Zotero writes",
-            "Do not use `zotero_script` to bypass normal collection, import, or tag confirmation.",
-            "start one new turn from the Zotero Codex panel and say “继续该批次”",
-            "Preserve the run directory, `zotero_fallback.csv`, and every result already written.",
-            "restart at the library check and collection creation",
-            "Do not rerun project downloads or execute a second `resume`.",
-            "`zotero_script(mode:\"write\")` remains limited to the single batch `Zotero.Attachments.addAvailablePDF` action with `env.addUndoStep`.",
-            "write `zotero_unavailable` rows and keep the batch recoverable",
+            "Bridge unavailable or plugin not installed",
+            "Do not fall back to direct Zotero MCP writes",
+            "Preserve `<run-dir>`, `manual_retry.csv`, `zotero_fallback.csv`",
+            "Do not rerun project downloads or a second `resume`.",
+            "Report `zotero_unavailable` for current fallback rows and keep the batch recoverable.",
+            "This is not success.",
+            "use Python standard-library `csv.writer` with open mode `x`",
+            "When Zotero later becomes available, rerun the bridge for still-unresolved fallback rows.",
+            "Never replace immutable prior evidence.",
         )
         normalized_text = re.sub(r"\s+", " ", text)
         for phrase in required:
             with self.subTest(phrase=phrase):
                 self.assertIn(re.sub(r"\s+", " ", phrase), normalized_text)
 
-    def test_paper_download_skill_has_unambiguous_zotero_forward_protocol(self) -> None:
+    def test_paper_download_skill_has_unambiguous_bridge_forward_protocol(self) -> None:
         skill_text = (
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md"
         ).read_text(encoding="utf-8")
         cli_text = (PROJECT_ROOT / "paper_batch.py").read_text(encoding="utf-8")
+        normalized_skill_text = re.sub(r"\s+", " ", skill_text)
 
         required_skill_text = (
-            'collection_update(action:"create", name:"Codex下载回退_YYYYMMDD_HHMMSS", '
-            'libraryID:<libraryID>)',
-            'library_update(kind:"collections", action:"add", assignments:'
-            '[{itemId:<id>, targetCollectionId:<collectionId>}, ...], libraryID:<libraryID>)',
-            'library_import(kind:"identifiers", identifiers:[...], '
-            'targetCollectionId:<collectionId>, libraryID:<libraryID>)',
-            'library_search(entity:"items", mode:"search", text:"<normalized DOI>", '
-            'include:["metadata","attachments"], libraryID:<libraryID>)',
-            'library_update(kind:"tags", action:"add", assignments:'
-            '[{itemId:<id>, tags:["codex-download-success"]}, ...], libraryID:<libraryID>)',
-            'library_update(kind:"tags", action:"add", assignments:'
-            '[{itemId:<id>, tags:["codex-download-failed"]}, ...], libraryID:<libraryID>)',
             "Python `csv` semantics",
             "UTF-8-SIG",
-            "at least one field is non-empty",
-            "exact header",
-            "current task IDs",
-            "active personal library",
-            "group library",
-            "Unicode NFKC",
-            "casefold",
-            "Unicode whitespace, punctuation, or symbol",
+            "at least one field is non-empty after trimming",
+            "strict version-1 JSON jobs",
+            "request/result identity and SHA-256",
+            "every outbox result",
+            "rerun only the same command",
+            "finalizes automatically",
             "zotero_results_retry_YYYYMMDD_HHMMSS.csv",
-            "exclusive creation",
+            "create",
             "not_found",
             "no_attachment",
             "download_failed",
-            "This protocol generates only",
-            "批次未完成且可恢复",
+            "user_cancelled",
+            "job_expired",
+            "plugin_error",
         )
         for required in required_skill_text:
             with self.subTest(required=required):
-                self.assertIn(required, skill_text)
+                self.assertIn(required, normalized_skill_text)
 
         self.assertIn("批次未完成且可恢复", cli_text)
 
@@ -161,27 +196,21 @@ class SkillPackagingTests(unittest.TestCase):
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md"
         ).read_text(encoding="utf-8")
 
+        normalized_text = re.sub(r"\s+", " ", skill_text)
         for required in (
             "Pending CSV files may ignore completely blank records",
-            "Zotero result files reject every physical blank record",
-            "all-whitespace result data row",
-            "Do not assume a fixed Zotero MCP return schema",
-            "numeric `libraryID`",
-            "numeric `collectionId`",
-            "numeric `itemId`",
-            "array position",
-            "fail closed",
-            "library failure becomes `zotero_unavailable`",
-            "collection or item ID failure becomes `no_pdf` or `metadata_uncertain`",
+            "Reject physical blank records after the header",
+            "all-whitespace data rows",
+            "duplicate or unknown task IDs",
             "Python standard-library `csv.writer`",
             "open mode `x`",
             '`newline=""`',
             '`encoding="utf-8-sig"`',
-            "fully construct and validate all current task IDs before opening the file",
+            "build the complete five-column row set in memory, validate all current task IDs",
             "finalize revalidates PDF content and reparse-point safety",
         ):
             with self.subTest(required=required):
-                self.assertIn(required, skill_text)
+                self.assertIn(required, normalized_text)
 
     def test_install_script_supports_dry_run_and_repo_root_env(self) -> None:
         text = (PROJECT_ROOT / "install_codex_skills.ps1").read_text(encoding="utf-8")

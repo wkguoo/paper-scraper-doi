@@ -29,7 +29,7 @@ powershell -ExecutionPolicy Bypass -File .\build_zotero_bridge_xpi.ps1 -OutputDi
 
 输入：`manifest.json`、`bootstrap.js`、`content/`、`locale/` 四项白名单源码。
 
-输出：`dist\zotero-paper-download-bridge-0.1.0.xpi`。脚本不会包含 `tests/`、`package.json`、日志、桥接队列、Cookie 或环境文件；不会调用现有 Windows UI 打包脚本；不会自动安装到 Zotero。目标已存在时默认停止，只有显式添加 `-Force` 才允许替换。
+输出：`dist\zotero-paper-download-bridge-0.1.0.xpi`。脚本不会包含 `tests/`、`package.json`、日志、桥接队列、Cookie 或环境文件；拒绝输出路径链或插件源码树中的 junction/symlink；不会调用现有 Windows UI 打包脚本；不会自动安装到 Zotero。目标已存在时默认停止，只有显式添加 `-Force` 才允许替换。
 
 成功标准：命令显示 `Validated Zotero XPI created`，且压缩包根目录含 `manifest.json` 和 `bootstrap.js`。建议先安装到独立 Zotero 测试配置，不要直接使用主文库。
 
@@ -37,14 +37,16 @@ powershell -ExecutionPolicy Bypass -File .\build_zotero_bridge_xpi.ps1 -OutputDi
 
 1. 项目侧先运行 `paper_batch.py start`，必要时只运行一次 `resume`。
 2. 对剩余失败项运行 `paper_batch.py zotero --run-dir "<批次目录>"`，项目把严格 JSON 作业放入本地队列。
-3. Zotero 只在全部分块到齐后确认一次。取消时不写 Zotero；确认后逐项保存检查点。
+3. Zotero 只在全部分块到齐后确认一次。取消时不写 Zotero；确认后在每次可能写入前保存意图，并在写入后逐项保存所有权检查点。
 4. 插件完成后，再运行同一条 `paper_batch.py zotero` 命令。项目复核 PDF 文件并更新最终清单与 `pdfs\`。
 
-插件不会修改已有附件。菜单“查看最近状态”显示等待、运行、完成或撤销状态；“撤销最近批次新增”需要第二次确认，并且只处理账本记录且身份仍匹配的新条目、新附件和集合成员关系。
+插件不会修改已有附件。菜单“查看最近状态”显示等待、运行、完成或撤销状态；“撤销最近批次新增”需要第二次确认，并且只处理账本记录且身份仍匹配的新条目、新附件和集合成员关系。撤销动作也使用写前检查点；若崩溃使某个动作结果无法确认，重启只会将该对象记为跳过，不会重放删除。
+
+若崩溃发生在 Zotero 写入与所有权检查点之间，插件不会根据当前对象“存在/不存在”猜测归属，也不会重试该写入；对应任务会记录 `plugin_error / write_outcome_uncertain`，供隔离配置中人工复核。
 
 ## 注意事项
 
 - 不要把 Cookie、密码、机构令牌、下载 PDF 或真实桥接队列放入源码或 XPI。
-- 不要手工编辑 `plugin-state.json`、作业 JSON、进度 JSON 或结果 JSON；身份或摘要不一致会安全停止。
+- 不要手工编辑 `plugin-state.json`、作业 JSON、进度 JSON、集合/取消标记或结果 JSON；身份或摘要不一致会安全停止。集合标记只记录本批次使用的集合 ID 及是否新建，不会授权插件删除集合。
 - 遇到 CAPTCHA、登录失效或出版商拒绝时应保留失败状态，由用户在授权环境中处理，不得绕过访问控制。
 - 当前源码完成的是离线实现与测试。只有在独立 Zotero 测试配置通过人工验收后，才应考虑安装到主配置。

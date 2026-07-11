@@ -12,11 +12,17 @@ function Resolve-FullPath {
 
     $expanded = [Environment]::ExpandEnvironmentVariables($Path)
     if ([System.IO.Path]::IsPathRooted($expanded)) {
-        return [System.IO.Path]::GetFullPath($expanded).TrimEnd('\', '/')
+        $fullPath = [System.IO.Path]::GetFullPath($expanded)
+    } else {
+        $fullPath = [System.IO.Path]::GetFullPath(
+            (Join-Path (Get-Location).Path $expanded)
+        )
     }
-    return [System.IO.Path]::GetFullPath(
-        (Join-Path (Get-Location).Path $expanded)
-    ).TrimEnd('\', '/')
+    $volumeRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if ($fullPath.Equals($volumeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        return $volumeRoot
+    }
+    return $fullPath.TrimEnd('\', '/')
 }
 
 function Test-PathInside {
@@ -31,12 +37,36 @@ function Test-PathInside {
         $Candidate.StartsWith("$Parent$separator", $comparison)
 }
 
+function Assert-NoReparsePointInPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $current = [System.IO.Path]::GetFullPath($Path)
+    while ($true) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Label contains a junction or symbolic link: $current"
+            }
+        }
+        $parent = [System.IO.Directory]::GetParent($current)
+        if ($null -eq $parent) {
+            break
+        }
+        $current = $parent.FullName
+    }
+}
+
 if (-not $PSScriptRoot) {
     throw "This builder must be run from a saved build_zotero_bridge_xpi.ps1 file."
 }
 
 $pluginRootFull = Resolve-FullPath (Join-Path $PSScriptRoot "zotero_bridge_plugin")
 $outputDirectoryFull = Resolve-FullPath $OutputDirectory
+Assert-NoReparsePointInPath -Path $pluginRootFull -Label "Plugin source path"
+Assert-NoReparsePointInPath -Path $outputDirectoryFull -Label "Output path"
 if (Test-PathInside -Candidate $outputDirectoryFull -Parent $pluginRootFull) {
     throw "Refusing output directory inside plugin source: $outputDirectoryFull"
 }
@@ -56,9 +86,30 @@ $ForbiddenArchivePatterns = @(
     "*.log",
     "plugin-state.json",
     "*.progress.json",
+    "*.collection.json",
+    "*.cancelled.json",
+    "*.result.json",
     "cookies*.json",
     ".env"
 )
+
+function Test-ForbiddenArchivePath {
+    param([Parameter(Mandatory = $true)][string]$RelativePath)
+
+    $segments = @(
+        $RelativePath.Replace('\', '/').Trim('/').Split('/') |
+            Where-Object { $_ }
+    )
+    foreach ($segment in $segments) {
+        foreach ($pattern in $ForbiddenArchivePatterns) {
+            if ($segment -like $pattern) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 $RequiredRootEntries = @(
     "manifest.json",
     "bootstrap.js"
@@ -74,6 +125,16 @@ foreach ($name in $AllowedDirectories) {
     $source = Join-Path $pluginRootFull $name
     if (-not (Test-Path -LiteralPath $source -PathType Container)) {
         throw "Missing required plugin source directory: $source"
+    }
+}
+
+$pluginEntries = @(
+    Get-Item -LiteralPath $pluginRootFull -Force
+    Get-ChildItem -LiteralPath $pluginRootFull -Force -Recurse
+)
+foreach ($entry in $pluginEntries) {
+    if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Plugin source contains a junction or symbolic link: $($entry.FullName)"
     }
 }
 
@@ -119,10 +180,8 @@ try {
         if (-not $allowed) {
             throw "Staging contains a path outside the explicit allowlist: $relative"
         }
-        foreach ($pattern in $ForbiddenArchivePatterns) {
-            if ($relative -like $pattern -or $relative -like "*/$pattern") {
-                throw "Staging contains a forbidden path: $relative"
-            }
+        if (Test-ForbiddenArchivePath -RelativePath $relative) {
+            throw "Staging contains a forbidden path: $relative"
         }
     }
 
@@ -140,10 +199,8 @@ try {
         }
     }
     foreach ($entry in $archiveEntries) {
-        foreach ($pattern in $ForbiddenArchivePatterns) {
-            if ($entry -like $pattern -or $entry -like "$pattern/*" -or $entry -like "*/$pattern") {
-                throw "Temporary XPI contains a forbidden entry: $entry"
-            }
+        if (Test-ForbiddenArchivePath -RelativePath $entry) {
+            throw "Temporary XPI contains a forbidden entry: $entry"
         }
     }
 
@@ -151,10 +208,13 @@ try {
         if ($noOverwrite) {
             throw "Output appeared during build and will not be overwritten: $finalXpi"
         }
-        Remove-Item -LiteralPath $finalXpi -Force
+        # Both files are in the same directory; File.Replace swaps the validated
+        # XPI into place without a delete-then-move visibility gap.
+        [System.IO.File]::Replace($temporaryXpi, $finalXpi, $null)
+    } else {
+        # The final Move-Item is a same-directory no-overwrite rename.
+        Move-Item -LiteralPath $temporaryXpi -Destination $finalXpi
     }
-    # The final Move-Item is a same-directory rename of a validated temporary XPI.
-    Move-Item -LiteralPath $temporaryXpi -Destination $finalXpi
     Write-Host "Validated Zotero XPI created: $finalXpi"
 }
 finally {

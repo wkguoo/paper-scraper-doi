@@ -145,42 +145,45 @@ Expected:
 
 ## 10. Unified Batch With Zotero Fallback
 
-Do not perform these seven checks as part of the default unittest suite. They
-require a deliberately prepared local Zotero library and, where applicable,
-the user's own authorized access. Do not use this checklist to test network,
-browser, or GUI behavior automatically.
+Do not perform these checks in the default unittest suite. They require an
+explicitly approved XPI and the isolated profile `elpj7iql.Zotero test`. Do not
+install the extension in `g39b695l.default`, do not copy files directly into a
+profile, and do not exercise the user's main library.
 
-1. **Project-only success:** use rows resolved by the project workflow; verify
-   `zotero_results.csv` has only the required header and `finalize` reports the
-   final `pdfs\` directory.
-2. **One manual retry:** prepare one row in `manual_retry.csv`; verify that the
-   user action is requested once and `resume` is run once, not repeatedly.
-3. **Existing Zotero item and PDF:** use a fallback DOI already in Zotero with
-   a valid attachment; verify a preserved temporary collection, status
-   `existing_pdf`, and one non-destructive final copy.
-4. **Zotero available-PDF request:** use a fallback item without an attachment;
-   verify a single batch available-PDF request and status `downloaded` or
-   `no_pdf`, never a per-paper confirmation loop.
-5. **Uncertain title:** use a no-DOI row whose normalized title does not also
-   agree on year or first author; verify `metadata_uncertain` and no import.
-6. **Unavailable Zotero is resumable:** close or disconnect Zotero before the
-   fallback stage; verify every fallback row is `zotero_unavailable`, reports
-   remain recoverable, and the batch is not described as complete.
-7. **No overwrite and idempotency:** prepare same-name PDFs and rerun the same
-   batch; verify final copies are not overwritten, duplicates are reconciled,
-   and existing Zotero items are not imported again.
-8. **Write-confirmation UI is unavailable:** begin from desktop Codex with a
-   readable personal library, then let the first
-   `collection_update(action:"create", ...)` return `Zotero MCP confirmation UI
-   is unavailable for this Codex turn. Start a new Codex turn from Zotero and
-   try again.` Verify that the failed attempt performs zero Zotero writes after
-   the error, does not substitute `zotero_script` for collection/import/tag
-   confirmation, and prompts once to start a Zotero-panel turn saying
-   `继续该批次`. Confirm the new turn restarts from library check and collection
-   creation while retaining the run directory and `zotero_fallback.csv`, without
-   rerunning project downloads or a second `resume`. If that new turn is still
-   not writable, verify `zotero_unavailable` result rows and a recoverable,
-   unfinished batch.
+Before starting, record the XPI version, Zotero version, test library ID, date,
+and test collection. For every case record job ID, result status, output paths,
+and error code without credentials.
+
+1. **Idle:** with no queue job, start Zotero test and verify the Tools menu
+   contains “文献下载桥接”; “查看最近状态” reports idle without an error.
+2. **Complete-chunk barrier and one confirmation:** queue only chunk 1 of a
+   two-chunk run and verify zero prompts/writes. Add chunk 2 and verify exactly
+   one native confirmation for the shared `run_id`.
+3. **Cancel means zero writes:** cancel that confirmation; verify one
+   `user_cancelled` row per task, durable cancellation replay after restart,
+   and zero collection/item/attachment writes.
+4. **Existing PDF:** use an existing item with a valid local PDF. Verify
+   `existing_pdf`, no available-PDF call, and unchanged source attachment hash.
+5. **Existing item without PDF:** verify one collection assignment and at most
+   one available-PDF call, returning `downloaded` or `no_pdf`.
+6. **Missing DOI:** verify one identifier import into the preserved temporary
+   collection with translator attachments disabled. Replay must not import,
+   assign, or request the PDF twice.
+7. **Crash/restart:** interrupt a three-item confirmed run after item 1. Restart
+   Zotero test and verify no second confirmation and no duplicate Zotero write.
+   Inspect the retained progress: a completed ownership checkpoint may resume,
+   but an unresolved write intent must become `write_outcome_uncertain` without
+   being claimed or retried. Also interrupt an approved undo and
+   verify it resumes without a second undo prompt or touching preexisting IDs;
+   an action left in an uncertain pending state must be reported as skipped and
+   must not be replayed after restart.
+8. **Project finalization and idempotency:** rerun
+   `paper_batch.py zotero --run-dir "<run-dir>"`; verify strict JSON consumption,
+   final PDFs under `pdfs\`, reports under `reports\`, unchanged source PDF
+   hashes, and no changed state/PDF copies on a repeated command.
+
+After all eight cases pass, present the evidence and ask separately before any
+main-profile installation. Do not automatically package the Windows project.
 
 ## Cleanup
 
