@@ -22,7 +22,84 @@ from paper_automation.batch_workflow import (
 from paper_automation.zotero_bridge import run_zotero_bridge
 
 
+_BRIDGE_GENERIC_HINT = (
+    "Zotero 本地桥接请求、清单或结果无效，请不要手工修改 JSON/CSV，"
+    "并重新运行同一条命令。"
+)
+_BRIDGE_VALIDATION_CODES = frozenset({
+    "bridge_batch_identity_invalid",
+    "bridge_batch_jobs_invalid",
+    "bridge_batch_manifest_conflict",
+    "bridge_chunk_count_invalid",
+    "bridge_chunk_index_invalid",
+    "bridge_fallback_empty",
+    "bridge_fallback_fields_invalid",
+    "bridge_fallback_file_missing",
+    "bridge_fallback_state_mismatch",
+    "bridge_fallback_task_duplicate",
+    "bridge_fallback_task_unknown",
+    "bridge_item_count_invalid",
+    "bridge_item_fields_invalid",
+    "bridge_item_value_invalid",
+    "bridge_job_count_invalid",
+    "bridge_job_id_conflict",
+    "bridge_job_id_duplicate",
+    "bridge_job_id_invalid",
+    "bridge_library_id_invalid",
+    "bridge_localappdata_missing",
+    "bridge_manifest_chunks_invalid",
+    "bridge_manifest_fields_invalid",
+    "bridge_manifest_hash_invalid",
+    "bridge_manifest_invalid",
+    "bridge_manifest_job_fields_invalid",
+    "bridge_manifest_job_id_duplicate",
+    "bridge_manifest_job_id_invalid",
+    "bridge_manifest_jobs_invalid",
+    "bridge_manifest_library_id_invalid",
+    "bridge_manifest_payload_hash_invalid",
+    "bridge_manifest_schema_version_invalid",
+    "bridge_manifest_shared_values_invalid",
+    "bridge_manifest_task_duplicate",
+    "bridge_manifest_task_ids_invalid",
+    "bridge_manifest_time_invalid",
+    "bridge_manifest_value_invalid",
+    "bridge_payload_hash_invalid",
+    "bridge_poll_seconds_invalid",
+    "bridge_request_fields_invalid",
+    "bridge_request_identity_invalid",
+    "bridge_request_invalid",
+    "bridge_request_missing",
+    "bridge_request_rows_invalid",
+    "bridge_request_time_invalid",
+    "bridge_request_value_invalid",
+    "bridge_result_count_invalid",
+    "bridge_result_expected_tasks_invalid",
+    "bridge_result_fields_invalid",
+    "bridge_result_filename_exhausted",
+    "bridge_result_identity_invalid",
+    "bridge_result_invalid",
+    "bridge_result_item_id_missing",
+    "bridge_result_missing",
+    "bridge_result_row_fields_invalid",
+    "bridge_result_row_value_invalid",
+    "bridge_result_status_invalid",
+    "bridge_result_task_duplicate",
+    "bridge_result_task_unknown",
+    "bridge_result_tasks_missing",
+    "bridge_result_time_invalid",
+    "bridge_result_value_invalid",
+    "bridge_schema_version_invalid",
+    "bridge_state_rows_invalid",
+    "bridge_state_task_invalid",
+    "bridge_task_id_duplicate",
+    "bridge_task_id_missing",
+    "bridge_wait_seconds_invalid",
+    "bridge_working_missing",
+})
+
+
 ERROR_HINTS = {
+    **dict.fromkeys(_BRIDGE_VALIDATION_CODES, _BRIDGE_GENERIC_HINT),
     "zotero_results_fields_invalid": (
         "请将 Zotero 结果 CSV 表头严格设置为 "
         "task_id,zotero_item_id,attachment_path,status,reason。"
@@ -228,7 +305,7 @@ def _known_error_code(error: Exception) -> str | None:
     if match is None:
         return None
     code = match.group(1)
-    return code if code in ERROR_HINTS or code.startswith("bridge_") else None
+    return code if code in ERROR_HINTS else None
 
 
 def _print_error(error: Exception) -> None:
@@ -236,11 +313,7 @@ def _print_error(error: Exception) -> None:
     if code is None:
         message = f"错误码 2：{type(error).__name__}。批次工作流未完成，请检查输入路径和批次状态。"
     else:
-        hint = ERROR_HINTS.get(
-            code,
-            "Zotero 本地桥接数据无效或不完整，请不要手工修改桥接 JSON/CSV，并重新运行同一条命令。",
-        )
-        message = f"错误码 2：{code}。{hint}"
+        message = f"错误码 2：{code}。{ERROR_HINTS[code]}"
     print(message, file=sys.stderr)
 
 

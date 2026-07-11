@@ -4751,3 +4751,19 @@ class BatchCliTests(unittest.TestCase):
         self.assertNotIn("Traceback", stderr.getvalue())
         self.assertNotIn(secret, stdout.getvalue())
         self.assertNotIn(secret, stderr.getvalue())
+
+    def test_error_hints_cover_every_bridge_validation_code(self) -> None:
+        import re
+
+        from paper_batch import ERROR_HINTS
+
+        source = (PROJECT_ROOT / "paper_automation" / "zotero_bridge.py").read_text(
+            encoding="utf-8"
+        )
+        codes = set(re.findall(
+            r'raise (?:ValueError|OSError)\("(bridge_[a-z0-9_]+)"',
+            source,
+        ))
+
+        self.assertTrue(codes)
+        self.assertEqual(codes - set(ERROR_HINTS), set())

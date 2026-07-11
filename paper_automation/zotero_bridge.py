@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence, TextIO
 
 from paper_automation.batch_workflow import (
     BatchRunResult,
@@ -492,6 +492,29 @@ def validate_bridge_manifest(manifest: object) -> dict:
     return manifest
 
 
+def _write_atomic_exclusive(
+    path: Path,
+    write_content: Callable[[TextIO], None],
+    *,
+    encoding: str,
+    newline: str,
+) -> None:
+    descriptor, name = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding=encoding, newline=newline) as handle:
+            write_content(handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _write_json_atomic_exclusive(path: Path, payload: dict) -> None:
     serialized = json.dumps(
         payload,
@@ -500,20 +523,16 @@ def _write_json_atomic_exclusive(path: Path, payload: dict) -> None:
         indent=2,
         allow_nan=False,
     ) + "\n"
-    descriptor, name = tempfile.mkstemp(
-        prefix=path.name + ".",
-        suffix=".tmp",
-        dir=path.parent,
+
+    def write_json(handle: TextIO) -> None:
+        handle.write(serialized)
+
+    _write_atomic_exclusive(
+        path,
+        write_json,
+        encoding="utf-8",
+        newline="\n",
     )
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.link(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _load_existing_request(paths: BridgePaths, job_id: str) -> tuple[Path, dict] | None:
@@ -644,14 +663,18 @@ def _validated_bridge_batch(bridge: object) -> tuple[Path, tuple[BridgeJob, ...]
         raise ValueError("bridge_batch_identity_invalid")
 
     for job, manifest_job in zip(bridge.jobs, manifest["jobs"], strict=True):
+        request_path = Path(job.request_path).expanduser()
+        result_path = Path(job.result_path).expanduser()
         if (
             Path(job.run_dir).expanduser().resolve() != root
             or job.job_id != manifest_job["job_id"]
             or job.payload_sha256 != manifest_job["payload_sha256"]
             or job.chunk_index != manifest_job["chunk_index"]
             or job.chunk_count != manifest_job["chunk_count"]
-            or Path(job.request_path).name != _request_filename(job.job_id)
-            or Path(job.result_path).name != _result_filename(job.job_id)
+            or request_path.name != _request_filename(job.job_id)
+            or request_path.parent.name not in {"inbox", "processing", "archive"}
+            or result_path.name != _result_filename(job.job_id)
+            or result_path.parent.name != "outbox"
         ):
             raise ValueError("bridge_batch_identity_invalid")
     return root, bridge.jobs
@@ -718,12 +741,20 @@ def validate_bridge_result(
 
 
 def _read_request_for_job(job: BridgeJob) -> dict:
+    request_path = Path(job.request_path).expanduser()
+    if (
+        request_path.name != _request_filename(job.job_id)
+        or request_path.parent.name not in {"inbox", "processing", "archive"}
+    ):
+        raise ValueError("bridge_request_identity_invalid")
     try:
-        request = validate_bridge_request(
-            json.loads(Path(job.request_path).read_text(encoding="utf-8"))
-        )
+        paths = get_bridge_paths(request_path.parent.parent)
+        existing = _load_existing_request(paths, job.job_id)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         raise ValueError("bridge_request_invalid") from exc
+    if existing is None:
+        raise ValueError("bridge_request_missing")
+    _, request = existing
     if request["job_id"] != job.job_id or request["payload_sha256"] != job.payload_sha256:
         raise ValueError("bridge_request_identity_invalid")
     return request
@@ -744,23 +775,18 @@ def _validated_rows_for_job(job: BridgeJob) -> tuple[list[str], list[dict[str, s
 
 
 def _write_csv_atomic_exclusive(path: Path, rows: Sequence[dict[str, str]]) -> None:
-    descriptor, name = tempfile.mkstemp(
-        prefix=path.name + ".",
-        suffix=".tmp",
-        dir=path.parent,
+    def write_csv(handle: TextIO) -> None:
+        writer = csv.writer(handle)
+        writer.writerow(ZOTERO_RESULT_FIELDS)
+        for row in rows:
+            writer.writerow([row[field] for field in ZOTERO_RESULT_FIELDS])
+
+    _write_atomic_exclusive(
+        path,
+        write_csv,
+        encoding="utf-8-sig",
+        newline="",
     )
-    temporary = Path(name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(ZOTERO_RESULT_FIELDS)
-            for row in rows:
-                writer.writerow([row[field] for field in ZOTERO_RESULT_FIELDS])
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.link(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def _write_result_csv_exclusive(
@@ -787,6 +813,18 @@ def _write_result_csv_exclusive(
     raise OSError("bridge_result_filename_exhausted")
 
 
+def publish_zotero_results_csv(
+    run_dir: str | Path,
+    rows: Sequence[dict[str, str]],
+    *,
+    now: datetime | None = None,
+) -> Path:
+    """Publish already-validated Zotero rows without overwriting an existing CSV."""
+
+    root = Path(run_dir).expanduser().resolve()
+    return _write_result_csv_exclusive(root, rows, now=now)
+
+
 def consume_bridge_batch(bridge: BridgeBatch, *, now: datetime | None = None) -> Path:
     root, jobs = _validated_bridge_batch(bridge)
     rows_by_task: dict[str, dict[str, str]] = {}
@@ -801,7 +839,22 @@ def consume_bridge_batch(bridge: BridgeBatch, *, now: datetime | None = None) ->
     if len(set(ordered_ids)) != len(ordered_ids) or set(rows_by_task) != set(ordered_ids):
         raise ValueError("bridge_result_tasks_missing")
     ordered_rows = [rows_by_task[task_id] for task_id in ordered_ids]
-    return _write_result_csv_exclusive(root, ordered_rows, now=now)
+    return publish_zotero_results_csv(root, ordered_rows, now=now)
+
+
+def _archive_completed_manifest(bridge: BridgeBatch) -> None:
+    root, _ = _validated_bridge_batch(bridge)
+    record = _manifest_path(root)
+    manifest = _read_manifest(record)
+    history = record.parent / "zotero_bridge_history"
+    history.mkdir(parents=True, exist_ok=True)
+    archived = history / f"{manifest['manifest_sha256']}.json"
+    try:
+        os.link(record, archived)
+    except FileExistsError:
+        if _read_manifest(archived)["manifest_sha256"] != manifest["manifest_sha256"]:
+            raise ValueError("bridge_manifest_invalid")
+    record.unlink()
 
 
 def run_zotero_bridge(
@@ -846,4 +899,5 @@ def run_zotero_bridge(
 
     selected = consume_bridge_batch(bridge)
     batch_result = finalize_batch(root, selected)
+    _archive_completed_manifest(bridge)
     return BridgeRunResult("finalized", bridge, selected, batch_result)

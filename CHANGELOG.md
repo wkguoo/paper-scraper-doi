@@ -1062,3 +1062,14 @@
 - 生成的输出文件：实际运行时仅在 `%LOCALAPPDATA%\\PaperScraperDOI\\zotero-bridge\\v1` 建立桥接队列，并在批次 `working` 下安全创建结果 CSV；本次测试只使用临时目录，未写入真实 Zotero、PDF、Cookie、XPI 或打包文件。
 - 如何检查是否成功：70 项桥接/CLI 聚焦测试、`compileall` 和 `git diff --check` 通过；完整离线回归为 344 项通过、2 项 Windows 符号链接权限跳过。首次命令应返回 3 并提示“请在 Zotero 中确认一次”，结果完整后同命令返回 0 并更新报告。
 - 注意事项或潜在风险：若回退 CSV 被清空但批次状态仍有待 Zotero 条目，命令会以 `bridge_fallback_state_mismatch` 停止，避免误报完成；不会启动 Chrome/Edge、读取 Cookie 或自动打包。Zotero 9 插件实现和真实队列验证仍属于后续任务。
+
+## 2026-07-11 14:13:25 +08:00 — Task 5 项目侧复审加固
+
+- 本次任务目标：按 Ask Matt 的规格/规范双轴复审结果，加固项目侧 Zotero 桥接的恢复性、公开接口和错误提示覆盖。
+- 新增、修改或删除的文件：修改 `paper_automation/zotero_bridge.py`、`paper_automation/batch_workflow.py`、`paper_batch.py`、`tests/test_zotero_bridge.py`、`tests/test_batch_workflow.py` 与本 `CHANGELOG.md`；未删除原始数据或用户文件。
+- 具体修改内容：抽取共享的原子排他写入函数；公开 `publish_zotero_results_csv()`；消费结果时重新在 inbox/processing/archive 查找同一作业请求；完成汇总后将当前清单硬链接归档至 `working\\zotero_bridge_history\\` 并移除当前清单，以便剩余失败项生成新的作业 ID；finalize 后同步重写生成的 pending CSV；为每个桥接校验码提供显式的安全提示，并用测试防止遗漏。
+- 修改原因：独立复审发现等待期间请求被插件移动后可能无法消费，以及插件失败结果会使下一次同命令恢复因旧回退 CSV/清单而失败；同时补齐计划声明的公共 CSV 接口和错误提示契约。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_zotero_bridge tests.test_batch_workflow.BatchCliTests -v`；完整回归：`..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`。
+- 生成的输出文件：真实完成的桥接批次会在批次 `working\\zotero_bridge_history\\` 保存不可覆盖的旧清单硬链接；本次测试仅在系统临时目录创建并自动清理文件，未写入真实 Zotero、PDF、Cookie、XPI 或打包文件。
+- 如何检查是否成功：双轴复审无硬性规范违规；修复后聚焦桥接/CLI 测试 75 项通过，完整离线回归连续两次各 348 项通过、2 项 Windows 符号链接权限跳过；安全扫描未匹配命令执行、网络下载、影子文献源或 SQLite 访问。
+- 注意事项或潜在风险：归档只处理项目自动生成的 `zotero_bridge_jobs.json`，不会移动 Zotero 附件或用户 PDF；桥接结果完成后若仍有失败项，下一次 `zotero` 命令会创建新的确认批次。真实 Zotero 9 插件、测试配置文件安装和真实文献下载仍未执行。

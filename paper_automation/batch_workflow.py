@@ -1649,7 +1649,7 @@ def finalize_batch(
         _write_latest_state_outputs(
             paths,
             state,
-            pending_manual_retry_used=None,
+            pending_manual_retry_used=bool(state.get("manual_retry_used")),
             assume_locked=True,
         )
     return _result_from_state(paths, state)
