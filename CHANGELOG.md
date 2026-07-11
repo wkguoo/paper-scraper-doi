@@ -1029,3 +1029,14 @@
 - 生成的输出文件：仅生成协作配置 Markdown；未创建 GitHub issue、PDF、桥接 JSON、XPI、Zotero 集合/条目/附件或打包文件。
 - 如何检查是否成功：`AGENTS.md` 包含唯一的 `## Agent skills` 区块，三份 `docs/agents/*.md` 文件存在并准确指向 GitHub Issues、默认标签和单上下文规则。
 - 注意事项或潜在风险：未联网、未调用 `gh` 写入、未启动浏览器、未访问 Zotero、未读取 Cookie，且未自动打包；GitHub 中的实际标签仅在后续明确需要时创建或变更。
+
+## 2026-07-11 13:26:43 +08:00 — Task 2 Zotero 桥接原子批次发布
+
+- 本次任务目标：为已验证的 Zotero 回退请求增加清单优先、可恢复、幂等且并发安全的本地文件队列发布。
+- 新增、修改或删除的文件：修改 `paper_automation/zotero_bridge.py`、`tests/test_zotero_bridge.py` 与本 `CHANGELOG.md`；未删除文件。
+- 具体修改内容：新增严格的批次清单及 SHA-256 校验、原子排他 JSON 发布、已有 inbox/processing/archive 请求的同摘要复用、基于清单的请求重建与回退清单变更时的失败关闭；101 条回退记录稳定拆分为 100/1 两个子作业。
+- 修改原因：防止并发或中途崩溃时产生新的作业 ID、覆盖请求或让不完整分块被 Zotero 过早确认。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests -v`；压力验证：`1..50 | ForEach-Object { ..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests.test_queue_publishes_a_stable_two_chunk_manifest }`。
+- 生成的输出文件：测试仅在临时目录创建并清理桥接 JSON；未写入真实 `%LOCALAPPDATA%`、Zotero、PDF、Cookie、XPI 或打包文件。
+- 如何检查是否成功：13 项聚焦测试通过，50 次独立压力运行均通过；每次仅有一个清单、两个一致的请求文件且无 `.tmp` 残留。
+- 注意事项或潜在风险：本阶段只发布项目侧请求，尚未接收插件结果或启动真实 Zotero；插件仍必须以 `chunk_index/chunk_count` 作为一次确认的分块屏障。

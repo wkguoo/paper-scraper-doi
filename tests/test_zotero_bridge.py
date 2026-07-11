@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -317,6 +318,85 @@ class ZoteroBridgeRequestTests(unittest.TestCase):
                 self._rehash_request(candidate)
                 with self.assertRaisesRegex(ValueError, f"^{code}$"):
                     validate_bridge_request(candidate)
+
+    def test_queue_publishes_a_stable_two_chunk_manifest(self) -> None:
+        from paper_automation.zotero_bridge import queue_bridge_jobs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._run(root / "runs", fallback_count=101)
+            kwargs = {
+                "library_id": 1,
+                "bridge_root": root / "bridge",
+                "job_ids": (
+                    "11111111-1111-4111-8111-111111111111",
+                    "22222222-2222-4222-8222-222222222222",
+                ),
+                "now": datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+            }
+            first = queue_bridge_jobs(run_dir, **kwargs)
+            second = queue_bridge_jobs(run_dir, **kwargs)
+            manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
+            requests = [
+                json.loads(job.request_path.read_text(encoding="utf-8"))
+                for job in first.jobs
+            ]
+            published_count = len(list((root / "bridge" / "inbox").glob("*.json")))
+
+        self.assertEqual(first, second)
+        self.assertEqual([len(value["items"]) for value in requests], [100, 1])
+        self.assertEqual([job.chunk_index for job in first.jobs], [1, 2])
+        self.assertEqual([job.chunk_count for job in first.jobs], [2, 2])
+        self.assertEqual(manifest["jobs"][0]["task_ids"][0], "paper-0001")
+        self.assertEqual(manifest["jobs"][1]["task_ids"], ["paper-0101"])
+        self.assertTrue(manifest["collection_name"].startswith("Codex下载回退_"))
+        self.assertEqual(published_count, 2)
+
+    def test_changed_fallback_after_manifest_fails_closed(self) -> None:
+        from paper_automation.zotero_bridge import queue_bridge_jobs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._run(root / "runs")
+            queue_bridge_jobs(run_dir, bridge_root=root / "bridge", library_id=1)
+            fallback = run_dir / "working" / "zotero_fallback.csv"
+            fallback.write_text(
+                fallback.read_text(encoding="utf-8-sig").replace(
+                    "Example Paper 1", "Changed"
+                ),
+                encoding="utf-8-sig",
+            )
+            with self.assertRaisesRegex(ValueError, "^bridge_batch_manifest_conflict$"):
+                queue_bridge_jobs(run_dir, bridge_root=root / "bridge", library_id=1)
+
+    def test_two_threads_publish_one_complete_manifest_without_temp_files(self) -> None:
+        from paper_automation.zotero_bridge import queue_bridge_jobs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._run(root / "runs", fallback_count=101)
+            kwargs = {
+                "library_id": 1,
+                "bridge_root": root / "bridge",
+                "job_ids": (
+                    "11111111-1111-4111-8111-111111111111",
+                    "22222222-2222-4222-8222-222222222222",
+                ),
+                "now": datetime(2026, 7, 11, 9, 5, tzinfo=timezone.utc),
+            }
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first, second = list(pool.map(lambda _: queue_bridge_jobs(run_dir, **kwargs), range(2)))
+            manifest_paths = list((run_dir / "working").glob("zotero_bridge_jobs.json"))
+            published = list((root / "bridge" / "inbox").glob("*.json"))
+            temporary = list(root.rglob("*.tmp"))
+            requests = [json.loads(path.read_text(encoding="utf-8")) for path in published]
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(manifest_paths), 1)
+        self.assertEqual(len(published), 2)
+        self.assertEqual(temporary, [])
+        self.assertEqual({value["chunk_count"] for value in requests}, {2})
+        self.assertEqual({value["chunk_index"] for value in requests}, {1, 2})
 
 
 if __name__ == "__main__":

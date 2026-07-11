@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,14 @@ REQUEST_FIELDS = {
     "run_id", "library_id", "collection_name", "chunk_index", "chunk_count", "items",
 }
 ITEM_FIELDS = {"task_id", "doi", "title", "authors", "year"}
+MANIFEST_FIELDS = {
+    "schema_version", "run_id", "library_id", "collection_name", "created_at",
+    "expires_at", "jobs", "manifest_sha256",
+}
+MANIFEST_JOB_FIELDS = {
+    "job_id", "payload_sha256", "chunk_index", "chunk_count", "task_ids",
+}
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -315,3 +324,281 @@ def validate_bridge_request(request: object) -> dict:
     if request["payload_sha256"] != _digest(request):
         raise ValueError("bridge_payload_hash_invalid")
     return request
+
+
+def _canonical_manifest(manifest: dict) -> bytes:
+    payload = {
+        key: manifest[key]
+        for key in sorted(MANIFEST_FIELDS - {"manifest_sha256"})
+    }
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _manifest_digest(manifest: dict) -> str:
+    return hashlib.sha256(_canonical_manifest(manifest)).hexdigest()
+
+
+def _manifest_path(run_dir: Path) -> Path:
+    return run_dir / "working" / "zotero_bridge_jobs.json"
+
+
+def _request_filename(job_id: str) -> str:
+    return f"{job_id}.json"
+
+
+def _result_filename(job_id: str) -> str:
+    return f"{job_id}.result.json"
+
+
+def _shared_request_values(requests: Sequence[dict]) -> tuple[dict, int]:
+    if not requests:
+        raise ValueError("bridge_manifest_jobs_invalid")
+    first = requests[0]
+    chunk_count = first["chunk_count"]
+    expected_indexes = list(range(1, chunk_count + 1))
+    if len(requests) != chunk_count or [request["chunk_index"] for request in requests] != expected_indexes:
+        raise ValueError("bridge_manifest_chunks_invalid")
+    shared_fields = (
+        "run_id", "library_id", "collection_name", "created_at", "expires_at", "chunk_count",
+    )
+    if any(
+        any(request[field] != first[field] for field in shared_fields)
+        for request in requests[1:]
+    ):
+        raise ValueError("bridge_manifest_shared_values_invalid")
+    return first, chunk_count
+
+
+def build_bridge_manifest(requests: Sequence[dict]) -> dict:
+    validated = [validate_bridge_request(request) for request in requests]
+    first, _ = _shared_request_values(validated)
+    task_ids: set[str] = set()
+    jobs = []
+    for request in validated:
+        request_task_ids = [item["task_id"] for item in request["items"]]
+        if task_ids.intersection(request_task_ids):
+            raise ValueError("bridge_manifest_task_duplicate")
+        task_ids.update(request_task_ids)
+        jobs.append({
+            "job_id": request["job_id"],
+            "payload_sha256": request["payload_sha256"],
+            "chunk_index": request["chunk_index"],
+            "chunk_count": request["chunk_count"],
+            "task_ids": request_task_ids,
+        })
+    manifest = {
+        "schema_version": BRIDGE_SCHEMA_VERSION,
+        "run_id": first["run_id"],
+        "library_id": first["library_id"],
+        "collection_name": first["collection_name"],
+        "created_at": first["created_at"],
+        "expires_at": first["expires_at"],
+        "jobs": jobs,
+        "manifest_sha256": "",
+    }
+    manifest["manifest_sha256"] = _manifest_digest(manifest)
+    return validate_bridge_manifest(manifest)
+
+
+def validate_bridge_manifest(manifest: object) -> dict:
+    if not isinstance(manifest, dict) or set(manifest) != MANIFEST_FIELDS:
+        raise ValueError("bridge_manifest_fields_invalid")
+    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != BRIDGE_SCHEMA_VERSION:
+        raise ValueError("bridge_manifest_schema_version_invalid")
+    scalar_fields = ("run_id", "collection_name", "created_at", "expires_at", "manifest_sha256")
+    if any(
+        not isinstance(manifest[field], str)
+        or not manifest[field]
+        or len(manifest[field]) > MAX_TEXT_LENGTH
+        for field in scalar_fields
+    ):
+        raise ValueError("bridge_manifest_value_invalid")
+    if type(manifest["library_id"]) is not int or manifest["library_id"] <= 0:
+        raise ValueError("bridge_manifest_library_id_invalid")
+    try:
+        created_at = _parse_utc_timestamp(manifest["created_at"])
+        expires_at = _parse_utc_timestamp(manifest["expires_at"])
+    except ValueError as exc:
+        raise ValueError("bridge_manifest_time_invalid") from exc
+    if expires_at <= created_at:
+        raise ValueError("bridge_manifest_time_invalid")
+    jobs = manifest["jobs"]
+    if not isinstance(jobs, list) or not jobs:
+        raise ValueError("bridge_manifest_jobs_invalid")
+    job_ids: set[str] = set()
+    task_ids: set[str] = set()
+    chunk_counts: set[int] = set()
+    chunk_indexes: list[int] = []
+    for job in jobs:
+        if not isinstance(job, dict) or set(job) != MANIFEST_JOB_FIELDS:
+            raise ValueError("bridge_manifest_job_fields_invalid")
+        if not isinstance(job["job_id"], str) or not JOB_ID_RE.fullmatch(job["job_id"]):
+            raise ValueError("bridge_manifest_job_id_invalid")
+        if job["job_id"] in job_ids:
+            raise ValueError("bridge_manifest_job_id_duplicate")
+        job_ids.add(job["job_id"])
+        if not isinstance(job["payload_sha256"], str) or not SHA256_RE.fullmatch(job["payload_sha256"]):
+            raise ValueError("bridge_manifest_payload_hash_invalid")
+        if type(job["chunk_index"]) is not int or type(job["chunk_count"]) is not int:
+            raise ValueError("bridge_manifest_chunks_invalid")
+        if not 1 <= job["chunk_index"] <= job["chunk_count"]:
+            raise ValueError("bridge_manifest_chunks_invalid")
+        chunk_counts.add(job["chunk_count"])
+        chunk_indexes.append(job["chunk_index"])
+        job_task_ids = job["task_ids"]
+        if not isinstance(job_task_ids, list) or not 1 <= len(job_task_ids) <= MAX_ITEMS_PER_JOB:
+            raise ValueError("bridge_manifest_task_ids_invalid")
+        for task_id in job_task_ids:
+            if not isinstance(task_id, str) or not task_id or len(task_id) > MAX_TEXT_LENGTH:
+                raise ValueError("bridge_manifest_task_ids_invalid")
+            if task_id in task_ids:
+                raise ValueError("bridge_manifest_task_duplicate")
+            task_ids.add(task_id)
+    if len(chunk_counts) != 1:
+        raise ValueError("bridge_manifest_chunks_invalid")
+    chunk_count = next(iter(chunk_counts))
+    if len(jobs) != chunk_count or chunk_indexes != list(range(1, chunk_count + 1)):
+        raise ValueError("bridge_manifest_chunks_invalid")
+    if not SHA256_RE.fullmatch(manifest["manifest_sha256"]):
+        raise ValueError("bridge_manifest_hash_invalid")
+    if manifest["manifest_sha256"] != _manifest_digest(manifest):
+        raise ValueError("bridge_manifest_hash_invalid")
+    return manifest
+
+
+def _write_json_atomic_exclusive(path: Path, payload: dict) -> None:
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        indent=2,
+        allow_nan=False,
+    ) + "\n"
+    descriptor, name = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _load_existing_request(paths: BridgePaths, job_id: str) -> tuple[Path, dict] | None:
+    for path in (
+        paths.inbox / _request_filename(job_id),
+        paths.processing / _request_filename(job_id),
+        paths.archive / _request_filename(job_id),
+    ):
+        if path.is_file():
+            return path, validate_bridge_request(json.loads(path.read_text(encoding="utf-8")))
+    return None
+
+
+def _publish_or_reuse_request(paths: BridgePaths, root: Path, request: dict) -> BridgeJob:
+    validated = validate_bridge_request(request)
+    existing = _load_existing_request(paths, validated["job_id"])
+    if existing is None:
+        request_path = paths.inbox / _request_filename(validated["job_id"])
+        try:
+            _write_json_atomic_exclusive(request_path, validated)
+        except FileExistsError:
+            existing = _load_existing_request(paths, validated["job_id"])
+            if existing is None:
+                raise ValueError("bridge_job_id_conflict")
+        else:
+            existing = (request_path, validated)
+    request_path, existing_request = existing
+    if existing_request["payload_sha256"] != validated["payload_sha256"]:
+        raise ValueError("bridge_job_id_conflict")
+    return BridgeJob(
+        job_id=validated["job_id"],
+        payload_sha256=validated["payload_sha256"],
+        request_path=request_path,
+        result_path=paths.outbox / _result_filename(validated["job_id"]),
+        run_dir=root,
+        chunk_index=validated["chunk_index"],
+        chunk_count=validated["chunk_count"],
+    )
+
+
+def _read_manifest(path: Path) -> dict:
+    try:
+        return validate_bridge_manifest(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("bridge_manifest_invalid") from exc
+
+
+def _rebuild_requests_from_manifest(root: Path, library_id: int, manifest: dict) -> list[dict]:
+    if manifest["run_id"] != root.name or library_id != manifest["library_id"]:
+        raise ValueError("bridge_batch_manifest_conflict")
+    job_ids = tuple(job["job_id"] for job in manifest["jobs"])
+    try:
+        requests = build_bridge_requests(
+            root,
+            library_id=library_id,
+            job_ids=job_ids,
+            now=_parse_utc_timestamp(manifest["created_at"]),
+            collection_name=manifest["collection_name"],
+        )
+    except ValueError as exc:
+        raise ValueError("bridge_batch_manifest_conflict") from exc
+    try:
+        if (
+            [request["payload_sha256"] for request in requests]
+            != [job["payload_sha256"] for job in manifest["jobs"]]
+            or any(request["created_at"] != manifest["created_at"] for request in requests)
+            or any(request["expires_at"] != manifest["expires_at"] for request in requests)
+            or any(request["collection_name"] != manifest["collection_name"] for request in requests)
+            or any(
+                [item["task_id"] for item in request["items"]] != job["task_ids"]
+                for request, job in zip(requests, manifest["jobs"], strict=True)
+            )
+        ):
+            raise ValueError("bridge_batch_manifest_conflict")
+    except ValueError:
+        raise
+    return requests
+
+
+def queue_bridge_jobs(
+    run_dir: str | Path,
+    *,
+    library_id: int = 1,
+    bridge_root: str | Path | None = None,
+    job_ids: Sequence[str] | None = None,
+    now: datetime | None = None,
+) -> BridgeBatch:
+    root = Path(run_dir).expanduser().resolve()
+    paths = get_bridge_paths(bridge_root, create=True)
+    record = _manifest_path(root)
+    if record.is_file():
+        manifest = _read_manifest(record)
+        requests = _rebuild_requests_from_manifest(root, library_id, manifest)
+    else:
+        requests = build_bridge_requests(
+            root,
+            library_id=library_id,
+            job_ids=job_ids,
+            now=now,
+        )
+        manifest = build_bridge_manifest(requests)
+        try:
+            _write_json_atomic_exclusive(record, manifest)
+        except FileExistsError:
+            manifest = _read_manifest(record)
+            requests = _rebuild_requests_from_manifest(root, library_id, manifest)
+    jobs = tuple(_publish_or_reuse_request(paths, root, request) for request in requests)
+    return BridgeBatch(run_id=manifest["run_id"], manifest_path=record, jobs=jobs)
