@@ -992,3 +992,18 @@
 - 如何运行：本次仅更新设计与实施计划；后续按计划中的 Python/Node 离线测试命令执行。
 - 输出与检查：未生成队列、CSV、PDF、XPI 或 Zotero 写入；审查请求字段、清单、插件分组、集成测试和手工验收项是否都覆盖 101 条两分块场景。
 - 注意事项：未联网、未启动 Edge 或 Chrome、未操作 Zotero、未处理 CAPTCHA，且未自动打包。
+
+## 2026-07-11 09:35:42 +08:00 — Task 1 Zotero 本地桥接请求合同
+
+- 本次任务目标：为批量下载流程定义严格、离线可测的 Zotero 本地桥接路径与请求合同；支持每个作业最多 100 条、101 条按原 CSV 顺序拆为 100/1 两个分块，并为同一逻辑批次共享运行标识、集合名和时间戳。
+- 新增、修改或删除的文件：新增 paper_automation/zotero_bridge.py 与 tests/test_zotero_bridge.py；仅追加本 CHANGELOG.md；未删除或修改原始实验数据、既有产品模块、插件、Skill、README 或打包配置。
+- 具体修改内容：新增冻结的 BridgePaths、BridgeJob、BridgeBatch 数据类；新增 LocalAppData 默认根目录与桥接路径构造；从 <run-dir>/working/batch_state.json 和 zotero_fallback.csv 读取当前回退项并要求 CSV 表头严格等于 NORMALIZED_FIELDS；构造仅含 task_id/doi/title/authors/year 的请求项；实施 UUID-v4、字段集、长度、库 ID、分块索引、重复任务 ID、作业条数和 SHA-256 规范化载荷校验；新增 4 项临时目录 unittest 覆盖默认路径、单作业元数据、未知字段/重复任务拒绝与 101 条稳定分块。
+- 修改原因：Zotero 回退批次需要在不读取 Cookie、不操作真实文库且不产生重复确认的前提下，向后续本地插件提供稳定、可验证的请求边界。
+- 输入与输出：输入为已有批次状态和 working/zotero_fallback.csv；输出为内存中的桥接请求字典或字典列表，以及供后续流程使用的路径/作业数据类。本任务未向真实 LOCALAPPDATA 队列写入 JSON，也未生成 PDF、结果 CSV、XPI 或打包文件。
+- 如何运行：
+  - RED：..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests -v
+  - GREEN：..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests -v
+  - 现有状态回归：..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeRequestTests tests.test_batch_workflow.BatchFileTests tests.test_batch_workflow.BatchRunTests -v
+  - 编译与完整离线回归：..\..\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation；..\..\.venv\Scripts\python.exe -m unittest discover -s tests -v
+- 如何检查是否成功：RED 阶段在新模块创建前按预期报告 ModuleNotFoundError；GREEN 阶段 4 项通过；替代状态回归共 68 项通过（1 项因 Windows 符号链接权限按既有条件跳过）；完整离线回归为 Ran 294 tests ... OK (skipped=2)，编译命令退出码为 0；提交前另执行 git diff --check。
+- 注意事项或潜在风险：简报指定的 tests.test_batch_workflow.BatchStateTests 在当前基线不存在，直接运行会报 AttributeError，故以实际覆盖状态持久化与恢复验证的 BatchFileTests 和 BatchRunTests 替代；所有测试仅使用临时目录或 mock/fake 边界，未联网、未启动浏览器、未访问 Zotero、未读写 Cookie、未写真实 LocalAppData 队列，且未自动打包。
