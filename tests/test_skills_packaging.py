@@ -19,7 +19,7 @@ class SkillPackagingTests(unittest.TestCase):
         expected = {
             "paper-download": [
                 "ScienceDirect",
-                "open-access",
+                "PDF",
                 "institutional",
             ],
             "sciencedirect-doi-download": [
@@ -28,7 +28,7 @@ class SkillPackagingTests(unittest.TestCase):
                 "DOI",
             ],
             "legal-oa-paper-download": [
-                "open-access",
+                "PDF",
                 "download assistance",
                 "without institutional cookies",
                 "third-party",

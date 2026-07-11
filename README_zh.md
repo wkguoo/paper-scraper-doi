@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文说明
 
-# 论文下载助手：ScienceDirect 机构权限 + OA 资源辅助获取
+# 论文下载助手：ScienceDirect 下载 + OA 资源获取
 
 这是一个面向 Windows 的论文下载辅助工具。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。它可以配合 Codex Skills、图形界面或命令行，把 DOI 表格、AI 推荐文献列表、复制来的论文文本整理成可检查的报告，并下载 PDF。Codex Skill 是可选增强入口；不使用 Codex 时，也可以直接运行图形界面或命令行。
 
@@ -139,7 +139,7 @@ preflight 只做输入识别、去重和复核提示，不下载 PDF，也不会
 如果你的论文来源混杂，或者没有机构权限，只想查找公开开放获取 PDF 候选资源：
 
 ```text
-Use $paper-download to find open-access PDF candidates for this list.
+Use $paper-download to find PDF candidates for this list.
 Save results to D:\Literature\OA.
 Use you@example.com for polite metadata API access.
 

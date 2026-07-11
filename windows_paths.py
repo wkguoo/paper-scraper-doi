@@ -38,7 +38,7 @@ def _windows_chrome_profile_candidates(base: str | None) -> list[Path]:
 
 
 def browser_candidate_paths() -> list[str]:
-    """Return browser executable candidates in preference order."""
+    """Return Chrome/Chromium executable candidates in preference order."""
     candidates: list[Path] = []
     override = os.environ.get(BROWSER_EXE_ENV)
     if override:
@@ -50,15 +50,7 @@ def browser_candidate_paths() -> list[str]:
             os.environ.get("PROGRAMFILES(X86)"),
             os.environ.get("LOCALAPPDATA"),
         )
-        for channel in ("Edge", "Edge Beta", "Edge Dev", "Edge SxS"):
-            for base in windows_bases:
-                if base:
-                    candidates.append(Path(base) / "Microsoft" / channel / "Application" / "msedge.exe")
-        for base in (
-            os.environ.get("PROGRAMFILES"),
-            os.environ.get("PROGRAMFILES(X86)"),
-            os.environ.get("LOCALAPPDATA"),
-        ):
+        for base in windows_bases:
             if base:
                 candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
         local_appdata = os.environ.get("LOCALAPPDATA")
@@ -70,7 +62,7 @@ def browser_candidate_paths() -> list[str]:
                     reverse=True,
                 )
             )
-        for name in ("msedge.exe", "msedge", "chrome.exe", "chrome"):
+        for name in ("chrome.exe", "chrome"):
             found = shutil.which(name)
             if found:
                 candidates.append(Path(found))
@@ -94,7 +86,7 @@ def browser_candidate_paths() -> list[str]:
 
 
 def browser_bin(browser_exe: str | None = None) -> str:
-    """Return a likely Edge/Chrome/Chromium executable path."""
+    """Return a likely Chrome/Chromium executable path."""
     override = browser_exe or os.environ.get(BROWSER_EXE_ENV)
     if override:
         return str(Path(override).expanduser())
@@ -108,7 +100,7 @@ def browser_bin(browser_exe: str | None = None) -> str:
 
 
 def chrome_bin() -> str:
-    """Return a likely Chrome/Edge/Chromium executable path."""
+    """Return a likely Chrome/Chromium executable path."""
     return browser_bin()
 
 
@@ -142,7 +134,7 @@ def browser_default_profile(browser_exe: str | None = None) -> str:
 
 
 def chrome_default_profile() -> str:
-    """Return the default Edge/Chrome profile directory for this operating system."""
+    """Return the default Chrome profile directory for this operating system."""
     return browser_default_profile()
 
 

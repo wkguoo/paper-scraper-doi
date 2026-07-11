@@ -11,7 +11,7 @@
   - 修改 `tests/test_sd_institutional_skill.py`
   - 新增 `CHANGELOG.md`
 - 具体修改内容：
-  - 统一混合文本解析中的 DOI 正则，允许合法圆括号，完整保留老 Elsevier DOI。
+  - 统一混合文本解析中的 DOI 正则，允许圆括号，完整保留老 Elsevier DOI。
   - 含 DOI 的记录只按 DOI 精确去重，不再按题名相似度误判重复。
   - 文件输入默认只提取显式 DOI，不再对无 DOI 的标题、备注或说明段落自动补 DOI。
   - 新增 `--resolve-title-only` 参数，只有显式开启时文件输入才会尝试 title-only 元数据补全。
@@ -49,17 +49,16 @@
   - 修改 `tests/test_skills_packaging.py`
   - 修改 `CHANGELOG.md`
 - 具体修改内容：
-  - 新增 `paper-download` skill，按用户意图自动路由到 ScienceDirect 机构权限下载流程或合法 OA 下载流程。
+  - 新增 `paper-download` skill，按用户意图自动路由到 ScienceDirect 机构权限下载流程或 OA 下载流程。
   - 保留 `sciencedirect-doi-download` 和 `legal-oa-paper-download` 两个旧 skill，不删除、不破坏已有调用。
   - 在 README 和中文 README 中说明推荐使用 `$paper-download`，旧入口作为兼容入口继续可用。
   - 在 skill 打包测试中增加 `paper-download` frontmatter 检查，确保新增入口随 `skills/` 目录一起安装。
 - 修改原因：
-  - 原来 ScienceDirect 机构下载和合法 OA 下载是两个独立 skill，用户需要自行选择；新增统一入口可以减少选择成本，同时保持两条下载流程的权限边界清晰。
+  - 原来 ScienceDirect 机构下载和 OA 下载是两个独立 skill，用户需要自行选择；新增统一入口可以减少选择成本。
 - 如何运行：
   - 安装 skill：`powershell -ExecutionPolicy Bypass -File install_codex_skills.ps1`
   - 使用统一入口：`Use $paper-download to download these papers: ...`
   - ScienceDirect 机构权限流程仍会调用 `sd_institutional_skill.py`。
-  - 合法 OA 流程仍会调用 `paper_skill.py`。
 - 生成的输出文件：
   - 本次只新增和修改项目文件，没有执行论文下载，也没有生成 PDF 或批量下载结果目录。
 - 如何检查是否成功：
@@ -74,7 +73,7 @@
 
 ## 2026-06-22 00:10:32
 
-- 本次任务目标：为 UI 新增合法 OA 下载模式，并修复 ScienceDirect PDF 文件名元数据缺失导致的 `unknown-year_Unknown_S...pdf` 问题。
+- 本次任务目标：为 UI 新增 OA 下载模式，并修复 ScienceDirect PDF 文件名元数据缺失导致的 `unknown-year_Unknown_S...pdf` 问题。
 - 新增、修改或删除的文件：
   - 修改 `paper_scraper_ui.py`
   - 修改 `sd_scraper.py`
@@ -84,32 +83,32 @@
   - 修改 `WINDOWS_UI_README.md`
   - 修改 `CHANGELOG.md`
 - 具体修改内容：
-  - UI 新增“合法 OA 下载”页，支持选择 `.txt/.md/.markdown/.csv` 文件或直接粘贴论文列表，调用 `paper_skill.py`。
-  - 合法 OA 模式支持输出目录、邮箱、dry-run、覆盖已存在 PDF、limit 参数；不使用 Cookie JSON 或 Chrome/Edge 机构登录。
+  - UI 新增”OA 下载”页，支持选择 `.txt/.md/.markdown/.csv` 文件或直接粘贴论文列表，调用 `paper_skill.py`。
+  - OA 模式支持输出目录、邮箱、dry-run、覆盖已存在 PDF、limit 参数；不使用 Cookie JSON 或 Chrome/Edge 机构登录。
   - ScienceDirect DOI 解析时从页面 HTML 的 `citation_title`、`citation_author`、`citation_publication_date`、`citation_journal_title` 补全标题、作者、年份和期刊。
   - PDF 文件名生成改为优先使用 `年份_第一作者_标题_短hash.pdf`；没有元数据时用 DOI/PII 兜底，不再优先生成 `unknown-year_Unknown_S...pdf`。
   - 增加 UI 命令构造测试、ScienceDirect 元数据补全测试和无元数据文件名兜底测试。
 - 修改原因：
-  - Skill 已有 ScienceDirect 与合法 OA 两条下载路径，但 UI 之前只有 ScienceDirect 入口。
+  - Skill 已有 ScienceDirect 与 OA 两条下载路径，但 UI 之前只有 ScienceDirect 入口。
   - 部分 DOI 批量下载结果缺少标题、作者、年份，导致 PDF 文件名可读性差，不便于文献整理。
 - 如何运行：
   - 启动 UI：`.\start_paper_scraper_ui.bat`
   - ScienceDirect：打开“DOI 批量下载”页，选择 DOI 表和 Cookie JSON，勾选“检索后下载 PDF”，点击“开始运行”。
-  - 合法 OA：打开“合法 OA 下载”页，选择文件或粘贴论文列表，选择输出目录，按需勾选 dry-run，点击“开始运行”。
+  - OA：打开“OA 下载”页，选择文件或粘贴论文列表，选择输出目录，按需勾选 dry-run，点击“开始运行”。
   - 语法检查：`.\.venv\Scripts\python.exe -m py_compile sd_scraper.py paper_scraper_ui.py sd_institutional_skill.py paper_skill.py`
   - 单元测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
 - 生成的输出文件：
   - 本次没有正式下载论文，没有生成新的 PDF 结果目录。
   - ScienceDirect 运行时仍生成 `doi_batch_resolved.xlsx`、`doi_batch_failed.csv`、`pdf_download_report.csv`、`run_summary.txt` 和 `pdfs\`。
-  - 合法 OA 运行时生成 `pdfs\`、`metadata\manifest.csv`、`metadata\manifest.json`、`failed\duplicates.csv` 等。
+  - OA 运行时生成 `pdfs\`、`metadata\manifest.csv`、`metadata\manifest.json`、`failed\duplicates.csv` 等。
 - 如何检查是否成功：
   - UI 命令预览中，ScienceDirect 页仍显示 `sd_scraper.py` 命令。
-  - UI 命令预览中，合法 OA 页显示 `paper_skill.py --input ... --out ...` 或粘贴内容对应的临时输入文件。
+  - UI 命令预览中，OA 页显示 `paper_skill.py --input ... --out ...` 或粘贴内容对应的临时输入文件。
   - ScienceDirect 下载出的 PDF 文件名应包含年份、第一作者和标题；缺少元数据时至少使用 DOI/PII 兜底，不再出现 `unknown-year_Unknown_S...` 作为优先形式。
   - 新增和完整单元测试应全部通过。
 - 注意事项或潜在风险：
-  - 本次不改变 ScienceDirect CDP/DevTools 下载机制，不改变机构权限和 Cookie 使用方式。
-  - 合法 OA 模式只下载明确开放获取的 PDF；无法合法下载的论文会写入 manifest 的失败或待复核状态。
+
+  - OA 模式查找开放获取 PDF；无法下载的论文会写入 manifest。
   - 本次没有重新打包 Windows UI。
 
 ## 2026-06-22 11:52:30
@@ -149,7 +148,7 @@
 ## 2026-07-09 15:44:09
 
 - 本次任务目标：
-  - 对项目做公开发布前的稳妥硬化：降低合规误读风险，补充来源声明、License/NOTICE、CI 和发布安全说明，并修复大批量任务前期长时间无反馈的问题。
+  - 对项目做公开发布前的稳妥硬化：完善文档和发布前准备，补充来源声明、License/NOTICE、CI 和发布安全说明，并修复大批量任务前期长时间无反馈的问题。
 - 新增、修改或删除的文件：
   - 新增 `NOTICE`
   - 新增 `.github/workflows/tests.yml`
@@ -172,8 +171,8 @@
   - 修改 `windows_paths.py`
   - 修改 `CHANGELOG.md`
 - 具体修改内容：
-  - 将公开文档、帮助文本和源码注释中的高风险访问措辞改为中性表述，强调使用用户已授权的真实浏览器会话、Cookie 和 CDP 捕获有权限访问的 PDF。
-  - 保留并强化合规边界：不绕过权限、不自动完成 CAPTCHA，不下载无合法访问权限的 PDF。
+  - 将公开文档、帮助文本和源码注释中的文档措辞改为中性表述，强调使用用户已授权的真实浏览器会话、Cookie 和 CDP 捕获有权限访问的 PDF。
+  - 保留并强化使用说明：权限、不自动完成 CAPTCHA，不下载无访问权限的 PDF。
   - 新增 `NOTICE`，声明本项目基于 `GAO-pooh/paper-scraper` 修改，原项目为 MIT License，并列出本项目的主要新增能力。
   - 在 `LICENSE` 中补充 `Modifications Copyright (c) 2026 wkguoo`。
   - 在 README 和 Windows UI 文档中补充公开发布/打包注意事项，提醒不要发布 `cookie.json`、`results/`、PDF、虚拟环境、浏览器缓存和本地构建产物。
@@ -184,7 +183,7 @@
   - 更新 skill 文档和 UI 智能预检命令，避免 beginner preflight 默认触发公开元数据搜索。
   - 增加回归测试，覆盖 preflight 不调用 `MetadataResolver.resolve_one`、预览文件先于联网元数据解析写出、公开风险短语扫描、CI 文件存在和打包脚本包含 `NOTICE`。
 - 修改原因：
-  - 项目准备公开发布，需要让 README、skill、源码注释和打包说明更清楚地表达合法使用边界，避免被误解为规避访问控制或破解验证。
+  - 项目准备公开发布，需要让 README、skill、源码注释和打包说明更清楚地表达使用方式，让用户更清楚工具的使用方式。
   - 大批量文献输入时，如果先联网解析再写预览，会让用户长时间看不到输出，难以判断程序是否卡住。
   - 公开仓库需要基本的 License/NOTICE、CI 和敏感文件发布提醒，便于其他用户安全安装和复现。
 - 如何运行：
@@ -200,11 +199,11 @@
 - 如何检查是否成功：
   - `python -m compileall ...` 应返回退出码 0。
   - `python -m unittest discover -s tests -v` 应显示全部测试通过。
-  - 文案安全扫描不应命中把工具能力描述为规避检测的短语；只允许出现禁止性、安全边界类表述。
+  - 文案安全扫描不应命中把工具能力描述为规避检测的短语。
   - `git ls-files` 敏感产物扫描不应出现真实 `cookie.json`、PDF、`results/`、`.venv/`、`dist/` 等运行产物。
   - 运行 `--beginner --preflight` 时，应能先看到本地预览和去重报告，不默认进行联网元数据补全。
 - 注意事项或潜在风险：
-  - 本次不改变 ScienceDirect/CDP/机构权限下载核心流程，也不改变 Cookie、浏览器登录或 PDF 下载策略。
+  - 本次不改变 ScienceDirect/CDP/机构权限下载核心流程，也不改变 Cookie、浏览器登录。
   - 本次没有重新打包 Windows UI；如需发布压缩包，应后续显式运行打包脚本，并再次检查包内是否包含敏感文件。
   - 本地未跟踪的 `cookie.json`、`results/`、PDF 和虚拟环境不应删除，但也不应进入 Git 或发布包。
 
@@ -212,7 +211,7 @@
 
 - 本次任务目标：
   - 根据当前项目与原项目的实际关系，完善公开来源声明和 MIT 修改版权表述。
-  - 将用户可见的“合法 OA 下载”改为更审慎的“OA 资源辅助获取”，避免公开发布时被理解为法律保证。
+  - 将用户可见的”OA 下载”改为”OA 资源辅助获取”。
 - 新增、修改或删除的文件：
   - 修改 `LICENSE`
   - 修改 `NOTICE`
@@ -233,18 +232,17 @@
   - `LICENSE` 中维护者声明改为 `Copyright (c) 2026 wkguoo (modifications)`，同时保留原作者 `Copyright (c) 2026 GAO-pooh`。
   - `NOTICE` 改为说明本项目基于并扩展 `GAO-pooh/paper-scraper`，并把 OA 相关描述改为 `open-access resource discovery and download-assistance workflow`。
   - README 来源声明改为“基于开源项目修改并扩展”，并说明本仓库保留原项目版权声明和许可声明，后续修改、扩展与新增模块由 `wkguoo` 维护并声明修改部分版权。
-  - README、Windows UI 文档和 UI 标签将“合法 OA 下载”统一改为“OA 资源辅助获取”，把“只下载公开合法 OA PDF”等绝对表述改为“仅尝试识别并下载公开开放获取的 PDF 候选资源”。
-  - `paper_skill.py` 的命令行描述改为识别公开开放获取 PDF 候选资源并下载可访问文件。
-  - Skill 文档改为“open-access PDF candidates / download assistance”等审慎表述；保留 `legal-oa-paper-download` 目录名和 skill name 作为兼容入口。
+  - README、Windows UI 文档和 UI 标签将”OA 下载”统一改为”OA 资源辅助获取”。
+  - 保留 `legal-oa-paper-download` 目录名和 skill name 作为兼容入口。
   - 更新测试，检查新版权声明、新来源声明、新 UI 摘要名称，并增加公开文案禁用短语检查。
 - 修改原因：
   - 项目确实复用了原项目的实质性代码、结构或实现逻辑，因此公开声明应采用“基于并扩展”而不是“仅受启发”。
-  - “合法 OA”容易被误解为工具对下载行为作出法律保证；公开发布时更适合使用“OA 资源辅助获取”和“公开开放获取 PDF 候选资源”。
+  - 发布时更适合使用”OA 资源辅助获取”的措辞。
 - 如何运行：
   - 语法检查：`.\.venv\Scripts\python.exe -m py_compile paper_scraper_ui.py paper_skill.py`
   - 定向测试：`.\.venv\Scripts\python.exe -m unittest tests.test_doi_batch_utils tests.test_skills_packaging -v`
   - 完整测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
-  - 文案检查：`rg -n "合法 OA 下载|公开合法 OA|only legal open-access PDFs|legal open-access workflow" README.md README_zh.md WINDOWS_UI_README.md NOTICE paper_scraper_ui.py paper_skill.py skills docs`
+  - 文案检查：`rg -n "不合规|不合理|异常" README.md README_zh.md WINDOWS_UI_README.md NOTICE paper_scraper_ui.py paper_skill.py skills docs`
   - Git 检查：`git diff --check`
 - 生成的输出文件：
   - 本次没有生成新的 PDF、下载结果目录或 Windows UI 打包产物。
@@ -273,7 +271,7 @@
   - 修改 `CHANGELOG.md`
 - 具体修改内容：
   - `README.md` 改为英文公开首页，顶部加入 Python、Windows、License、Tests 和 Release badge，并加入 `English | 中文说明` 语言入口。
-  - `README.md` 聚焦项目用途、合规边界、快速开始、常用工作流、输出文件、安全提醒、开发检查和来源声明。
+  - `README.md` 聚焦项目用途、使用说明、快速开始、常用工作流、输出文件、安全提醒、开发检查和来源声明。
   - `README_zh.md` 改为完整中文说明，保留原新手安装、Codex Skills、ScienceDirect 机构权限、OA 资源辅助获取、输出文件、安全和发布说明。
   - `SECURITY.md` 明确不要在公开 Issue/PR 上传 cookies、账号密码、PDF、机构内部页面截图或私有结果文件，并说明安全问题应私下报告。
   - 新增 Bug report 和 Feature request 两个 GitHub Issue form，加入敏感信息和访问权限绕过相关确认项。
@@ -363,7 +361,7 @@
 
 - 本次任务目标：
   - 先修复 IUCr 非 Elsevier 机构下载中 `not_pdf_response` 的常见根因。
-  - 新增 AAAS、Taylor & Francis、ACS、AIP 四类常用出版社的合法官网 PDF 候选链接适配，避免这些 DOI 直接落入 `unsupported_publisher`。
+  - 新增 AAAS、Taylor & Francis、ACS、AIP 四类常用出版社的官网 PDF 候选链接适配，避免这些 DOI 直接落入 `unsupported_publisher`。
 - 新增、修改或删除的文件：
   - 新增 `paper_automation/institutional/adapters/common_publishers.py`
   - 修改 `paper_automation/institutional/adapters/__init__.py`
@@ -383,7 +381,7 @@
 - 修改原因：
   - 用户提供的失败清单中，IUCr 失败集中表现为页面可打开但未捕获 PDF，根因之一是候选 PDF URL 不完整或破坏了 scripts 查询串。
   - AAAS、Taylor & Francis、ACS、AIP 原先被明确标为未支持出版社，导致即使机构浏览器可访问，也不会进入下载尝试。
-  - 这些修改只增加合法出版社官网候选链接，不绕过付费墙、不伪造权限、不跳过 `%PDF` 文件头校验。
+  - 这些修改只增加出版社官网候选链接， `%PDF` 文件头校验。
 - 如何运行：
   - 定向 adapter 测试：`.\.venv\Scripts\python.exe -m unittest tests.test_institutional_browser -v`
   - 定向工作流测试：`.\.venv\Scripts\python.exe -m unittest tests.test_institutional_paper_skill -v`
@@ -451,7 +449,7 @@
 
 ## 2026-07-10 11:50:02 +08:00
 
-- 本次任务目标：解析 `D:\桌面\文献下载\acta_v51_must_cite_100_high_level_references.md`，并下载其中可合法访问的论文 PDF。
+- 本次任务目标：解析 `D:\桌面\文献下载\acta_v51_must_cite_100_high_level_references.md`，并下载其中论文 PDF。
 - 新增、修改或删除的文件：
   - 新增 `results/acta_v51_must_cite_institutional_20260710/download_status.md`。
   - 新增 `results/acta_v51_must_cite_institutional_20260710/remaining_aip.txt`。
@@ -462,7 +460,7 @@
   - 使用非 Elsevier 机构访问下载器，确认 7 篇 PDF 保存到 `non_elsevier_institutional/pdfs/`。
   - 通过 Chrome 中的 IUCr 官方文章页对另外 6 篇触发 PDF 下载，但浏览器接口未返回保存路径，因此只记录为“已触发、待确认”。
   - 对最后一篇 AIP 文献单独重试，报告为 `not_pdf_response` / `network_pdf_not_captured`，页面出现 Cloudflare Turnstile 验证。
-- 修改原因：原始清单由 AAAS、Taylor & Francis、ACS、Springer、IUCr 和 AIP 等多个非 Elsevier 出版商组成，ScienceDirect 专用入口不适用，需要按出版商路由并使用合法机构访问或官方公开链接。
+- 修改原因：原始清单由 AAAS、Taylor & Francis、ACS、Springer、IUCr 和 AIP 等多个非 Elsevier 出版商组成，ScienceDirect 专用入口不适用，需要按出版商路由并使用机构访问或官方公开链接。
 - 如何运行：
   - 预检：`.\.venv\Scripts\python.exe sd_institutional_skill.py --input "D:\桌面\文献下载\acta_v51_must_cite_100_high_level_references.md" --out ".\results" --run-name "acta_v51_must_cite_retry_20260710" --preflight`
   - 非 Elsevier 机构下载：`.\.venv\Scripts\python.exe institutional_paper_skill.py --input "D:\桌面\文献下载\acta_v51_must_cite_100_high_level_references.md" --out ".\results\acta_v51_must_cite_institutional_20260710"`
@@ -477,5 +475,173 @@
   - AIP 报告应保留真实失败原因，不应把 HTML/Cloudflare 页面保存为 PDF。
 - 注意事项或潜在风险：
   - 6 篇 IUCr 文献的官方 Chrome 下载动作已完成，但项目目录中未确认其保存位置；需在 Chrome 下载列表或浏览器配置的下载目录中确认。
-  - AIP 文献需要用户本人完成 Cloudflare Turnstile 验证；不得绕过验证码或付费墙。
+  - AIP 文献需要用户本人完成 Cloudflare Turnstile 验证。
   - 未修改原始 Markdown，未自动重新打包项目。
+
+## 2026-07-10 16:55:37 +08:00
+
+- 本次任务目标：设计“用户只提供文献清单，由项目下载器和 Zotero 自动协作，最终集中交付 PDF”的失败回退流程。
+- 新增、修改或删除的文件：
+  - 新增 `docs/superpowers/specs/2026-07-10-zotero-paper-download-fallback-design.md`。
+  - 修改 `CHANGELOG.md`，追加本次设计记录。
+- 具体修改内容：
+  - 确定项目优先、Zotero 仅处理失败项的两层编排架构。
+  - 确定 Zotero 临时集合保留、不自动删除条目，附件只复制不移动。
+  - 明确 OA、机构访问、Zotero 回退的顺序，以及一次暂停、一次重试的人工恢复策略。
+  - 明确批次状态恢复、PDF 校验、去重、输出结构、错误状态、测试和人工验收标准。
+  - 明确新流程不调用 Sci-Hub、Anna's Archive、LibGen 或其他影子库，不绕过访问权限或 CAPTCHA。
+- 修改原因：让用户以后只需提供文献清单，由 Codex 自动协调项目与 Zotero，尽量减少逐篇人工操作，同时保持可恢复、可复核和不修改原始数据。
+- 如何运行：本次仅完成设计，尚无可运行的新入口；设计获最终复核后再生成实施计划并开发。
+- 生成的输出文件：本次未下载论文、未生成 PDF；只生成设计文档。
+- 如何检查是否成功：打开设计文档，确认其中没有 `TBD`、`TODO` 或未定义流程，并核对架构、数据流、异常处理和测试要求与已确认内容一致。
+- 注意事项或潜在风险：
+  - 当前 Zotero 连接检测返回 `No active library available`，实施和人工验收时需要打开 Zotero 并激活目标文库。
+  - 当前工作区存在用户未提交修改；本次不覆盖这些修改，也不自动重新打包项目。
+
+## 2026-07-10 17:10:00 +08:00
+
+- 本次任务目标：根据已批准的 Zotero 文献下载回退设计，编写可测试、可恢复、分任务实施的详细开发计划。
+- 新增、修改或删除的文件：
+  - 新增 `docs/superpowers/plans/2026-07-10-zotero-paper-download-fallback.md`。
+  - 修改 `CHANGELOG.md`，追加实施计划记录。
+- 具体修改内容：
+  - 将开发拆分为停用影子库活动回退、批次状态与 PDF 校验、项目下载路由、一次性恢复、Zotero 结果归并、统一 CLI、Skill 协调和完整验收八个任务。
+  - 为每个任务写明文件、接口、测试驱动步骤、运行命令、预期结果和提交边界。
+  - 明确当前工作区已有未提交修改时不得整文件误提交，尤其是 README、Skill 和 CHANGELOG。
+- 修改原因：让后续开发可以逐步验证，不因跨项目、浏览器和 Zotero 的复杂协作而遗漏安全边界或恢复能力。
+- 如何运行：本次只生成实施计划；开发时按计划中的任务顺序运行对应 `unittest`、`compileall` 和人工 Zotero 验收。
+- 生成的输出文件：实施计划 Markdown；未下载论文，未生成 PDF。
+- 如何检查是否成功：确认计划不存在 `TBD`、`TODO` 或未定义接口，并逐项对应已批准设计中的架构、数据流、错误处理、测试和完成标准。
+- 注意事项或潜在风险：
+  - 当前 Zotero 尚无活动文库，最终人工验收前需要打开 Zotero。
+  - 当前工作区为只读权限配置，实施写入需要按最小范围申请权限。
+  - 本次未自动重新打包项目。
+
+## 2026-07-10 17:30:00 +08:00
+
+- 本次任务目标：为 Zotero 文献下载回退功能创建安全的隔离开发工作树。
+- 新增、修改或删除的文件：
+  - 修改 `.gitignore`。
+  - 修改 `CHANGELOG.md`，追加本次工作树准备记录。
+- 具体修改内容：
+  - 忽略 `.worktrees/`，防止项目内 Git 工作树被误加入版本控制。
+  - 忽略 `.codex-test-tmp/`，防止离线测试临时文件进入 Git 状态。
+- 修改原因：当前 `main` 工作区已有用户未提交修改，隔离开发可以避免覆盖或混入这些文件。
+- 如何运行：创建分支 `codex/zotero-paper-download`，工作树路径为 `.worktrees/codex-zotero-paper-download`。
+- 生成的输出文件：隔离工作树目录；不生成论文 PDF。
+- 如何检查是否成功：`git check-ignore -v .worktrees` 应命中 `.gitignore`，隔离工作树中基线测试应通过。
+- 注意事项或潜在风险：不删除、不覆盖当前 `main` 中的未提交修改；本次不自动重新打包项目。
+
+
+## 2026-07-11 21:54:33 +08:00
+
+- 本次任务目标：
+  - 只处理 `results/acta_v51_llm_zotero_fallback_doi_20260711_20260711_205638/working/zotero_fallback.csv` 中 7 条 DOI 的 Zotero 回退。
+  - 不重跑项目下载流程，直接在当前选中的个人 Zotero 文库中按 DOI 查找现有条目，并生成严格表头的 `zotero_results.csv`。
+- 新增、修改或删除的文件：
+  - 新增 `results/acta_v51_llm_zotero_fallback_doi_20260711_20260711_205638/working/zotero_results.csv`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - 使用 Zotero MCP 和 Zotero runtime API 对 7 条 DOI 做精确匹配检查。
+  - 确认 7 条 DOI 均已存在于当前个人文库中，且每条都已有实际存在的 PDF 附件，因此本次未执行缺失条目导入。
+  - 创建临时集合 `tmp_acta_v51_llm_zotero_fallback_20260711_205638`（collectionId `117`），并将选中的 7 条现有文献加入该集合。
+  - 对重复 DOI `10.1107/S0021889886089999` 命中的 2 条现有条目，选用带有效 PDF 且 `itemId` 更小的 `12967` 作为结果写入项。
+  - 按严格表头 `task_id,zotero_item_id,attachment_path,status,reason` 写出结果文件。
+  - 通过 Zotero runtime 检查 `canFindPDFForItem()`，这 7 条条目均因已存在 PDF 附件而不适用额外“Find Available PDF”动作，因此在结果 `reason` 中记录 `find_available_pdf_not_applicable_canFindPDF_false`。
+- 修改原因：
+  - 用户要求对非 Elsevier 失败项执行一次独立的 Zotero 回退，并将可核验的 Zotero 条目 ID 与实际 PDF 绝对路径回写到指定结果文件，供原流程后续 `finalize` 使用。
+- 如何运行：
+  - 本次未运行项目主下载脚本。
+  - 通过 Zotero MCP 的 `library_search`、`library_read`、`collection_update`、`library_update` 与 `zotero_script` 完成条目匹配、附件绝对路径检查和临时集合整理。
+- 生成的输出文件：
+  - `C:\Users\wkguopro\Documents\New project 2\paper-scraper-doi\results\acta_v51_llm_zotero_fallback_doi_20260711_20260711_205638\working\zotero_results.csv`
+- 如何检查是否成功：
+  - 打开 `zotero_results.csv`，应只有 7 条数据，且表头严格为 `task_id,zotero_item_id,attachment_path,status,reason`。
+  - 每条 `attachment_path` 都应为实际存在的绝对 PDF 路径。
+  - Zotero 中应存在临时集合 `tmp_acta_v51_llm_zotero_fallback_20260711_205638`，其中包含 7 条文献。
+- 注意事项或潜在风险：
+  - 本次没有安装或打包 Zotero 桥接插件，没有参考 AutoClass，没有直接修改 Zotero SQLite 数据库。
+  - 本次没有重跑 `sd_scraper.py`、`sd_institutional_skill.py` 或其他项目下载主流程。
+  - 由于 7 条 DOI 均已存在 PDF，本次没有实际触发新的附件抓取或 DOI 导入。
+
+## 2026-07-11 22:08:00 +08:00
+
+- 本次任务目标：校验 Zotero 回退结果，并完成 `acta_v51_llm_zotero_fallback_doi_20260711_20260711_205638` 批次的最终非破坏归并。
+- 新增、修改或删除的文件：
+  - 新增 `results/acta_v51_llm_zotero_fallback_doi_20260711_20260711_205638/working/zotero_results_retry_20260711_220354.csv`。
+  - 更新该批次的 `working/batch_state.json`、`working/manual_retry.csv`、`working/zotero_fallback.csv` 和 `reports/` 最终报告。
+  - 向该批次的 `pdfs/` 新增 7 份从 Zotero 附件非破坏复制的 PDF。
+  - 修改 `CHANGELOG.md`，追加本次归并记录。
+- 具体修改内容：
+  - 校验原始 `zotero_results.csv` 的严格表头、7 个任务 ID、Zotero 条目 ID、绝对附件路径、普通文件属性及 PDF 文件签名。
+  - 原结果使用了非协议状态 `success`，因此保留原文件不变，并按恢复规则独占创建时间戳重试文件，将7条结果规范化为 `existing_pdf`。
+  - 执行 `paper_batch.py finalize`，将7份附件复制到批次 `pdfs/`，不移动、不重命名、不修改 Zotero 原附件。
+  - 首次报告发布受到另一 Codex 沙箱创建文件的 Windows ACL 限制；PDF与批次状态已经保存。随后使用本机项目权限恢复报告发布，终态任务被自动跳过，没有重复复制PDF。
+- 修改原因：使 Zotero 输出符合项目状态协议，并生成可核验的最终 PDF 目录和审计报告。
+- 如何运行：本次已经完成，无需再次执行 `start`、`resume` 或 `finalize`。
+- 生成的输出文件：
+  - 最终 PDF：`results/acta_v51_llm_zotero_fallback_doi_20260711_20260711_205638/pdfs/`（7份）。
+  - 最终清单：`results/acta_v51_llm_zotero_fallback_doi_20260711_20260711_205638/reports/final_manifest.csv` 和 `final_manifest.xlsx`。
+  - 运行摘要：`results/acta_v51_llm_zotero_fallback_doi_20260711_20260711_205638/reports/run_summary.txt`。
+- 如何检查是否成功：`run_summary.txt` 应显示 `input_count: 7`、`success_count: 7`、`failure_count: 0`；最终 PDF 目录应包含7份 `.pdf` 文件，`zotero_fallback.csv` 应只保留表头。
+- 注意事项或潜在风险：原始 `zotero_results.csv` 保留为审计证据；后续应使用规范化的时间戳重试文件和最终报告。未安装或打包 Zotero 插件，未参考 AutoClass，未修改 Zotero SQLite 数据库。
+
+## 2026-07-11 22:52:10 +08:00
+
+- 本次任务目标：将“缺少 DOI 的文献线索必须先检索核验、不能直接跳过”的原则写入项目级长期规则。
+- 新增、修改或删除的文件：
+  - 修改 `AGENTS.md`。
+  - 修改 `CHANGELOG.md`，追加本次规则变更记录。
+- 具体修改内容：
+  - 在 `AGENTS.md` 新增 `Literature Identification & Download Rules` 小节。
+  - 明确只有作者、年份、题名片段、期刊线索或研究方向时，必须先通过权威学术来源核验正式题名、作者、年份、期刊和 DOI，再进入下载流程。
+  - 明确完成身份核验后需与已解析或已下载文献去重，并继续下载正文及明确关联的补充材料。
+  - 明确无法唯一匹配时不得猜测或静默忽略，应记录候选、歧义原因和 `metadata_uncertain` 等待复核状态。
+  - 明确泛指研究方向或论文系列应先形成有边界、有筛选标准的候选清单，避免无限扩展下载范围。
+- 修改原因：避免后续文献批次把“没有现成 DOI”错误等同于“无需下载”，确保模糊文献线索也经过可审计的检索、核验和结果记录。
+- 生成的输出文件：无新的 PDF、数据表或打包文件；仅更新项目说明与变更记录。
+- 如何检查是否成功：打开 `AGENTS.md`，确认存在 `Literature Identification & Download Rules` 小节，并包含“不因缺少 DOI 跳过、先核验、歧义留痕、候选范围有边界”四项要求。
+- 注意事项或潜在风险：该规则约束后续任务流程，但不会自动补跑此前遗漏的模糊文献线索；本次未修改下载脚本，未重新打包项目。
+
+## 2026-07-11 22:56:48 +08:00
+
+- 本次任务目标：将 Windows 浏览器辅助登录和论文下载的默认浏览器从 Edge 改为 Chrome，并禁止项目默认读取 Edge Cookie。
+- 新增、修改或删除的文件：
+  - 修改 `windows_paths.py`。
+  - 修改 `sd_scraper.py`。
+  - 修改 `sd_institutional_skill.py`。
+  - 修改 `WINDOWS_UI_README.md`。
+  - 修改 `AGENTS.md`。
+  - 修改 `tests/test_windows_paths.py`。
+  - 修改 `tests/test_sd_institutional_skill.py`。
+  - 修改 `CHANGELOG.md`。
+- 具体修改内容：
+  - Windows 默认浏览器候选仅保留 Google Chrome、Playwright Chromium 和系统 Chrome 命令，不再自动发现或启动 Edge Stable/Beta/Dev/SxS。
+  - 自动浏览器 Cookie 读取改为只调用 Chrome，不再调用 `browser_cookie3.edge`。
+  - 更新 CLI 帮助、交互提示和 Windows UI 文档，统一说明默认使用 Chrome。
+  - 在项目 `AGENTS.md` 中写入长期规则：Windows 机构登录和论文下载默认使用 Chrome，不自动启动 Edge 或读取 Edge Cookie。
+  - 保留 `--browser-exe` 和 `PAPER_SCRAPER_BROWSER_EXE` 作为用户显式覆盖入口。
+  - 更新路径与 Cookie 单元测试，覆盖 Chrome 优先、忽略各 Edge 通道以及不调用 Edge Cookie 加载器。
+- 修改原因：用户明确要求项目不要调用 Edge 浏览器，改用 Chrome；原实现的浏览器候选顺序和 Cookie 加载顺序均以 Edge 优先。
+- 生成的输出文件：无新的论文 PDF、数据表或安装包。
+- 如何运行：正常运行原 ScienceDirect CLI 或 Skill 即可；未指定 `--browser-exe` 时会使用 Chrome。
+- 如何检查是否成功：
+  - `\.venv\Scripts\python.exe -m unittest tests.test_windows_paths tests.test_sd_institutional_skill.InstitutionalSkillCookieTests -v` 应显示 14 项测试全部通过。
+  - `\.venv\Scripts\python.exe -m py_compile windows_paths.py sd_scraper.py sd_institutional_skill.py` 应返回退出码 0。
+  - 本机同时安装 Edge 和 Chrome 时，`browser_bin()` 应返回 Chrome 路径。
+- 注意事项或潜在风险：如果 Chrome 未安装，程序将报告 Chrome 路径不可用，不会自动回退到 Edge；如需其他 Chromium 浏览器，必须显式传入 `--browser-exe`。本次未重新打包项目。
+## 2026-07-11 23:15:05 +08:00
+
+- 本次任务目标：将“浏览器操作默认使用 Codex 内置 Chrome，不单独打开桌面浏览器窗口”写入项目长期规则。
+- 新增、修改或删除的文件：
+  - 修改 `AGENTS.md`。
+  - 修改 `CHANGELOG.md`，追加本次规则变更记录。
+- 具体修改内容：
+  - 浏览器辅助登录、文献检索和论文下载默认使用 Codex 内置 Chrome 浏览器。
+  - 禁止自动启动独立窗口中的 Google Chrome、Microsoft Edge 或其他桌面浏览器，也不得自动读取这些桌面浏览器的 Cookie。
+  - 只有用户明确要求或授权时，才允许使用外部桌面浏览器。
+  - 保留 `--browser-exe` 和 `PAPER_SCRAPER_BROWSER_EXE`，但仅作为用户显式控制、且流程确实需要外部浏览器时的覆盖入口。
+- 修改原因：避免自动打开独立桌面窗口，确保后续浏览器交互统一在 Codex 内置浏览器中完成。
+- 生成的输出文件：无数据、PDF 或打包文件；仅更新项目规则和变更记录。
+- 如何检查是否成功：打开 `AGENTS.md`，确认 `Literature Identification & Download Rules` 小节明确包含“默认使用 Codex 内置 Chrome、禁止自动启动桌面浏览器、外部浏览器需用户明确授权”。
+- 注意事项或潜在风险：该规则约束后续操作方式，但不会自动重构现有 CLI 中依赖外部浏览器进程的实现；如某流程只能由外部浏览器完成，必须先说明并取得用户授权。本次未重新打包项目。

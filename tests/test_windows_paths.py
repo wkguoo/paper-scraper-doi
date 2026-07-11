@@ -22,7 +22,7 @@ class WindowsPathTests(unittest.TestCase):
                 patch.object(windows_paths.sys, "platform", "win32"):
             self.assertEqual(windows_paths.chrome_bin(), override)
 
-    def test_chrome_bin_falls_back_to_edge_on_windows(self) -> None:
+    def test_chrome_bin_does_not_fall_back_to_edge_on_windows(self) -> None:
         import windows_paths
 
         edge = Path(r"C:\PF86") / "Microsoft" / "Edge" / "Application" / "msedge.exe"
@@ -39,9 +39,10 @@ class WindowsPathTests(unittest.TestCase):
                 patch.object(windows_paths.sys, "platform", "win32"), \
                 patch.object(Path, "exists", exists), \
                 patch.object(windows_paths.shutil, "which", return_value=None):
-            self.assertEqual(windows_paths.chrome_bin(), str(edge))
+            expected_chrome = Path(r"C:\PF") / "Google" / "Chrome" / "Application" / "chrome.exe"
+            self.assertEqual(windows_paths.chrome_bin(), str(expected_chrome))
 
-    def test_chrome_bin_prefers_edge_over_chrome_on_windows(self) -> None:
+    def test_chrome_bin_prefers_chrome_over_edge_on_windows(self) -> None:
         import windows_paths
 
         edge = Path(r"C:\PF86") / "Microsoft" / "Edge" / "Application" / "msedge.exe"
@@ -59,9 +60,9 @@ class WindowsPathTests(unittest.TestCase):
                 patch.object(windows_paths.sys, "platform", "win32"), \
                 patch.object(Path, "exists", exists), \
                 patch.object(windows_paths.shutil, "which", return_value=None):
-            self.assertEqual(windows_paths.chrome_bin(), str(edge))
+            self.assertEqual(windows_paths.chrome_bin(), str(chrome))
 
-    def test_chrome_bin_finds_edge_beta_on_windows(self) -> None:
+    def test_chrome_bin_ignores_edge_beta_on_windows(self) -> None:
         import windows_paths
 
         edge_beta = Path(r"C:\PF86") / "Microsoft" / "Edge Beta" / "Application" / "msedge.exe"
@@ -78,9 +79,10 @@ class WindowsPathTests(unittest.TestCase):
                 patch.object(windows_paths.sys, "platform", "win32"), \
                 patch.object(Path, "exists", exists), \
                 patch.object(windows_paths.shutil, "which", return_value=None):
-            self.assertEqual(windows_paths.chrome_bin(), str(edge_beta))
+            expected_chrome = Path(r"C:\PF") / "Google" / "Chrome" / "Application" / "chrome.exe"
+            self.assertEqual(windows_paths.chrome_bin(), str(expected_chrome))
 
-    def test_chrome_bin_prefers_edge_stable_channel_over_beta_channel(self) -> None:
+    def test_chrome_bin_ignores_all_edge_channels(self) -> None:
         import windows_paths
 
         edge_stable_x86 = Path(r"C:\PF86") / "Microsoft" / "Edge" / "Application" / "msedge.exe"
@@ -98,7 +100,8 @@ class WindowsPathTests(unittest.TestCase):
                 patch.object(windows_paths.sys, "platform", "win32"), \
                 patch.object(Path, "exists", exists), \
                 patch.object(windows_paths.shutil, "which", return_value=None):
-            self.assertEqual(windows_paths.chrome_bin(), str(edge_stable_x86))
+            expected_chrome = Path(r"C:\PF") / "Google" / "Chrome" / "Application" / "chrome.exe"
+            self.assertEqual(windows_paths.chrome_bin(), str(expected_chrome))
 
     def test_chrome_bin_falls_back_to_playwright_chromium_on_windows(self) -> None:
         import windows_paths
@@ -120,7 +123,7 @@ class WindowsPathTests(unittest.TestCase):
                     patch.object(windows_paths.shutil, "which", return_value=None):
                 self.assertEqual(windows_paths.chrome_bin(), str(chromium))
 
-    def test_chrome_default_profile_falls_back_to_edge_profile(self) -> None:
+    def test_chrome_default_profile_prefers_chrome_profile(self) -> None:
         import windows_paths
 
         edge_default = Path(r"C:\Users\Me\AppData\Local") / "Microsoft" / "Edge" / "User Data" / "Default"
@@ -133,7 +136,7 @@ class WindowsPathTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True), \
                 patch.object(windows_paths.sys, "platform", "win32"), \
                 patch.object(Path, "exists", exists):
-            self.assertEqual(windows_paths.chrome_default_profile(), str(edge_default))
+            self.assertEqual(windows_paths.chrome_default_profile(), str(chrome_default))
 
     def test_browser_default_profile_follows_explicit_chrome_browser(self) -> None:
         import windows_paths

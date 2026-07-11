@@ -50,6 +50,14 @@ There is an offline unittest suite under `tests/`. For new logic, add focused te
 
 Git history currently shows only an initial release, so no detailed convention is established. Use concise imperative commit subjects, for example `Fix DOI batch CSV encoding`. Pull requests should describe the user-facing workflow affected, list verification commands, note any manual UI checks, and mention whether cookies, network access, or institutional entitlements were required.
 
+## Literature Identification & Download Rules
+
+Do not skip a literature entry merely because the source text does not provide a DOI. When an entry contains only an author, year, partial title, journal clue, or research-topic description, first search authoritative scholarly sources and resolve the formal title, authors, year, journal, and DOI before starting the download workflow. Verify the identity using all available context, de-duplicate it against already resolved or downloaded papers, and then download the article and any clearly associated supplementary materials through the project's legal open-access or institutional-access routes.
+
+If the available clues match multiple publications and cannot support a unique identification, do not guess and do not silently omit the entry. Record it as `metadata_uncertain` or an equivalent review status, preserve the candidate matches and the reason for ambiguity in the report, and ask for user confirmation only when the remaining choice materially changes which paper would be downloaded. Broad research directions or unspecified paper series must be converted into a bounded candidate list with explicit selection criteria before batch downloading; they must not be expanded without limit.
+
+For browser-assisted institutional login, literature retrieval, and paper downloads, use the Chrome browser built into Codex by default. Do not automatically launch Google Chrome, Microsoft Edge, or any other browser in a separate desktop window, and do not automatically read cookies from those desktop browsers. An external desktop browser may be used only after the user explicitly requests or approves it. Preserve `--browser-exe` and `PAPER_SCRAPER_BROWSER_EXE` only as explicit user-controlled overrides for workflows that genuinely require an external browser.
+
 ## Security & Configuration Tips
 
 Never commit `cookies.json`, browser cookie exports, downloaded PDFs, or generated result tables. Treat institutional cookies as credentials. Keep sample commands generic and avoid hard-coded local user paths in committed documentation or code.

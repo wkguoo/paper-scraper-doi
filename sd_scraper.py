@@ -493,7 +493,7 @@ class ScienceDirectScraper:
     def default_download_next_steps() -> str:
         return (
             "Open pdf_download_report.csv and run_summary.json to inspect exact failures.\n"
-            "If institutional access failed, sign in through the Edge debug window and retry the DOI batch.\n"
+        "If institutional access failed, sign in through the Chrome debug window and retry the DOI batch.\n"
             "If ScienceDirect remains inaccessible, try publisher OA pages, author/lab pages, or Unpaywall."
         )
 
@@ -507,14 +507,11 @@ class ScienceDirectScraper:
             )
 
     def _load_browser_cookies(self):
-        """直接从本机 Edge/Chrome 读取 sciencedirect.com 的 cookie。"""
+        """直接从本机 Chrome 读取 sciencedirect.com 的 cookie。"""
         if not HAS_BROWSER_COOKIE3:
             print("[错误] 未安装 browser-cookie3，请运行：pip install browser-cookie3")
             return
-        loaders = []
-        if hasattr(browser_cookie3, "edge"):
-            loaders.append(("Edge", browser_cookie3.edge))
-        loaders.append(("Chrome", browser_cookie3.chrome))
+        loaders = [("Chrome", browser_cookie3.chrome)]
 
         errors: list[str] = []
         for label, loader in loaders:
@@ -531,7 +528,7 @@ class ScienceDirectScraper:
             except Exception as e:
                 errors.append(f"{label}: {e}")
 
-        print("[警告] Edge/Chrome 中未找到 sciencedirect.com 的 cookie；下载时可能需要在调试浏览器中登录")
+        print("[警告] Chrome 中未找到 sciencedirect.com 的 cookie；下载时可能需要在调试浏览器中登录")
         if errors:
             print(f"[警告] 本机浏览器 cookie 读取失败: {'; '.join(errors[:2])}")
         if sys.platform.startswith("win"):
@@ -2707,7 +2704,7 @@ def interactive_mode():
 
     # ── 机构 Cookie ───────────────────────────────────────────────
     print("\n【机构账号 Cookie】")
-    print("  1. 自动从 Edge/Chrome 读取（推荐）")
+    print("  1. 自动从 Chrome 读取（推荐）")
     print("  2. 手动指定 cookie 文件")
     print("  3. 跳过，以游客身份运行")
     cookie_choice = input("  请选择 [1/2/3，默认 1]: ").strip() or "1"
@@ -2777,8 +2774,8 @@ def interactive_mode():
 
     print("\n【PDF 下载】")
     print("  1. 下载 PDF（推荐）")
-    print("     读取你 Edge/Chrome 浏览器的 Cookie，并通过已授权会话下载")
-    print("     前提：Edge/Chrome 已通过机构账号（CARSI/深技大）登录 ScienceDirect")
+    print("     读取你 Chrome 浏览器的 Cookie，并通过已授权会话下载")
+    print("     前提：Chrome 已通过机构账号（CARSI/深技大）登录 ScienceDirect")
     print("  2. 跳过，只保存文献列表")
     dl_choice = input("  请选择 [1/2，默认 2]: ").strip() or "2"
     download_pdfs = (dl_choice == "1")
@@ -2844,10 +2841,10 @@ def build_parser():
                         help="文章类型: FLA 完整文章 / REV 综述 / SCO 短通讯")
     parser.add_argument("--open-access",   action="store_true", help="仅抓取开放获取文章")
     parser.add_argument("--browser-cookies", dest="browser_cookies", action="store_true",
-                        help="自动从本机 Edge/Chrome 读取 cookie")
+                        help="自动从本机 Chrome 读取 cookie")
     parser.add_argument("--cookies",       help="Cookie JSON 文件路径")
     parser.add_argument("--browser-exe",
-                        help="Browser executable path for institutional login/download (defaults to Edge first)")
+                        help="Browser executable path for institutional login/download (defaults to Chrome)")
     parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
                         help="在保存文献列表后，继续下载对应 PDF")

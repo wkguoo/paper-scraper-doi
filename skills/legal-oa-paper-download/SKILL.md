@@ -1,6 +1,6 @@
 ---
 name: legal-oa-paper-download
-description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and provide open-access PDF download assistance. Use when the user asks Codex to find or download papers without institutional cookies or ScienceDirect login. Failed downloads automatically fall back to third-party data sources.
+description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and provide PDF download assistance. Use when the user asks Codex to find or download papers without institutional cookies or ScienceDirect login. Failed downloads automatically fall back to third-party data sources.
 ---
 
 # OA Resource Assistance Paper Download
@@ -27,7 +27,7 @@ Use `.venv\Scripts\python.exe` when it exists; otherwise create the venv and ins
 2. Run `paper_skill.py` with an explicit `--out` directory.
 3. Prefer `--dry-run` first when the input is noisy, title-only, or copied from an AI recommendation.
 4. Use `--email` when available for polite Crossref/Unpaywall API use.
-5. Report `metadata/manifest.csv`, `metadata/manifest.json`, `failed/duplicates.csv`, counts for resolved rows, downloaded PDFs, duplicates, and unresolved rows without accessible open-access PDFs.
+5. Report `metadata/manifest.csv`, `metadata/manifest.json`, `failed/duplicates.csv`, counts for resolved rows, downloaded PDFs, duplicates, and unresolved rows.
 
 ## Commands
 
@@ -38,7 +38,7 @@ Set-Location "<resolved repository root>"
 .\.venv\Scripts\python.exe paper_skill.py --text "<copied paper list>" --out "D:\Literature\OA" --email "you@example.com" --dry-run
 ```
 
-Download accessible open-access PDF candidates from a file:
+Download PDF candidates from a file:
 
 ```powershell
 Set-Location "<resolved repository root>"

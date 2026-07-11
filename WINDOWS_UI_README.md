@@ -37,7 +37,7 @@ cd "<仓库路径>"
 2. 如需指定 Excel 工作表或 DOI 列名，填写“Excel 工作表名”和“DOI 列名”。
 3. 在“2 权限与输出”中选择输出目录和 Cookie Editor 导出的 `cookies.json`。
 4. 如果输入来自 AI 推荐、题名-only 列表或格式混乱的复制文本，先点击“生成新手预检报告”。它会调用 `sd_institutional_skill.py --beginner --preflight --auto-web-search`，不下载 PDF；确认 `doi_intake_preview.csv` 后，可点击“使用预检合并表”进入正式下载。
-5. 保持“检索后下载 PDF”勾选；默认会同时下载 ScienceDirect 补充材料，如只要正文 PDF，可取消“同时下载补充材料”。只有 PDF 下载启用且该复选框保持勾选时，才会生成补充材料报告和目录。如果不用 Cookie JSON，再按需选择“从本机浏览器读取 Cookie”或“先弹出浏览器手动登录”（默认优先 Edge，Chrome 作为后备）。
+5. 保持“检索后下载 PDF”勾选；默认会同时下载 ScienceDirect 补充材料，如只要正文 PDF，可取消“同时下载补充材料”。只有 PDF 下载启用且该复选框保持勾选时，才会生成补充材料报告和目录。如果不用 Cookie JSON，再按需选择“从本机浏览器读取 Cookie”或“先弹出浏览器手动登录”（默认使用 Chrome，不自动调用 Edge）。
 6. 点击“预览解析”，在“3 预览检查”中确认识别到的 DOI 数量、列识别方式和前 200 条预览。
 7. 点击底部固定操作栏中的“开始运行”；运行后界面会切到“运行日志”页。
 

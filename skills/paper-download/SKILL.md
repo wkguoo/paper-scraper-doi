@@ -1,6 +1,6 @@
 ---
 name: paper-download
-description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or open-access resource discovery and download assistance. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Edge/Chrome login and cookies for ScienceDirect, or find open-access PDF candidates. Failed downloads automatically fall back to third-party data sources.
+description: Route paper download requests to either ScienceDirect/Elsevier institutional-access downloads or resource discovery and PDF download assistance. Use when Codex needs to download papers, process DOI batches, resolve DOI/title lists, handle local literature files or folders, dry-run paper recognition, use institutional Edge/Chrome login and cookies for ScienceDirect, or find PDF candidates. Failed downloads automatically fall back to third-party data sources.
 ---
 
 # Paper Download
@@ -23,7 +23,7 @@ Use `.venv\Scripts\python.exe` when it exists; otherwise create the venv and ins
 
 Use `sd_institutional_skill.py` for ScienceDirect institutional access when the user mentions ScienceDirect, Elsevier, institution/school access, cookies, Edge/Chrome login, DOI batch download, or when the input is clearly dominated by Elsevier DOI values such as `10.1016/...`.
 
-Use `paper_skill.py` for open-access resource discovery and download assistance when the user asks for OA/open-access PDFs, public-source PDFs, no login, no cookies, or mixed publisher lists where institutional access is not requested.
+Use `paper_skill.py` for resource discovery and download assistance when the user asks for PDFs, no login needed, or mixed publisher lists where institutional access is not requested.
 
 When intent is unclear, infer from wording and input. Ask only if the choice changes safety or expected access path.
 
@@ -71,7 +71,7 @@ Explain that this folder indexes PDFs and supplements by relative path and does 
 
 ## OA Resource Assistance Workflow
 
-Run `paper_skill.py` for public metadata and open-access PDF candidates only:
+Run `paper_skill.py` for public metadata and PDF candidates:
 
 ```powershell
 Set-Location "<resolved repository root>"
@@ -84,7 +84,7 @@ For noisy copied recommendations, prefer dry-run first:
 .\.venv\Scripts\python.exe paper_skill.py --text "<copied paper list>" --out "D:\Literature\OA" --email "you@example.com" --dry-run
 ```
 
-Report `metadata\manifest.csv`, `metadata\manifest.json`, `failed\duplicates.csv`, downloaded PDFs, duplicates, and unresolved rows without accessible open-access PDFs.
+Report `metadata\manifest.csv`, `metadata\manifest.json`, `failed\duplicates.csv`, downloaded PDFs, duplicates, and unresolved rows.
 
 ## Safety
 

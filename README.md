@@ -10,7 +10,7 @@
 
 Windows-friendly DOI organizer and authorized paper access helper with OA PDF discovery and Codex Skills.
 
-This project helps researchers turn DOI tables, copied bibliography text, and AI-recommended paper lists into reviewable reports. It provides a Windows Tkinter UI, command-line workflows, and optional Codex Skills for ScienceDirect authorized-access PDF saving and open-access PDF candidate discovery.
+This project helps researchers turn DOI tables, copied bibliography text, and AI-recommended paper lists into reviewable reports. It provides a Windows Tkinter UI, command-line workflows, and optional Codex Skills for ScienceDirect access PDF saving and PDF candidate discovery.
 
 ## What It Does
 
@@ -18,7 +18,7 @@ This project helps researchers turn DOI tables, copied bibliography text, and AI
 - Runs a beginner preflight to identify valid DOI rows, duplicates, invalid rows, and records that need manual review.
 - Saves ScienceDirect PDFs when you already have authorized access through your institution, browser login state, or exported cookies.
 - Attempts ScienceDirect supplementary material downloads and records attachment status.
-- Searches public metadata sources for open-access PDF candidates without using institutional cookies.
+- Searches public metadata sources for PDF candidates without using institutional cookies.
 - Installs Codex Skills so the same workflows can be started with natural language.
 
 ## What It Does Not Do
@@ -93,7 +93,7 @@ To skip supplementary material downloads:
 
 ### OA PDF Candidate Discovery
 
-Use this workflow for mixed publisher lists when you only want to search public metadata and downloadable open-access candidates:
+Use this workflow for mixed publisher lists when you only want to search public metadata and downloadable candidates:
 
 ```powershell
 .\.venv\Scripts\python.exe paper_skill.py --input "papers.txt" --out "D:\Literature\OA" --email "you@example.com" --dry-run

@@ -1221,7 +1221,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
 
 
 class InstitutionalSkillCookieTests(unittest.TestCase):
-    def test_scraper_reads_edge_cookies_before_chrome_cookies(self) -> None:
+    def test_scraper_reads_chrome_cookies_without_calling_edge(self) -> None:
         import sd_scraper
 
         class Cookie:
@@ -1229,15 +1229,15 @@ class InstitutionalSkillCookieTests(unittest.TestCase):
                 self.name = name
                 self.value = value
 
-        chrome_called = False
+        edge_called = False
 
         def fake_edge(domain_name: str) -> list[Cookie]:
+            nonlocal edge_called
+            edge_called = True
             self.assertEqual(domain_name, ".sciencedirect.com")
             return [Cookie("SDMSESSION", "edge-secret")]
 
         def fake_chrome(domain_name: str) -> list[Cookie]:
-            nonlocal chrome_called
-            chrome_called = True
             return [Cookie("SDMSESSION", "chrome-secret")]
 
         fake_browser_cookie3 = types.SimpleNamespace(edge=fake_edge, chrome=fake_chrome)
@@ -1247,8 +1247,8 @@ class InstitutionalSkillCookieTests(unittest.TestCase):
                 patch.object(sd_scraper, "_new_curl_session", return_value=fake_session):
             scraper = sd_scraper.ScienceDirectScraper(use_browser_cookies=True)
 
-        self.assertFalse(chrome_called)
-        self.assertEqual(scraper._cookie_dict["SDMSESSION"], "edge-secret")
+        self.assertFalse(edge_called)
+        self.assertEqual(scraper._cookie_dict["SDMSESSION"], "chrome-secret")
 
     def test_extract_devtools_cookies_and_cache_filters_relevant_domains(self) -> None:
         from sd_institutional_skill import cache_devtools_cookies
