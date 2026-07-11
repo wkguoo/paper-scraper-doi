@@ -1128,3 +1128,14 @@
 - 生成的输出文件：真实启用后会生成/更新 `plugin-state.json`、`processing\<job_id>.progress.json`、`outbox\<job_id>.result.json`，并把完成的请求和进度移至 archive；撤销只修改账本授权且身份仍匹配的 Zotero 对象。本次测试仅使用共享内存文件系统和假 Zotero，对真实 `%LOCALAPPDATA%`、Zotero 文库、PDF、Cookie、XPI 与安装配置均无写入。
 - 如何检查是否成功：32 项运行时测试及插件侧合计 39 项测试连续运行两次均通过；覆盖三条任务在第一条后中断并无二次确认续跑、进度 task ID 篡改拒绝、已发布结果原字节重放、完成状态/进度归档、实际生成账本撤销“预存 + 导入”混合批次、撤销取消零写入、预存 ID 不删除、身份变化跳过并报告、活动批次阻止撤销、撤销不可重复，以及重启后状态摘要恢复；语法与差异检查通过，源码安全扫描零匹配，插件全目录唯一匹配来自测试自身的禁止字符串清单。
 - 注意事项或潜在风险：真实 Zotero 写 API 返回与进度文件落盘之间仍存在极短的进程硬终止窗口；重启时会通过 DOI 查重、集合幂等和已有 PDF 复核避免重复动作，但极端断电下撤销账本可能需要真实配置测试确认完整性。当前仍未联网、未启动 Chrome/Edge/Codex 浏览器、未读取 Cookie、未安装或打包插件；真实机构授权、出版商限制和 CAPTCHA 不会被绕过，留待隔离测试配置验收。
+
+## 2026-07-11 15:54:53 +08:00 — Zotero 9 插件 Task 6 手工构建器与初学者说明
+
+- 本次任务目标：提供仅在用户明确运行时才创建 XPI 的白名单构建器，并给出面向初学者的测试、构建、批处理与安全检查说明；本阶段不实际打包或安装。
+- 新增、修改或删除的文件：新增 `build_zotero_bridge_xpi.ps1`、`zotero_bridge_plugin/README.md`、`tests/test_zotero_bridge_packaging.py`；修改本 `CHANGELOG.md`；未删除文件，未修改现有启动、Skill 安装或 Windows UI 打包脚本。
+- 具体修改内容：构建器要求显式 `-OutputDirectory`，默认拒绝覆盖并只在 `-Force` 时允许替换；拒绝输出目录位于插件源码内部；从 manifest 读取语义版本，只复制根级 `manifest.json`/`bootstrap.js` 和 `content`/`locale` 两个目录；显式排除 tests、package、Git、日志、状态/进度、Cookie 与环境文件；以随机临时 staging 和同输出目录临时 zip/xpi 工作，使用 `Compress-Archive` 后通过 `tar -tf` 验证根级入口和禁止项，最后同目录移动到版本化 XPI；finally 只清理经确认位于系统临时目录的随机 staging 与精确临时文件。README 说明 Zotero 9.0.x 范围、离线测试、需明确批准的手工构建命令、输入/输出/成功标准、最终批处理流程和禁止绕过访问控制。
+- 修改原因：让后续集成验收具备可复现、可审计且不夹带测试/凭据/队列的打包方式，同时严格遵守“修改后不自动打包”和“先在独立 Zotero 测试配置验证”的要求。
+- 如何运行：源码契约测试 `..\..\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge_packaging -v`；插件测试 `node --test zotero_bridge_plugin/tests/*.test.cjs`；仅语法检查可调用 PowerShell AST `Parser.ParseFile()`。真正构建命令记录于插件 README，但本次未运行。
+- 生成的输出文件：仅生成构建脚本、README 和测试源码；仓库内仍无 `.xpi`，`dist` 未因本任务创建或修改，也未安装任何 Zotero 扩展。
+- 如何检查是否成功：构建契约先因脚本/README 缺失按预期 5 项失败，实施后 7 项全部通过；PowerShell AST 解析无语法错误；递归检查确认仓库内无 XPI；现有启动、Skill 安装和 UI 打包脚本均不引用该构建器。
+- 注意事项或潜在风险：构建器本身尚未实际执行，因此真实 zip/xpi 内容和 Zotero 加载仍必须在用户明确批准打包后验证；`-Force` 会替换用户明确指定输出目录中的同版本 XPI，请仅在确认旧产物可替换时使用。未联网、未启动浏览器、未访问真实 Zotero/Cookie/PDF。
