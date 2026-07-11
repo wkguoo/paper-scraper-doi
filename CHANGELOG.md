@@ -949,3 +949,14 @@
 - 生成的输出文件：仅生成上述设计规格；没有创建桥接任务、Zotero 集合、条目、附件、结果 CSV 或最终 PDF。
 - 如何检查是否成功：阅读设计规格，核对方案选择、固定数据合同、一次确认、非破坏性复制、恢复规则、测试范围和安装门禁是否覆盖用户目标；运行 `git diff --check` 检查文档差异格式。
 - 注意事项或潜在风险：本次没有实现或安装插件；Zotero 的具体内部 API仍需在 9.0.6 测试配置中做功能检测和真实验收。不会直接修改 SQLite，不开放网络端口，不读取密码/Cookie，不使用影子来源，不自动处理 CAPTCHA，也不自动打包。
+
+## 2026-07-11 08:50:13 +08:00 — 默认 Chrome/Chromium，禁止隐式启动 Edge
+
+- 本次任务目标：响应用户“不要调用 Edge，优先 Chrome/Codex App 内置浏览器”的要求，避免项目在未明确指定浏览器时自动启动 Edge。
+- 新增、修改或删除的文件：修改 `windows_paths.py`、`tests/test_windows_paths.py`、`README_zh.md`、`WINDOWS_UI_README.md` 和本 `CHANGELOG.md`；未新增或删除产品数据、PDF、Cookie、插件或打包文件。
+- 具体修改内容：Windows 自动候选顺序改为 Chrome/Chromium（含 Playwright Chromium）优先，并移除 Edge/Edge Beta/Dev/SxS 与 `msedge` 的隐式候选；`browser_bin()` 保留用户显式 `--browser-exe` 或 `PAPER_SCRAPER_BROWSER_EXE` 指向 Edge 的兼容性。同步测试为“不会自动选 Edge”及 Chrome profile 优先，中文说明明确 Codex App 内置浏览器由代理控制，Python 下载器不能直接接管其登录会话。
+- 修改原因：真实批次在没有显式浏览器路径时启动了临时 Edge 调试实例；用户明确要求不再发生该行为。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_windows_paths -v`；完整回归可运行 `..\\..\\.venv\\Scripts\\python.exe -m unittest discover -s tests -v`。
+- 生成的输出文件：本次仅生成测试运行时的临时文件；不会启动浏览器、不会生成 PDF、不会写入 Zotero 文库或更改原始输入。
+- 如何检查是否成功：在测试中同时模拟 Chrome 与 Edge 时必须选择 Chrome；只模拟 Edge 时也不得返回 Edge 路径；显式传入 Edge 路径的 profile 测试仍通过。查看文档可确认 Edge 仅在用户显式指定时使用。
+- 注意事项或潜在风险：若系统没有 Chrome/Chromium，默认路径会是 Chrome 的预期路径，随后由原有启动错误提示处理；这比在未获用户同意时自动改用 Edge 更符合当前要求。Codex App 内置浏览器仍需由本会话的浏览器控制能力登录，不能被 Python 的 CDP 下载器直接复用。未自动打包。
