@@ -14,6 +14,7 @@ from typing import Mapping, Sequence
 
 from paper_automation.batch_workflow import (
     NORMALIZED_FIELDS,
+    ZOTERO_INPUT_STATUSES,
     ZOTERO_RESULT_FIELDS,
     load_batch_state,
 )
@@ -38,6 +39,11 @@ MANIFEST_JOB_FIELDS = {
     "job_id", "payload_sha256", "chunk_index", "chunk_count", "task_ids",
 }
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+RESULT_FIELDS = {
+    "schema_version", "job_id", "payload_sha256", "plugin_version",
+    "zotero_version", "started_at", "finished_at", "rows",
+}
+RESULT_ROW_FIELDS = set(ZOTERO_RESULT_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -602,3 +608,183 @@ def queue_bridge_jobs(
             requests = _rebuild_requests_from_manifest(root, library_id, manifest)
     jobs = tuple(_publish_or_reuse_request(paths, root, request) for request in requests)
     return BridgeBatch(run_id=manifest["run_id"], manifest_path=record, jobs=jobs)
+
+
+def _validated_bridge_batch(bridge: object) -> tuple[Path, tuple[BridgeJob, ...]]:
+    if not isinstance(bridge, BridgeBatch) or not isinstance(bridge.jobs, tuple) or not bridge.jobs:
+        raise ValueError("bridge_batch_jobs_invalid")
+    if any(not isinstance(job, BridgeJob) for job in bridge.jobs):
+        raise ValueError("bridge_batch_jobs_invalid")
+
+    root = Path(bridge.jobs[0].run_dir).expanduser().resolve()
+    record = _manifest_path(root)
+    if (
+        not isinstance(bridge.run_id, str)
+        or bridge.run_id != root.name
+        or Path(bridge.manifest_path).expanduser().resolve() != record
+    ):
+        raise ValueError("bridge_batch_identity_invalid")
+
+    manifest = _read_manifest(record)
+    if manifest["run_id"] != bridge.run_id or len(manifest["jobs"]) != len(bridge.jobs):
+        raise ValueError("bridge_batch_identity_invalid")
+
+    for job, manifest_job in zip(bridge.jobs, manifest["jobs"], strict=True):
+        if (
+            Path(job.run_dir).expanduser().resolve() != root
+            or job.job_id != manifest_job["job_id"]
+            or job.payload_sha256 != manifest_job["payload_sha256"]
+            or job.chunk_index != manifest_job["chunk_index"]
+            or job.chunk_count != manifest_job["chunk_count"]
+            or Path(job.request_path).name != _request_filename(job.job_id)
+            or Path(job.result_path).name != _result_filename(job.job_id)
+        ):
+            raise ValueError("bridge_batch_identity_invalid")
+    return root, bridge.jobs
+
+
+def validate_bridge_result(
+    result: object,
+    job: BridgeJob,
+    expected_ids: set[str],
+) -> dict:
+    if not isinstance(result, dict) or set(result) != RESULT_FIELDS:
+        raise ValueError("bridge_result_fields_invalid")
+    if type(result["schema_version"]) is not int or result["schema_version"] != BRIDGE_SCHEMA_VERSION:
+        raise ValueError("bridge_schema_version_invalid")
+    if result["job_id"] != job.job_id or result["payload_sha256"] != job.payload_sha256:
+        raise ValueError("bridge_result_identity_invalid")
+    if (
+        not isinstance(expected_ids, set)
+        or not expected_ids
+        or any(not isinstance(task_id, str) or not task_id for task_id in expected_ids)
+    ):
+        raise ValueError("bridge_result_expected_tasks_invalid")
+    scalar_fields = ("plugin_version", "zotero_version", "started_at", "finished_at")
+    if any(
+        not isinstance(result[field], str)
+        or not result[field]
+        or len(result[field]) > MAX_TEXT_LENGTH
+        for field in scalar_fields
+    ):
+        raise ValueError("bridge_result_value_invalid")
+    try:
+        started_at = _parse_utc_timestamp(result["started_at"])
+        finished_at = _parse_utc_timestamp(result["finished_at"])
+    except ValueError as exc:
+        raise ValueError("bridge_result_time_invalid") from exc
+    if finished_at < started_at:
+        raise ValueError("bridge_result_time_invalid")
+
+    rows = result["rows"]
+    if not isinstance(rows, list) or len(rows) != len(expected_ids):
+        raise ValueError("bridge_result_count_invalid")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != RESULT_ROW_FIELDS:
+            raise ValueError("bridge_result_row_fields_invalid")
+        if any(
+            not isinstance(row[field], str) or len(row[field]) > MAX_TEXT_LENGTH
+            for field in RESULT_ROW_FIELDS
+        ):
+            raise ValueError("bridge_result_row_value_invalid")
+        task_id = row["task_id"]
+        if task_id in seen:
+            raise ValueError("bridge_result_task_duplicate")
+        if task_id not in expected_ids:
+            raise ValueError("bridge_result_task_unknown")
+        if row["status"] not in ZOTERO_INPUT_STATUSES:
+            raise ValueError("bridge_result_status_invalid")
+        if row["status"] in {"existing_pdf", "downloaded"} and not row["zotero_item_id"]:
+            raise ValueError("bridge_result_item_id_missing")
+        seen.add(task_id)
+    if seen != expected_ids:
+        raise ValueError("bridge_result_tasks_missing")
+    return result
+
+
+def _read_request_for_job(job: BridgeJob) -> dict:
+    try:
+        request = validate_bridge_request(
+            json.loads(Path(job.request_path).read_text(encoding="utf-8"))
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("bridge_request_invalid") from exc
+    if request["job_id"] != job.job_id or request["payload_sha256"] != job.payload_sha256:
+        raise ValueError("bridge_request_identity_invalid")
+    return request
+
+
+def _validated_rows_for_job(job: BridgeJob) -> tuple[list[str], list[dict[str, str]]]:
+    request = _read_request_for_job(job)
+    expected_ids = [item["task_id"] for item in request["items"]]
+    result_path = Path(job.result_path)
+    if not result_path.is_file():
+        raise ValueError("bridge_result_missing")
+    try:
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("bridge_result_invalid") from exc
+    validated = validate_bridge_result(result, job, set(expected_ids))
+    return expected_ids, validated["rows"]
+
+
+def _write_csv_atomic_exclusive(path: Path, rows: Sequence[dict[str, str]]) -> None:
+    descriptor, name = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8-sig", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(ZOTERO_RESULT_FIELDS)
+            for row in rows:
+                writer.writerow([row[field] for field in ZOTERO_RESULT_FIELDS])
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _write_result_csv_exclusive(
+    run_dir: Path,
+    rows: Sequence[dict[str, str]],
+    now: datetime | None = None,
+) -> Path:
+    working = run_dir / "working"
+    if not working.is_dir():
+        raise ValueError("bridge_working_missing")
+    canonical = working / "zotero_results.csv"
+    stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    candidates = [canonical]
+    candidates.extend(
+        working / f"zotero_results_retry_{stamp}{'' if number == 1 else '_' + str(number)}.csv"
+        for number in range(1, 10000)
+    )
+    for candidate in candidates:
+        try:
+            _write_csv_atomic_exclusive(candidate, rows)
+        except FileExistsError:
+            continue
+        return candidate
+    raise OSError("bridge_result_filename_exhausted")
+
+
+def consume_bridge_batch(bridge: BridgeBatch, *, now: datetime | None = None) -> Path:
+    root, jobs = _validated_bridge_batch(bridge)
+    rows_by_task: dict[str, dict[str, str]] = {}
+    ordered_ids: list[str] = []
+    for job in jobs:
+        expected_ids, rows = _validated_rows_for_job(job)
+        ordered_ids.extend(expected_ids)
+        for row in rows:
+            if row["task_id"] in rows_by_task:
+                raise ValueError("bridge_result_task_duplicate")
+            rows_by_task[row["task_id"]] = row
+    if len(set(ordered_ids)) != len(ordered_ids) or set(rows_by_task) != set(ordered_ids):
+        raise ValueError("bridge_result_tasks_missing")
+    ordered_rows = [rows_by_task[task_id] for task_id in ordered_ids]
+    return _write_result_csv_exclusive(root, ordered_rows, now=now)

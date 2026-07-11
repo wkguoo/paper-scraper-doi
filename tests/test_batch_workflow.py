@@ -3366,6 +3366,10 @@ class BatchFinalizeTests(unittest.TestCase):
             "no_attachment",
             "download_failed",
             "zotero_api_unavailable",
+            "user_cancelled",
+            "job_expired",
+            "job_id_conflict",
+            "plugin_error",
         ]
         with tempfile.TemporaryDirectory() as tmp:
             paths = self._paths_with_state(

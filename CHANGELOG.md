@@ -1040,3 +1040,14 @@
 - 生成的输出文件：测试仅在临时目录创建并清理桥接 JSON；未写入真实 `%LOCALAPPDATA%`、Zotero、PDF、Cookie、XPI 或打包文件。
 - 如何检查是否成功：13 项聚焦测试通过，50 次独立压力运行均通过；每次仅有一个清单、两个一致的请求文件且无 `.tmp` 残留。
 - 注意事项或潜在风险：本阶段只发布项目侧请求，尚未接收插件结果或启动真实 Zotero；插件仍必须以 `chunk_index/chunk_count` 作为一次确认的分块屏障。
+
+## 2026-07-11 13:37:10 +08:00 — Task 3 Zotero 桥接结果校验与汇总 CSV
+
+- 本次任务目标：仅在全部 Zotero 分块结果通过严格校验后，将其转换为现有 finalizer 可消费的五列 CSV。
+- 新增、修改或删除的文件：修改 `paper_automation/zotero_bridge.py`、`paper_automation/batch_workflow.py`、`tests/test_zotero_bridge.py`、`tests/test_batch_workflow.py` 与本 `CHANGELOG.md`；未删除文件。
+- 具体修改内容：新增插件结果字段、时间、身份、任务集合和状态白名单校验；新增清单/请求身份复核；使用临时文件、`fsync` 与硬链接原子发布完整 CSV，并在同名文件存在时创建不覆盖的 retry CSV；扩展插件端失败状态为 `user_cancelled`、`job_expired`、`job_id_conflict`、`plugin_error`。
+- 修改原因：保证少任何一个分块、字段被篡改、结果任务不匹配或旧结果文件存在时，都不会误把不完整或覆盖性的 CSV 交给最终 PDF 汇总。
+- 如何运行：`..\\..\\.venv\\Scripts\\python.exe -m unittest tests.test_zotero_bridge.ZoteroBridgeResultTests tests.test_batch_workflow.BatchFinalizeTests -v`。
+- 生成的输出文件：测试在临时目录创建桥接 JSON、结果 JSON 和 CSV 后自动清理；未写入真实 `%LOCALAPPDATA%`、Zotero、PDF、Cookie、XPI 或打包文件。
+- 如何检查是否成功：43 项聚焦测试通过；缺失第二分块时 canonical CSV 不存在，既有 CSV 保持字节不变，原子发布前读者看不到目标 CSV，恶意 `https://` 附件路径最终被标为 `not_pdf_response`。
+- 注意事项或潜在风险：桥接层有意不信任或复制附件路径，实际 PDF 安全复核仍由既有 `finalize_batch()` 完成；真实插件结果和最终 CLI 编排属于后续任务。

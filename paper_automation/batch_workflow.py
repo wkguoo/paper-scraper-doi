@@ -97,6 +97,10 @@ ZOTERO_FAILURE_STATUSES = {
     "no_attachment",
     "download_failed",
     "zotero_api_unavailable",
+    "user_cancelled",
+    "job_expired",
+    "job_id_conflict",
+    "plugin_error",
 }
 ZOTERO_INPUT_STATUSES = set(ZOTERO_SUCCESS) | ZOTERO_FAILURE_STATUSES
 FINAL_MANIFEST_FIELDS = [*NORMALIZED_FIELDS, "zotero_item_id"]
