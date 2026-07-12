@@ -46,6 +46,9 @@ pdfs/
 *.json
 repomix-output.*
 
+# Local build / debug artifacts (XPI builds, Zotero test logs, share zips)
+output/
+
 # Chrome debug temp files
 /tmp/chrome_debug.log
 /tmp/chrome_informs.log
