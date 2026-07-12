@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## v0.2.0 — Zotero 9 bridge and unified batch workflow
+
+Release date: 2026-07-12
+
+- 将 `paper_batch.py` 确立为 DOI、题名、CSV/XLSX/Markdown 文献任务的统一入口。
+- 完成 OA → 机构访问 → 人工重试 → Zotero 回退的可恢复批次流程。
+- 增加 Zotero 9 本地桥接、批次队列、分块处理、结果校验和安全 PDF 交付。
+- 加强 Windows 浏览器选择、路径安全、并发 PDF 发布和原始文件不覆盖保护。
+- 补充完整的离线单元测试、CI 稳定性修复、Windows 使用文档和 Zotero 新手指南。
+- 本 release 提供源码，不包含 exe 或自动生成的 Windows UI 压缩包。
+
 ## 2026-07-12 22:36:37 +08:00
 
 - 本次任务目标：修复 GitHub Actions Windows runner `windows-tests` 中由短路径/长路径差异和相对 PDF symlink 检查顺序导致的 5 个失败用例。
