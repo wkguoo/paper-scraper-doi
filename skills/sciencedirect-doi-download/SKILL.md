@@ -1,9 +1,18 @@
 ---
 name: sciencedirect-doi-download
-description: Download ScienceDirect PDFs through the user's institutional access from pasted DOI text, AI-recommended paper lists, title-only literature text, DOI tables, or folders of literature files. Use when the user asks Codex to fetch/download ScienceDirect or Elsevier papers, process DOI batches, resolve copied paper recommendations into DOI/PDF downloads, or use local Edge/Chrome institutional login rather than the Tkinter UI.
+description: Internal ScienceDirect institutional DOI adapter used by the unified paper-download workflow. Do not invoke this skill as a standalone user entry; use paper-download for ScienceDirect or Elsevier PDF requests, DOI batches, title lists, and authorized access.
 ---
 
 # ScienceDirect DOI Download
+
+> Internal compatibility reference. New user requests must use the unified
+> `paper-download` workflow and `paper_batch.py`; do not invoke this skill as a
+> standalone entry.
+
+The unified workflow should try the Codex in-app browser first. If it is not
+available or cannot provide a usable session, the external browser fallback
+uses Edge first, then Chrome/Chromium; explicit `--browser-exe` and
+`PAPER_SCRAPER_BROWSER_EXE` overrides remain authoritative.
 
 Use the repository CLI instead of the Tkinter UI. Keep the OA resource assistance `paper_skill.py` workflow separate; this skill is specifically for ScienceDirect institutional access on the user's local machine.
 

@@ -313,7 +313,8 @@ class SkillPackagingTests(unittest.TestCase):
                 text = (PROJECT_ROOT / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
                 self.assertIn("supplement_download_report.csv", text)
                 self.assertIn("supplements\\", text)
-                self.assertIn("--no-download-supplements", text)
+                if skill_name == "sciencedirect-doi-download":
+                    self.assertIn("--no-download-supplements", text)
 
     def test_sciencedirect_reference_files_exist_and_are_linked(self) -> None:
         references_dir = PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "references"
@@ -356,7 +357,10 @@ class SkillPackagingTests(unittest.TestCase):
         for path in beginner_docs:
             with self.subTest(path=path.relative_to(PROJECT_ROOT)):
                 text = path.read_text(encoding="utf-8")
-                self.assertIn("--beginner --preflight", text)
+                if path == PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md":
+                    self.assertIn("paper_batch.py start", text)
+                else:
+                    self.assertIn("--beginner --preflight", text)
                 for phrase in blocked_first_pass_phrases:
                     self.assertNotIn(phrase, text)
 

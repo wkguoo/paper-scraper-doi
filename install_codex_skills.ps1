@@ -66,6 +66,7 @@ if (-not $RepositoryRoot) {
 $repo = Resolve-RepositoryRoot -Path $RepositoryRoot
 $targetRoot = Resolve-CodexSkillsRoot -ExplicitRoot $SkillsRoot
 $sourceRoot = Join-Path $repo "skills"
+$skillNames = @("paper-download")
 $sourceRootFull = Resolve-FullPath $sourceRoot
 $targetRootFull = Resolve-FullPath $targetRoot
 
@@ -80,14 +81,15 @@ if (-not $DryRun) {
     New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
 }
 
-Get-ChildItem -LiteralPath $sourceRoot -Directory | ForEach-Object {
-    $destination = Join-Path $targetRoot $_.Name
-    Write-Host "Install skill: $($_.Name) -> $destination"
+foreach ($skillName in $skillNames) {
+    $source = Join-Path $sourceRoot $skillName
+    $destination = Join-Path $targetRoot $skillName
+    Write-Host "Install skill: $skillName -> $destination"
     if (-not $DryRun) {
         if (Test-Path -LiteralPath $destination) {
             Remove-Item -LiteralPath $destination -Recurse -Force
         }
-        Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
+        Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
     }
 }
 

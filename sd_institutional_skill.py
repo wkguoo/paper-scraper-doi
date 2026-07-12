@@ -442,7 +442,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--browser-exe",
-        help="Browser executable path for institutional login/download (defaults to Chrome)",
+        help="Browser executable path for institutional login/download (defaults to Edge, then Chrome)",
     )
     return parser
 

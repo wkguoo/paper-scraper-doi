@@ -492,7 +492,7 @@ class ScienceDirectScraper:
     def default_download_next_steps() -> str:
         return (
             "Open pdf_download_report.csv and run_summary.json to inspect exact failures.\n"
-        "If institutional access failed, sign in through the Chrome debug window and retry the DOI batch.\n"
+        "If institutional access failed, sign in through the selected external browser debug window and retry the DOI batch.\n"
             "If ScienceDirect remains inaccessible, try publisher OA pages, author/lab pages, or Unpaywall."
         )
 
@@ -2843,7 +2843,7 @@ def build_parser():
                         help="自动从本机 Chrome 读取 cookie")
     parser.add_argument("--cookies",       help="Cookie JSON 文件路径")
     parser.add_argument("--browser-exe",
-                        help="Browser executable path for institutional login/download (defaults to Chrome)")
+                        help="Browser executable path for institutional login/download (defaults to Edge, then Chrome)")
     parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
                         help="在保存文献列表后，继续下载对应 PDF")

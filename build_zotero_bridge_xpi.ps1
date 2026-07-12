@@ -206,7 +206,12 @@ try {
         }
     }
 
-    Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $temporaryZip -CompressionLevel Optimal
+    # Use the Windows tar ZIP writer instead of the PowerShell archive cmdlet. Zotero reads
+    # XPI entries through its JAR loader, which is stricter about ZIP metadata.
+    & tar -a -c -f $temporaryZip -C $staging manifest.json bootstrap.js content locale
+    if ($LASTEXITCODE -ne 0) {
+        throw "tar could not create the temporary XPI archive."
+    }
     Move-Item -LiteralPath $temporaryZip -Destination $temporaryXpi
 
     $archiveEntries = @(& tar -tf $temporaryXpi)

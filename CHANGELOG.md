@@ -1393,3 +1393,153 @@
 - 清理前补充保护：从综合 worktree 合入 Windows PowerShell 5.1 不支持 `System.IO.Path.GetRelativePath` 的兼容修复，并增加静态回归断言；将 beginner CLI worktree 中未跟踪的 Task 6 报告保存为 `.superpowers/sdd/task-6-report.md`，避免清理 worktree 时丢失记录。
 - 补充检查方法：运行 `\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge_packaging -v`；测试不得在仓库中留下 `.xpi`。本次没有执行构建脚本，也没有自动打包。
 - 最终清理结果：已移除 `.worktrees/codex-task6-beginner-cli`、`.worktrees/codex-zotero-paper-download`、`.worktrees/codex-zotero9-plugin-only`，并删除对应三个本地分支；保留 `main` 与 `origin/main`，未删除远程分支，未推送。
+## 2026-07-12 00:16:19 +08:00 — 生成 Zotero 9 测试 XPI并启动测试配置
+
+- 修改日期和时间：2026-07-12 00:16:19 +08:00。
+- 本次任务目标：在用户明确批准后生成自研 Zotero 9 桥接插件测试 XPI，并仅针对独立 `Zotero test` 配置开始安装验收，不触碰主 Zotero 配置。
+- 新增、修改或删除的文件：生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.0.xpi`；追加本 `CHANGELOG.md`；未删除或覆盖源码、原始数据、PDF、Cookie 或 Zotero 主配置文件。
+- 具体修改内容：使用 `build_zotero_bridge_xpi.ps1` 的白名单构建流程生成 XPI；校验压缩包只含 `manifest.json`、`bootstrap.js`、`content/bridge-core.js`、`content/bridge-runtime.js` 和 `locale/zh-CN/bridge.ftl`；启动独立 `Zotero test` 实例并将 XPI 路径交给 Zotero。Zotero 未自动完成命令行安装，当前仍等待用户在“工具 → 插件”界面确认，未直接复制文件到 profile 绕过官方安装流程。
+- 修改原因：真实 Zotero 9 加载验收必须先在隔离测试配置中进行；通过官方插件界面安装可以保留兼容性检查和用户确认，避免误装到主配置。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.0.xpi`，大小 22,788 字节，SHA-256 为 `756DC268536478A168D7C263F8EB0AEAC8A28BC7E8CA6B252B6BC7EB4EBE0F40`。
+- 如何检查是否成功：运行 `tar -tf .\dist\zotero-test\zotero-paper-download-bridge-0.1.0.xpi` 应只列出上述 5 个运行文件；当前 `Zotero test` 的扩展目录仍只有 `autoclass@example.com.xpi`，因此安装尚未完成，不能报告为已加载。
+- 注意事项或潜在风险：XPI 中的插件拥有 Zotero 插件权限，只能先安装到独立测试配置。主 Zotero 实例未关闭，主配置未修改；真实文库写入、可用 PDF、机构授权、重启恢复和撤销仍未开始验收。下一步需要用户在测试 Zotero 的插件界面确认安装，然后再检查扩展清单和运行日志。
+## 2026-07-12 00:21:35 +08:00 — 修复 Zotero 9 测试 XPI兼容性清单
+
+- 修改日期和时间：2026-07-12 00:21:35 +08:00。
+- 本次任务目标：诊断 `0.1.0` 测试 XPI被 Zotero 9.0.6 报告为“不兼容”的原因，补齐清单元数据并生成不覆盖旧证据的 `0.1.1` 修复包。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/manifest.json`、`package.json`、`README.md`、`tests/plugin-structure.test.cjs` 和本 `CHANGELOG.md`；生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.1.xpi`；未删除旧 `0.1.0`，因为它仍被 Zotero 安装错误窗口占用。
+- 具体修改内容：确认实际 Zotero 为 9.0.6，版本范围 `9.0`–`9.0.*` 与 XPI 根目录结构均正确；对比测试配置 AutoClass 和主配置已加载插件后，发现所有可安装清单均含 `applications.zotero.update_url`，而 `0.1.0` 缺少该字段。先新增结构测试并确认旧清单失败，再添加安全占位地址 `https://example.invalid/zotero-paper-download-bridge/updates.json`，同步把 manifest/package 版本升至 `0.1.1`，并将 README 输出名改为按清单版本生成。
+- 修改原因：Zotero 插件安装器对清单错误使用通用“不兼容”提示；补齐与官方示例及本机已加载插件一致的更新地址字段，避免清单在安装兼容性阶段被拒绝。占位域名 `.invalid` 不指向真实服务，不携带凭据或用户信息。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.1.xpi`，大小 22,831 字节，SHA-256 为 `7E7F71A8D6C624DEA49F5D5A5618F3DBA7E5F79C6EAAA999283222175BF760B6`；旧 `0.1.0` 保留为被拒绝证据。
+- 如何运行：在独立 `Zotero test` 配置中打开“工具 → 插件 → 从文件安装插件”，只选择 `0.1.1` XPI。离线验证命令为 `node --test .\zotero_bridge_plugin\tests\*.test.cjs`。
+- 如何检查是否成功：61 项插件测试应全部通过且 `fail` 为 0；`tar -xOf <0.1.1.xpi> manifest.json` 应显示版本 `0.1.1` 和上述 `update_url`；Zotero test 安装后应在插件列表出现 `Paper Download Bridge 0.1.1`，且测试配置 `extensions.json` 出现插件 ID `paper-download-bridge@wkguoo.local`。
+- 注意事项或潜在风险：当前仅完成修复包生成，仍等待用户在 Zotero test 界面确认安装，尚不能声称真实加载成功。打包测试 13 项中 10 项构建契约通过，3 项因本次用户明确要求后仓库 `dist` 内存在测试 XPI而按其“仓库不得存在 XPI”断言失败，并非构建逻辑回归。主配置、主文库、Cookie、原始 PDF均未修改；真实队列、可用 PDF、重启恢复和撤销仍待后续隔离验收。
+## 2026-07-12 00:24:23 +08:00 — Zotero test 安装状态验证通过
+
+- 修改日期和时间：2026-07-12 00:24:23 +08:00。
+- 本次任务目标：验证用户通过 Zotero 官方插件界面安装的 `Paper Download Bridge 0.1.1` 是否仅进入独立 `Zotero test` 配置并处于可加载状态。
+- 新增、修改或删除的文件：仅追加本 `CHANGELOG.md`；Zotero 在测试配置扩展目录中新增 `paper-download-bridge@wkguoo.local.xpi`，未修改项目源码、主 Zotero 配置、原始数据或 PDF。
+- 具体修改内容：读取测试配置 `extensions.json`，确认插件 ID 为 `paper-download-bridge@wkguoo.local`、版本 `0.1.1`、`active=true`、`userDisabled=false`、`appDisabled=false`、`softDisabled=false`、`seen=true`；校验安装副本大小与 SHA-256 均和项目生成包完全一致；检查 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1` 尚未创建，说明空闲启动没有生成任务或结果。
+- 修改原因：仅看到安装成功提示不足以证明安装到了正确 profile、未被兼容性禁用或安装文件未被替换，因此需要用扩展清单和哈希做可复核验证。
+- 生成的输出文件：测试配置新增 `extensions\paper-download-bridge@wkguoo.local.xpi`，大小 22,831 字节，SHA-256 为 `7E7F71A8D6C624DEA49F5D5A5618F3DBA7E5F79C6EAAA999283222175BF760B6`；项目侧没有新增桥接作业、结果 CSV 或 PDF。
+- 如何运行：在 `Zotero test` 窗口打开“工具 → 文献下载桥接”，只点击“查看最近状态”完成无副作用 UI验收；当前不要点击“撤销最近批次新增”，也不要向主配置重复安装。
+- 如何检查是否成功：测试配置插件列表应显示 `Paper Download Bridge 0.1.1` 且已启用；工具菜单应出现“文献下载桥接”及“立即检查任务”“查看最近状态”“撤销最近批次新增”三个子项；点击“查看最近状态”应显示当前没有活动批次或等价空闲状态。
+- 注意事项或潜在风险：扩展清单证明安装与启用成功，但还不能证明 `bootstrap.js` 菜单注册和真实 Zotero API动作全部成功；仍需一次菜单可视确认，之后才进入测试文库的队列、已有 PDF、缺失 PDF、取消、重启恢复和撤销验收。主配置和主文库未修改。
+## 2026-07-12 00:28:15 +08:00 — 修复 Zotero 热安装后工具菜单缺失
+
+- 修改日期和时间：2026-07-12 00:28:15 +08:00。
+- 本次任务目标：修复 `Paper Download Bridge 0.1.1` 已在 Zotero test 中启用但“工具”菜单不存在的问题，并生成可升级安装的 `0.1.2` 测试包。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/bootstrap.js`、`manifest.json`、`package.json`、`README.md`、`tests/plugin-structure.test.cjs` 和本 `CHANGELOG.md`；生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.2.xpi`；未修改主 Zotero 配置、原始数据或 PDF。
+- 具体修改内容：确认 `startup()` 只加载核心/运行时但未处理安装时已经打开的主窗口，导致 `onMainWindowLoad()` 不会为该窗口补注册菜单。先新增回归断言并确认旧实现失败，再在 `startup()` 中等待 `Zotero.initializationPromise`，启动运行时后遍历 `Zotero.getMainWindows()` 调用 `addMenu(window)`；保留 `onMainWindowLoad()` 处理以后新开的窗口；版本同步升至 `0.1.2`。
+- 修改原因：Zotero 将插件标记为 active 只证明扩展已启用，不代表插件 UI 已附加到现有窗口；热安装必须主动处理当前窗口，不能只依赖未来窗口回调。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.2.xpi`，大小 22,872 字节，SHA-256 为 `01E24BBDE2116D27DA0FC090BBD28883D720EE4BE17BB35E903AC30B3052D1B7`。
+- 如何运行：在 `Zotero test` 的“工具 → 插件 → 从文件安装插件”中选择 `0.1.2` XPI并确认升级；安装后重新打开“工具”菜单查看“文献下载桥接”。离线验证命令为 `node --test .\zotero_bridge_plugin\tests\*.test.cjs` 和 `node --check .\zotero_bridge_plugin\bootstrap.js`。
+- 如何检查是否成功：61 项插件测试和语法检查均通过；升级后测试配置应显示版本 `0.1.2`、active 且未禁用；当前已打开的窗口应立即出现“文献下载桥接”菜单，不要求先关闭 Zotero。
+- 注意事项或潜在风险：当前只完成修复包生成，仍等待用户通过官方插件界面升级，尚未验证真实窗口菜单。不要将 `0.1.2` 安装到主配置；显示菜单后先只运行“查看最近状态”，再进行任何会写入测试文库的队列验收。
+## 2026-07-12 00:36:33 +08:00 — 加固 Zotero 运行时全局对象与启动失败可见性
+
+- 修改日期和时间：2026-07-12 00:36:33 +08:00。
+- 本次任务目标：继续诊断 `0.1.2` 重启后仍无“文献下载桥接”菜单的问题，消除 Zotero 9 全局对象能力误判，并确保运行时失败时菜单和安全错误码仍可见。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/bootstrap.js`、`content/bridge-runtime.js`、`manifest.json`、`package.json`、`README.md`、`tests/plugin-structure.test.cjs` 和本 `CHANGELOG.md`；生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.3.xpi`；新增运行调试输出目录 `output/zotero-test-debug/`。
+- 具体修改内容：确认 `0.1.2` 已安装 active，但运行时在创建桥接目录前静默中止；对比已加载 AutoClass 后发现 Zotero 9 提供 `IOUtils/PathUtils` 全局标识符，但运行时旧代码强制检查 `globalThis.IOUtils/PathUtils/Services`。`bootstrap.js` 现显式映射三个对象到 `globalThis`，先为现有窗口注册菜单，再加载核心/运行时；启动异常使用 `Zotero.logError()` 记录并保留菜单，菜单命令在运行时不可用时只显示安全码 `bridge_runtime_startup_failed`；生产结果版本同步升至 `0.1.3`。
+- 修改原因：扩展 active 不代表运行时初始化成功；错误的全局属性检查可能在 Zotero 真实作用域中产生假阴性，而菜单后注册又会让错误完全不可见。双重保护可同时修复预期根因并为剩余真实 API差异提供可观察反馈。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.3.xpi`，大小 23,137 字节，SHA-256 为 `4CE16B46E626D9125D36AE87DB64D58438C426F7EE1931305160A1CA5C11387A`；`output/zotero-test-debug/stdout.log` 和 `stderr.log` 仅记录 Zotero test 启动日志，目前只有无关显卡/本地化警告。
+- 如何运行：在当前 `Zotero test` 的“工具 → 插件 → 从文件安装插件”中选择 `0.1.3` XPI并确认升级；升级后查看“工具 → 文献下载桥接”。离线验证命令为插件 61 项 Node测试、JavaScript 语法检查，以及 `tests.test_zotero_bridge`/`tests.test_zotero_bridge_integration` 58 项 Python测试。
+- 如何检查是否成功：61 项插件测试、58 项项目桥接测试和语法检查均通过；升级后菜单必须出现。若运行时正常，“查看最近状态”应报告没有待处理任务；若仍有真实 API问题，菜单仍应出现并显示 `bridge_runtime_startup_failed`，同时 Zotero 错误日志留下异常。
+- 注意事项或潜在风险：当前仍等待用户升级安装 `0.1.3`，不能提前声称真实运行时已成功。只在独立 `Zotero test` 验收，不向主配置安装；不要点击撤销或提交真实文献批次，直到“查看最近状态”通过。
+
+## 2026-07-12 00:45:45 +08:00 — 改用 Zotero 9 同步启动与窗口注入
+
+- 修改日期和时间：2026-07-12 00:45:45 +08:00。
+- 本次任务目标：修复 `Paper Download Bridge 0.1.3` 在 `Zotero test` 中显示已启用但“工具”菜单仍不出现的问题，并生成可升级安装的 `0.1.4` 测试包；本轮仍只做插件，不连接主项目、不提交文献任务。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/bootstrap.js`、`content/bridge-runtime.js`、`manifest.json`、`package.json`、`README.md`、`tests/plugin-structure.test.cjs` 和本 `CHANGELOG.md`；新增 `zotero_bridge_plugin/tests/bootstrap-lifecycle.test.cjs`；生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.4.xpi`。未修改正式 Zotero 配置、主文库、原始数据、Cookie 或 PDF。
+- 具体修改内容：确认测试配置中的 `0.1.3` 为 `active=true`，但调试日志没有插件错误且桥接根目录未创建；对比本机可工作的 Zotero 插件生命周期后，定位旧入口使用 `async startup()` 并等待 `Zotero.initializationPromise`，Zotero 9 的 bootstrap 加载器不会按该方式等待，代码可能停在首次菜单注册之前。现将入口改为同步 `startup(data, reason)`，立即通过 `Services.wm.getEnumerator(null)` 查找 `chrome://zotero/content/zoteroPane.xhtml` 主窗口并插入菜单，再以 Promise 后台启动运行时；`onMainWindowLoad/Unload` 改为 Zotero 9 的 `data.window` 调用形式；为菜单增加固定 ID、重复注册保护，以及 `bridge_runtime_starting`/`bridge_runtime_startup_failed` 两种可观察状态；生产版本同步升至 `0.1.4`。
+- 修改原因：插件清单 active 只表示扩展被允许加载，不能证明 Zotero 已等待异步 bootstrap 钩子。菜单属于同步 UI 注册，必须在 `startup()` 返回前完成；运行时文件 I/O可继续异步执行，不能阻塞菜单可见性。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.4.xpi`，大小 23,548 字节，SHA-256 为 `39E588F50CD2693E26C8D3155997E65F8FFB9E2A806CCF71A7D5E1D430F3DED4`；包内仅含 `manifest.json`、`bootstrap.js`、两个 `content/*.js` 和 `locale/zh-CN/bridge.ftl`。
+- 如何运行：在独立 `Zotero test` 中打开“工具 → 插件 → 齿轮 → 从文件安装插件”，选择上述 `0.1.4` XPI并确认升级。离线验证可运行 `node --test .\zotero_bridge_plugin\tests\*.test.cjs`，以及 `.\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge tests.test_zotero_bridge_integration -v`；本机 PowerShell 禁止执行 `npm.ps1`，因此使用等价的 `node --test` 命令。
+- 如何检查是否成功：插件端 62 项 Node测试、主项目桥接端 58 项 Python测试和三个 JavaScript 文件语法检查均通过；新增回归测试证明即使运行时 Promise一直未完成，菜单也会同步出现。真实验收时插件列表应显示 `0.1.4`，随后“工具”菜单应立即出现“文献下载桥接”；菜单出现而运行时尚未完成时会显示 `bridge_runtime_starting`，真实启动错误则显示 `bridge_runtime_startup_failed`。
+- 注意事项或潜在风险：当前只完成修复、测试与打包，尚未由用户在真实 `Zotero test` 窗口安装 `0.1.4`，因此不能提前宣称可视菜单验收通过。只升级测试配置，不安装到正式配置；菜单出现后先只点“查看最近状态”，不要点“撤销最近批次新增”，也不要创建真实桥接任务。
+
+## 2026-07-12 01:00:47 +08:00 — 按 Zotero 9 官方插件接口修复入口与工具菜单
+
+- 修改日期和时间：2026-07-12 01:00:47 +08:00。
+- 本次任务目标：继续修复 `Paper Download Bridge 0.1.4` 在独立 `Zotero test` 中已安装、`active=true` 但仍无工具菜单的问题；查阅 Zotero 官方插件开发说明和官方示例，以实际 Zotero 9 加载器源码为准重写入口和菜单注册，生成 `0.1.5` 测试包。本轮仍不连接主项目、不提交文献任务。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/bootstrap.js`、`content/bridge-runtime.js`、`locale/zh-CN/bridge.ftl`、`manifest.json`、`package.json`、`README.md`、`tests/bootstrap-lifecycle.test.cjs`、`tests/plugin-structure.test.cjs` 和本 `CHANGELOG.md`；生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.5.xpi`。未修改正式 Zotero 配置、主文库、原始数据、Cookie 或 PDF。
+- 具体修改内容：核验测试配置中的 `0.1.4` 确为 active 且未禁用；查阅 Zotero 官方《Zotero 7 for Developers》《Zotero 8 for Developers》和官方 `zotero/make-it-red` 示例；进一步只读检查本机 Zotero 9.0.6 的 `app/omni.ja` 官方插件加载器，确认插件沙箱已经直接注入 `Services`、`IOUtils`、`PathUtils`，而平台 `omni.ja` 中不存在旧路径 `resource://gre/modules/Services.sys.mjs`。旧 `bootstrap.js` 在第一条手动导入语句即抛错，生命周期函数因而从未注册，这与 active、无菜单、无插件调试输出完全吻合。修复版移除全部手动 `Services` 导入和旧 DOM 菜单注入，改用官方 `Zotero.MenuManager.registerMenu()`、目标 `main/menubar/tools`；生命周期签名改为官方示例形式；当前和未来主窗口通过 `MozXULElement.insertFTLIfNeeded("bridge.ftl")` 加载本地化；菜单 Fluent 条目改用官方要求的 `.label` 属性；保留启动中与启动失败安全码，并增加 `Zotero.debug` 启动/就绪日志。版本同步升至 `0.1.5`。
+- 修改原因：Zotero 8/9 基于更新的 Firefox 平台，官方明确要求移除手动 Services 导入；继续导入已不存在的模块会让整个 bootstrap 在函数声明前终止。Zotero 8 起已经提供受支持的菜单 API，应使用 MenuManager而不是依赖旧 XUL DOM节点 ID。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.5.xpi`，大小 23,320 字节，SHA-256 为 `E866198EAE3BB7688985606F2AFB66FBD1B7E8F5EAB62E7E4D850753F0FAD469`；包内仍仅含 `manifest.json`、`bootstrap.js`、两个 `content/*.js` 和 `locale/zh-CN/bridge.ftl`。包内入口复核确认包含 `Zotero.MenuManager.registerMenu` 和 `main/menubar/tools`，不再包含 `Services.sys.mjs` 或 `ChromeUtils.importESModule`。
+- 如何运行：只在独立 `Zotero test` 中打开“工具 → 插件 → 齿轮 → 从文件安装插件”，选择上述 `0.1.5` XPI并确认升级。离线验证命令为 `node --test .\zotero_bridge_plugin\tests\*.test.cjs`，以及 `.\.venv\Scripts\python.exe -m unittest tests.test_zotero_bridge tests.test_zotero_bridge_integration -v`。官方参考为 `https://www.zotero.org/support/dev/zotero_8_for_developers`、`https://www.zotero.org/support/dev/zotero_7_for_developers` 和 `https://github.com/zotero/make-it-red/tree/main/src-2.0`。
+- 如何检查是否成功：插件端 63 项 Node测试、主项目桥接端 58 项 Python测试、三个 JavaScript 语法检查和 `git diff --check` 均通过；真实升级后插件列表应显示 `0.1.5`，工具菜单应出现“文献下载桥接”。运行调试模式时还应出现 `Paper Download Bridge: Starting 0.1.5`，运行时完成后出现 `Paper Download Bridge: Ready 0.1.5`；随后只点击“查看最近状态”检查空闲状态。
+- 注意事项或潜在风险：当前只完成官方规范核对、代码修复、离线测试与打包，尚未在真实 Zotero test 窗口安装 `0.1.5`，因此不能提前宣称 UI验收通过。只升级测试配置，不安装到正式配置；菜单出现后先不要点击“立即检查任务”或“撤销最近批次新增”，也不要创建真实桥接队列。
+
+## 2026-07-12 11:19:00 +08:00 — 修复 MenuManager 空白标签并暴露运行时错误码
+
+- 修改日期和时间：2026-07-12 11:19:00 +08:00。
+- 本次任务目标：处理用户反馈的 `0.1.5` 已出现工具菜单但菜单文字为空的问题，并继续定位运行时未创建桥接目录的真实错误；本轮仍只在独立 `Zotero test` 中验证，不连接主项目、不写入文献库。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/bootstrap.js`、`content/bridge-runtime.js`、`manifest.json`、`package.json`、`README.md`、`tests/bootstrap-lifecycle.test.cjs` 和本 `CHANGELOG.md`；生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.6.xpi`。未修改正式 Zotero 配置、主文库、原始数据、Cookie 或 PDF。
+- 具体修改内容：根据用户截图确认空白带箭头行就是 MenuManager 注册成功但本地化标签未显示；读取本机 Zotero 9 官方 `menuManager.js`，确认 `onShowing` 上下文提供 `menuElem`、`setEnabled`、`setVisible` 等官方操作。保留标准 `l10nID` 和 Fluent 文件，同时为顶层子菜单及三个菜单项增加 `onShowing` 标签回退，直接设置官方 `context.menuElem` 的 `label`，避免现有窗口本地化源未及时刷新时出现空白。记录运行时启动错误码到 `bridgeRuntimeError`，错误菜单提示现在会显示 `bridge_runtime_startup_failed:<具体错误码>`；版本同步升至 `0.1.6`。
+- 修改原因：`0.1.5` 的空白截图表明 MenuManager 已执行，问题已经从“插件未加载”缩小为“动态本地化未落到现有窗口”。同时此前检查发现桥接根目录仍未创建，必须把真实运行时异常从泛化提示中暴露出来，才能继续修复而不猜测。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.6.xpi`，大小 23,669 字节，SHA-256 为 `DB9BDFBF2F5D6E4E4902C2C39FF0BCF13322CDFB6A8BCD2D4776C40036FCD8D5`；包清单版本为 `0.1.6`，仍只包含白名单入口、核心、运行时和中文 Fluent 文件。
+- 如何运行：在独立 `Zotero test` 中打开“工具 → 插件 → 齿轮 → 从文件安装插件”，选择上述 `0.1.6` XPI并确认升级。安装后重新打开“工具”菜单，空白项应显示“文献下载桥接”；展开后应显示“立即检查任务”“查看最近状态”“撤销最近批次新增”。如果运行时仍失败，点击“查看最近状态”会显示具体错误码。
+- 如何检查是否成功：63 项插件 Node测试、58 项主项目桥接 Python测试、三个 JavaScript 语法检查均通过；定向回归测试验证 MenuManager 的 `onShowing` 会写入顶层和子菜单标签。升级后还应检查 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1` 是否创建；若未创建，请把菜单弹出的完整错误码反馈回来。
+- 注意事项或潜在风险：当前只完成代码修复、测试与打包，尚未由用户安装 `0.1.6`；不能提前声称运行时已成功。只升级 `Zotero test`，不要安装到正式配置，也不要点击“立即检查任务”或“撤销最近批次新增”。
+
+## 2026-07-12 11:28:31 +08:00 — 修复 XPI 内部脚本加载方式
+
+- 修改日期和时间：2026-07-12 11:28:31 +08:00。
+- 本次任务目标：根据用户提供的 `0.1.6` 错误截图继续修复插件运行时启动失败；错误码为 `Error_opening_input_stream_invalid_filename_jar_file_...Profiles_elpj7iql...`，目标是让 Zotero 9 正确加载 XPI 内的 `content` 脚本。
+- 新增、修改或删除的文件：修改 `zotero_bridge_plugin/bootstrap.js`、`manifest.json`、`package.json`、`content/bridge-runtime.js`、`README.md`、`tests/bootstrap-lifecycle.test.cjs`、`tests/plugin-structure.test.cjs` 和本 `CHANGELOG.md`；生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.7.xpi`。未修改正式 Zotero 配置、主文库、原始数据、Cookie 或 PDF。
+- 具体修改内容：将 `Services.scriptloader.loadSubScript()` 改为 Zotero 9 官方插件加载器实际使用的 `loadSubScriptWithOptions(uri, { target: globalThis, charset: "UTF-8", ignoreCache: true })`；新增回归断言检查 XPI 脚本加载选项和插件沙箱目标；保留可见启动错误码和 `bridge_runtime_startup_failed:<具体错误码>` 提示；版本同步升至 `0.1.7`。
+- 修改原因：用户截图明确显示 `loadSubScript()` 解析 `jar:file:///...xpi!/` 资源时抛出 `invalid_filename_jar_file`。本机 Zotero 9 的官方 `plugins.js` 也使用 `loadSubScriptWithOptions()` 加载插件 bootstrap 及资源，改为同一调用方式可避免简化接口对 XPI JAR URL 的解析差异。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.7.xpi`，大小 23,723 字节，SHA-256 为 `594E5C903748E1CDDE220511A8EE7C94F0DA6492F6AAE2E3778215A437A42472`；包内入口已确认包含 `loadSubScriptWithOptions` 和 `target: globalThis`，不包含失效的 `Services.sys.mjs` 导入。
+- 如何运行：在独立 `Zotero test` 中打开“工具 → 插件 → 齿轮 → 从文件安装插件”，选择上述 `0.1.7` XPI并确认升级。升级后打开“工具 → 文献下载桥接”，先点击“查看最近状态”；如果启动仍失败，把提示中的完整错误码反馈回来。
+- 如何检查是否成功：63 项插件 Node测试、58 项主项目桥接 Python测试、三个 JavaScript 语法检查均通过；成功时 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1` 应被创建，且不再出现 `invalid_filename_jar_file`。
+- 注意事项或潜在风险：当前只完成代码修复、测试与打包，尚未由用户安装 `0.1.7`；不能提前声称真实运行时已成功。只升级 `Zotero test`，不要安装到正式配置，也不要创建或撤销真实桥接任务。
+
+## 2026-07-12 11:59:23 +08:00 — 改用标准 ZIP 生成 XPI
+
+- 修改日期和时间：2026-07-12 11:59:23 +08:00。
+- 本次任务目标：继续修复 `invalid_filename_jar_file` 启动失败；排查发现代码入口已进入但读取 XPI 内部资源失败，进一步验证 XPI 归档格式兼容性，并生成标准 ZIP 格式的测试包。
+- 新增、修改或删除的文件：修改 `build_zotero_bridge_xpi.ps1`、`tests/test_zotero_bridge_packaging.py`、`manifest.json`、`package.json`、`content/bridge-runtime.js`、`README.md` 和本 `CHANGELOG.md`；生成被 Git 忽略的 `dist/zotero-test/zotero-paper-download-bridge-0.1.8.xpi`。未修改正式 Zotero 配置、主文库、原始数据、Cookie 或 PDF。
+- 具体修改内容：将构建器的 PowerShell 压缩步骤改为 Windows 自带 `tar -a -c -f` 标准 ZIP 写入，保留源目录白名单、禁止重解析点、禁止覆盖、临时文件和归档内容校验；静态打包测试同步检查新命令并禁止回退到旧压缩器；版本同步升至 `0.1.8`。对照包包含显式 `content/`、`locale/` 目录条目，符合标准 XPI/ZIP 结构。
+- 修改原因：Zotero 官方论坛对同类 `Error opening input stream (invalid filename?): jar:file:///...xpi` 的解释是 XPI 文件损坏或不兼容；官方开发指南的打包示例使用标准 `zip -r`。当前旧构建器使用 PowerShell 压缩器，虽然普通 ZIP 工具可以读取，Gecko JAR 资源读取可能更严格，因此改用标准 ZIP 写入器。
+- 生成的输出文件：`dist/zotero-test/zotero-paper-download-bridge-0.1.8.xpi`，大小 24,537 字节，SHA-256 为 `7490459C69885F10E446AC06A6F53267BF021C5E5A7762E24BAD6A48BB6015D6`；归档包含根目录 `manifest.json`、`bootstrap.js`，以及带目录条目的 `content/` 和 `locale/`。
+- 如何运行：在独立 `Zotero test` 中打开“工具 → 插件 → 齿轮 → 从文件安装插件”，选择上述 `0.1.8` XPI并确认升级；如 Zotero 提示重启，重启测试配置后再查看菜单。随后点击“查看最近状态”，成功时应不再出现 `invalid_filename_jar_file`，并创建 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。
+- 如何检查是否成功：63 项插件 Node测试、58 项主项目桥接 Python测试、3 项打包器静态测试、三个 JavaScript 语法检查和 `git diff --check` 均通过；XPI 可由 tar 列出并显示标准目录条目。真实验收仍需用户安装 `0.1.8`，这是当前唯一未完成的外部验证项。
+- 注意事项或潜在风险：当前不能仅凭离线 ZIP 检查声称 Gecko 已接受该包；只升级 `Zotero test`，不要安装到正式配置，也不要创建或撤销真实桥接任务。若 `0.1.8` 仍失败，请提供完整错误码，以区分归档兼容性问题和 Zotero API 问题。
+
+## 2026-07-12 12:36:38 +08:00 — 使用 RECOMMENDED_MISSING_PAPERS.md 完成全量下载测试
+
+- 修改日期和时间：2026-07-12 12:36:38 +08:00。
+- 本次任务目标：以 `D:\桌面\文献下载\RECOMMENDED_MISSING_PAPERS.md` 为输入，对清单中可唯一识别的 8 篇文献进行合法下载测试；不修改原始 Markdown，不覆盖原始文献库 PDF。
+- 新增、修改或删除的文件：新增 `results/recommended_missing_download_test/all_identified_papers.txt`、`results/recommended_missing_download_test/sciencedirect_papers.txt`；生成 `results/recommended_missing_download_test/legal_oa/`、`results/recommended_missing_download_test/sciencedirect/all_identified/` 下的下载结果和报告；追加本条 `CHANGELOG.md`。未修改 `D:\桌面\文献下载\RECOMMENDED_MISSING_PAPERS.md`。
+- 具体修改内容：先对原始 Markdown 做预览，发现整份说明文档会产生大量非文献 `needs_review` 行；随后按清单中的正式条目补全 Shen 2023、Jaladurgam 2021/2022 DOI，建立干净 DOI 清单。3 篇公开合法 OA 文献通过 `paper_skill.py` 下载；4 篇 Elsevier 文献通过 `sd_institutional_skill.py` 和机构访问下载；Science 2020 论文的正式 PDF 入口返回 HTTP 403，按规则保留失败记录。
+- 修改原因：避免把 Markdown 标题、操作说明和主题标签误当成论文，同时确保用户要求的“提到的文献都尝试下载”覆盖所有可唯一识别条目。
+- 生成的输出文件：共 7 个可读 PDF；合法 OA 报告为 `legal_oa/metadata/manifest.csv`、`manifest.json`，ScienceDirect 报告为 `sciencedirect/all_identified/pdf_download_report.csv`、`run_summary.txt`、`run_summary.json`；预览和失败报告也保存在对应输出目录。机构访问产生的 `_auth/sciencedirect_cookies.json` 属本地凭证缓存，不得提交或分享。
+- 如何运行：在项目根目录执行 `\.venv\Scripts\python.exe paper_skill.py --input results\recommended_missing_download_test\all_identified_papers.txt --out results\recommended_missing_download_test\legal_oa`；执行 `\.venv\Scripts\python.exe sd_institutional_skill.py --input results\recommended_missing_download_test\sciencedirect_papers.txt --out results\recommended_missing_download_test\sciencedirect --run-name all_identified --no-download-supplements`。
+- 如何检查是否成功：ScienceDirect 报告显示 4/4 成功、0 失败；合法 OA 清单显示 3 篇下载、4 篇无合法 OA PDF，其中 Science 论文另记录为 HTTP 403；7 个 PDF 均以 `%PDF-` 开头并包含 `%%EOF` 文件结束标记，文件大小均大于 1 MB。
+- 注意事项或潜在风险：本次结果保存于项目 `results/`，没有自动复制回 `F:\1_Nb_HEA\05_references\01_pdfs\`；Science 论文仍需通过用户有权使用的机构入口或出版社可用会话补下载。不要把 `_auth` 目录、Cookie、PDF 或个人机构会话提交到 GitHub。
+
+## 2026-07-12 12:57:45 +08:00 — 收敛为唯一统一下载入口
+
+- 修改日期和时间：2026-07-12 12:57:45 +08:00。
+- 本次任务目标：只保留 `paper-download` / `paper_batch.py` 作为用户可见的统一文献下载入口，使公开 OA、机构访问、一次人工重试和 Zotero 回退进入同一批次状态流程。
+- 新增、修改或删除的文件：修改 `README.md`、`README_zh.md`、`skills/paper-download/SKILL.md`、`skills/sciencedirect-doi-download/SKILL.md`、`skills/legal-oa-paper-download/SKILL.md`、`docs/sciencedirect_skill_beginner_guide.md`、`install_codex_skills.ps1`、`tests/test_skills_packaging.py` 和本 `CHANGELOG.md`；未删除 `paper_skill.py` 或 `sd_institutional_skill.py`，因为它们仍作为统一流程的内部适配器使用。
+- 具体修改内容：README 和统一 Skill 不再把 OA/ScienceDirect 独立命令列为用户流程；安装脚本只安装 `paper-download`；两个旧 Skill 标记为内部兼容参考；旧 GUI/CLI 保留但明确不属于推荐入口；同步调整 Skill 打包测试以验证新的单一入口约束。
+- 修改原因：此前直接运行 `paper_skill.py` 或 `sd_institutional_skill.py` 会绕过统一批次状态和 `zotero_fallback.csv`，导致失败文献不会自动进入 Zotero 回退。统一入口可保留同一批次的失败、重试、桥接和最终报告。
+- 生成的输出文件：本次没有生成 PDF 或下载结果；仅更新项目文档、安装脚本、Skill 说明和测试约束。旧的 `C:\Users\wkguopro\.codex\skills\sciencedirect-doi-download` 与 `legal-oa-paper-download` 用户目录副本未删除，等待明确确认后再处理。
+- 如何运行：执行 `\.venv\Scripts\python.exe paper_batch.py start --input "文献清单" --out "results"`；安装 Skill 前可运行 `powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1 -DryRun`，预期只显示 `paper-download`。
+- 如何检查是否成功：`paper_batch.py --help` 显示 `start`、`resume`、`zotero`、`finalize`；`tests.test_skills_packaging` 共 23 项通过；安装脚本 dry-run 只显示 `paper-download` 且不修改文件或环境变量；`git diff --check` 和 Python 语法检查通过。
+- 注意事项或潜在风险：不要直接运行底层脚本，否则失败项不会进入统一 Zotero 回退队列。删除用户目录中已有旧 Skill 属外部文件删除操作，当前未执行；项目仓库中的底层脚本也未删除，以保持统一流程可运行。
+
+## 2026-07-12 13:15:20 +08:00 — 外部浏览器改为 Edge 优先
+
+- 修改日期和时间：2026-07-12 13:15:20 +08:00。
+- 本次任务目标：保留 Codex 内置浏览器作为登录/验证首选；仅当内置浏览器不可用或本地项目无法使用其会话时启动外部浏览器，并将 Windows 外部浏览器默认顺序改为用户显式指定 → Edge Stable → Edge Beta/Dev/Canary → Chrome/Chromium → Playwright Chromium。
+- 新增、修改或删除的文件：修改 `windows_paths.py`、`paper_batch.py`、`sd_institutional_skill.py`、`sd_scraper.py`、`tests/test_windows_paths.py`、`README.md`、`README_zh.md`、`skills/paper-download/SKILL.md`、`skills/sciencedirect-doi-download/SKILL.md`、`docs/sciencedirect_skill_beginner_guide.md` 和本 `CHANGELOG.md`；未删除文件，未打包项目。
+- 具体修改内容：加入 Edge Stable、Beta、Dev、SxS 标准安装路径，并确保所有 Edge 通道整体排在 Chrome 之前；保留 `PAPER_SCRAPER_BROWSER_EXE`、`--browser-exe`、`chrome_bin()` 兼容别名和 Edge/Chrome profile 自动匹配；统一入口、Skill、ScienceDirect 文档和帮助文本明确内置浏览器优先及 Edge 外部回退顺序；显式指定 Chrome 时仍使用 Chrome。现有状态日志继续记录实际浏览器名称、可执行文件、profile 和调试端口。
+- 修改原因：使外部调试会话符合“Edge 优先”的项目要求，同时不接管或扩大 Codex/本机浏览器 Cookie 自动读取范围，也不输出 Cookie 值。
+- 生成的输出文件：本次没有生成 PDF、Cookie、浏览器 profile 或打包文件；仅修改源码、测试和说明文档。工作区中 `dist/zotero-test` 的 9 个旧 `.xpi` 为此前 Zotero 任务留下的被 Git 忽略产物，未擅自删除。
+- 如何运行：`\.venv\Scripts\python.exe paper_batch.py start --help`；需要显式浏览器时传入 `--browser-exe "C:\\Path\\to\\chrome.exe"`，或设置 `$env:PAPER_SCRAPER_BROWSER_EXE`。未指定时由 `windows_paths.py` 按上述顺序解析。
+- 如何检查是否成功：`py_compile windows_paths.py paper_automation\\institutional\\browser_session.py sd_institutional_skill.py` 通过；定向测试 `tests.test_windows_paths tests.test_institutional_browser tests.test_batch_workflow` 共 156 项通过、2 项因 Windows 符号链接权限跳过；`git diff --check` 通过；统一入口和两个 ScienceDirect CLI 的帮助文本均显示 Edge→Chrome。完整测试集共 367 项，其中 362 项通过、2 项跳过、3 项因既有 `dist/zotero-test/*.xpi` 违反现有“仓库不应有 XPI”测试约束而失败，非本次 Edge 改动引起。
+- 注意事项或潜在风险：显式浏览器参数始终覆盖自动选择；外部浏览器 profile 和机构会话属于本机凭据状态，不应提交或分享。若要使完整测试集恢复全绿，需要先由用户确认后清理/隔离上述旧 XPI 产物；本次未执行删除操作。

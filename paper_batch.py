@@ -161,7 +161,11 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--run-name", help="可选的批次名称")
     start.add_argument("--email", default="", help="用于合法 OA 查询的邮箱（可选）")
     start.add_argument("--cookies", default="", help="授权访问 Cookie 的 JSON 文件路径（可选）")
-    start.add_argument("--browser-exe", default="", help="浏览器可执行文件路径（可选）")
+    start.add_argument(
+        "--browser-exe",
+        default="",
+        help="显式指定外部浏览器路径（未指定时默认 Edge，然后 Chrome）",
+    )
     start.add_argument("--login-wait-seconds", type=int, default=0, help="登录等待秒数")
     start.add_argument("--debug-port", type=int, default=9333, help="浏览器调试端口")
     start.add_argument("--throttle-seconds", type=float, default=1.0, help="请求间隔秒数")

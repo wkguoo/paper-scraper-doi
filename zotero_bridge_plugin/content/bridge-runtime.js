@@ -74,7 +74,7 @@
   };
 
   const zotero = {
-    pluginVersion: "0.1.0",
+    pluginVersion: "0.1.8",
     version: String(Zotero.version || "9.0"),
     async getLibraryName(libraryID) {
       const library = Zotero.Libraries.get(libraryID);
@@ -1428,7 +1428,7 @@
       schema_version: 1,
       job_id: request.job_id,
       payload_sha256: request.payload_sha256,
-      plugin_version: String(zotero?.pluginVersion || "0.1.0"),
+      plugin_version: String(zotero?.pluginVersion || "0.1.8"),
       zotero_version: String(zotero?.version || "9.0"),
       started_at: startedAt,
       finished_at: finishedAt,

@@ -1,5 +1,9 @@
 # ScienceDirect Skill 新手使用说明
 
+> 兼容参考文档：当前项目只保留 `paper-download` / `paper_batch.py` 作为用户入口。本文件用于解释底层 ScienceDirect 适配器，不应作为独立下载流程使用。
+
+登录或验证时先尝试 Codex 内置浏览器；如果内置浏览器不可用，外部浏览器默认按 Edge Stable → Edge Beta/Dev/Canary → Chrome/Chromium 选择。显式 `--browser-exe` 或 `PAPER_SCRAPER_BROWSER_EXE` 始终优先。
+
 这份说明写给第一次使用本工具的学生或课题组成员。目标是：把网页 AI、ChatGPT、Google Scholar 记录或老师给的一段论文推荐文本，交给 Codex 自动识别 DOI 和题名，再通过学校或机构的 ScienceDirect 权限下载 PDF，并生成可检查的报告。
 
 ## 1. 这个工具能做什么

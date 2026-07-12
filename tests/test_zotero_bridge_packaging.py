@@ -210,7 +210,8 @@ try {
     def test_builder_validates_archive_root_entries_and_moves_atomically(self) -> None:
         text = self.builder_text()
         for required in (
-            "Compress-Archive",
+            "tar -a -c -f",
+            "tar could not create the temporary XPI archive",
             "tar -tf",
             "$RequiredRootEntries",
             '"manifest.json"',
@@ -221,6 +222,7 @@ try {
             "noOverwrite",
         ):
             self.assertIn(required, text)
+        self.assertNotIn("Compress-Archive", text)
 
     def test_force_replaces_an_existing_xpi_without_delete_then_move_gap(self) -> None:
         text = self.builder_text()

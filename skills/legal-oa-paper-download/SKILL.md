@@ -1,9 +1,13 @@
 ---
 name: legal-oa-paper-download
-description: Resolve messy copied paper lists, DOI/title text, AI-recommended literature, or local text/Markdown files into metadata and provide PDF download assistance. Use when the user asks Codex to find or download papers without institutional cookies or ScienceDirect login. Failed downloads automatically fall back to third-party data sources.
+description: Internal PDF download assistance adapter and legacy third-party candidate resolver used by the unified paper-download workflow. Do not invoke this skill as a standalone user entry; use paper-download for literature lists without institutional cookies or ScienceDirect login, with unresolved rows reported instead of hidden.
 ---
 
 # OA Resource Assistance Paper Download
+
+> Internal compatibility reference. New user requests must use the unified
+> `paper-download` workflow and `paper_batch.py`; do not invoke this skill as a
+> standalone entry.
 
 Use `paper_skill.py` for paper identification and PDF download assistance. Keep this separate from `sciencedirect-doi-download`; this workflow does not use institutional cookies, browser profile state, or ScienceDirect login. Failed downloads automatically fall back to third-party data sources.
 

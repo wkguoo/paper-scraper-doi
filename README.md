@@ -8,9 +8,9 @@
 ![Tests](https://github.com/wkguoo/paper-scraper-doi/actions/workflows/tests.yml/badge.svg)
 ![Release](https://img.shields.io/github/v/release/wkguoo/paper-scraper-doi?display_name=tag)
 
-Windows-friendly DOI organizer and authorized paper access helper with OA PDF discovery and Codex Skills.
+Windows-friendly unified DOI batch workflow with authorized access, OA discovery, and Zotero fallback.
 
-This project helps researchers turn DOI tables, copied bibliography text, and AI-recommended paper lists into reviewable reports. It provides a Windows Tkinter UI, command-line workflows, and optional Codex Skills for ScienceDirect access PDF saving and PDF candidate discovery.
+This project helps researchers turn DOI tables, copied bibliography text, and AI-recommended paper lists into reviewable reports through one user-facing batch workflow. The lower-level OA and publisher adapters remain internal implementation modules.
 
 ## What It Does
 
@@ -38,11 +38,11 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Check the command-line entry points:
+Check the unified command-line entry point:
 
 ```powershell
-.\.venv\Scripts\python.exe sd_scraper.py --help
-.\.venv\Scripts\python.exe paper_skill.py --help
+.\.venv\Scripts\python.exe paper_batch.py --help
+.\.venv\Scripts\python.exe paper_batch.py start --help
 ```
 
 Open the Windows UI:
@@ -58,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1 -DryRun
 powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1
 ```
 
-The dry run only shows the target skill path and planned changes. The install command copies `paper-download`, `sciencedirect-doi-download`, and `legal-oa-paper-download` into the Codex skills directory and sets `PAPER_SCRAPER_DOI_ROOT`.
+The dry run only shows the target skill path and planned changes. The install command copies only `paper-download` into the Codex skills directory and sets `PAPER_SCRAPER_DOI_ROOT`.
 
 ## Common Workflows
 
@@ -77,30 +77,15 @@ Save results to D:\Literature\ScienceDirect.
 
 Preflight only performs local intake, deduplication, and review hints. It does not download PDFs, parse ScienceDirect PII values, or create supplementary material folders. Check `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, `run_summary.txt`, and `00_给研究生查看\` before running a real download.
 
-### ScienceDirect Authorized-Access Workflow
+### Single User-Facing Batch Workflow
 
-Use this workflow only for papers you can already access through your institution or personal subscription:
-
-```powershell
-.\.venv\Scripts\python.exe sd_scraper.py -m doi_batch --input "papers.csv" --doi-column "doi" --cookies "cookies.json" --download-pdfs
-```
-
-To skip supplementary material downloads:
+Use `paper_batch.py` for every literature list. It performs OA discovery,
+authorized publisher access, one permitted manual retry, and Zotero fallback
+for remaining failures:
 
 ```powershell
-.\.venv\Scripts\python.exe sd_scraper.py -m doi_batch --input "papers.csv" --doi-column "doi" --cookies "cookies.json" --download-pdfs --no-download-supplements
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
 ```
-
-### OA PDF Candidate Discovery
-
-Use this workflow for mixed publisher lists when you only want to search public metadata and downloadable candidates:
-
-```powershell
-.\.venv\Scripts\python.exe paper_skill.py --input "papers.txt" --out "D:\Literature\OA" --email "you@example.com" --dry-run
-.\.venv\Scripts\python.exe paper_skill.py --input "papers.txt" --out "D:\Literature\OA" --email "you@example.com"
-```
-
-This workflow does not read `cookies.json` and does not use institutional login state.
 
 ### Unified Batch With Zotero Fallback
 
@@ -128,6 +113,12 @@ moving Zotero attachments or overwriting existing files. See the
 remains approval-gated: test only in a Zotero test profile first and do not
 install it in the main profile yet.
 
+For institutional login or verification, try the Codex in-app browser first.
+If it is unavailable or cannot provide a usable session to the local project,
+the external browser fallback prefers Edge Stable, then Edge Beta/Dev/Canary,
+then Chrome/Chromium. An explicit `--browser-exe` or
+`PAPER_SCRAPER_BROWSER_EXE` override always wins.
+
 ## Outputs
 
 ScienceDirect batch runs create a timestamped result folder containing reports such as:
@@ -144,7 +135,7 @@ ScienceDirect batch runs create a timestamped result folder containing reports s
 - `pdfs\`
 - `supplements\`
 
-OA PDF candidate discovery writes metadata and download status into `metadata\manifest.csv`, `metadata\manifest.json`, `failed\`, `logs\`, and `pdfs\` when files are downloaded.
+The unified batch writes normalized input, stage reports, fallback files, final manifests, and PDFs under one timestamped run directory.
 
 ## Security Notes
 

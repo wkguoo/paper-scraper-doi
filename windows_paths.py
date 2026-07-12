@@ -38,7 +38,12 @@ def _windows_chrome_profile_candidates(base: str | None) -> list[Path]:
 
 
 def browser_candidate_paths() -> list[str]:
-    """Return Chrome/Chromium executable candidates in preference order."""
+    """Return external browser executable candidates in preference order.
+
+    On Windows, Edge is preferred for external login/debug sessions because
+    the Codex in-app browser is not directly shareable with the local Python
+    downloader. An explicit environment override remains the first choice.
+    """
     candidates: list[Path] = []
     override = os.environ.get(BROWSER_EXE_ENV)
     if override:
@@ -50,9 +55,33 @@ def browser_candidate_paths() -> list[str]:
             os.environ.get("PROGRAMFILES(X86)"),
             os.environ.get("LOCALAPPDATA"),
         )
+        edge_relative_paths = (
+            Path("Microsoft") / "Edge" / "Application" / "msedge.exe",
+            Path("Microsoft") / "Edge Beta" / "Application" / "msedge.exe",
+            Path("Microsoft") / "Edge Dev" / "Application" / "msedge.exe",
+            Path("Microsoft") / "Edge SxS" / "Application" / "msedge.exe",
+        )
+        chrome_relative_paths = (
+            Path("Google") / "Chrome" / "Application" / "chrome.exe",
+        )
+
+        # Keep all Edge channels ahead of every Chrome candidate, regardless
+        # of whether the installation is in Program Files or LocalAppData.
+        for relative in edge_relative_paths:
+            for base in windows_bases:
+                if base:
+                    candidates.append(Path(base) / relative)
         for base in windows_bases:
             if base:
-                candidates.append(Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe")
+                candidates.extend(Path(base) / relative for relative in chrome_relative_paths)
+
+        for name in ("msedge.exe", "msedge", "chrome.exe", "chrome", "chromium.exe", "chromium"):
+            found = shutil.which(name)
+            if found:
+                candidates.append(Path(found))
+
+        # Playwright Chromium is the last Windows fallback, after installed
+        # Edge/Chrome executables and PATH-resolved browser binaries.
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata:
             playwright_root = Path(local_appdata) / "ms-playwright"
@@ -62,10 +91,6 @@ def browser_candidate_paths() -> list[str]:
                     reverse=True,
                 )
             )
-        for name in ("chrome.exe", "chrome"):
-            found = shutil.which(name)
-            if found:
-                candidates.append(Path(found))
     elif sys.platform == "darwin":
         candidates.append(Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
     else:
@@ -86,7 +111,7 @@ def browser_candidate_paths() -> list[str]:
 
 
 def browser_bin(browser_exe: str | None = None) -> str:
-    """Return a likely Chrome/Chromium executable path."""
+    """Return a likely Edge/Chrome external browser executable path."""
     override = browser_exe or os.environ.get(BROWSER_EXE_ENV)
     if override:
         return str(Path(override).expanduser())
@@ -100,7 +125,7 @@ def browser_bin(browser_exe: str | None = None) -> str:
 
 
 def chrome_bin() -> str:
-    """Return a likely Chrome/Chromium executable path."""
+    """Compatibility alias for the Edge-first external browser resolver."""
     return browser_bin()
 
 

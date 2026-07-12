@@ -1,12 +1,13 @@
 {
   "manifest_version": 2,
   "name": "Paper Download Bridge",
-  "version": "0.1.0",
+  "version": "0.1.8",
   "description": "One-confirmation local bridge between paper-scraper-doi and Zotero 9.",
   "author": "wkguoo",
   "applications": {
     "zotero": {
       "id": "paper-download-bridge@wkguoo.local",
+      "update_url": "https://example.invalid/zotero-paper-download-bridge/updates.json",
       "strict_min_version": "9.0",
       "strict_max_version": "9.0.*"
     }

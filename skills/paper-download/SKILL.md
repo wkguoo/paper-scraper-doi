@@ -43,6 +43,13 @@ Use `.venv\Scripts\python.exe` when present. For bridge fallback, keep Zotero 9
 open with the local “文献下载桥接” plugin enabled. Never expose cookies, passwords,
 or session data, and never automate a CAPTCHA.
 
+For login or verification, try the Codex in-app browser first when it is
+available. If the in-app browser cannot be called or cannot provide a session
+usable by the local project, let the external browser fallback run. On Windows
+the fallback order is Edge Stable, Edge Beta/Dev/Canary, Chrome, then
+Playwright Chromium. An explicit `--browser-exe` or
+`PAPER_SCRAPER_BROWSER_EXE` override always takes precedence.
+
 ## CSV reading contract
 
 Read `manual_retry.csv` and `zotero_fallback.csv` with Python `csv` semantics,
@@ -176,15 +183,20 @@ results\paper_batch_YYYYMMDD_HHMMSS\
     └── zotero_results_retry_YYYYMMDD_HHMMSS.csv
 ```
 
-## Direct routes without an existing run-dir
+## Single user-facing route
 
-Use this section only when the user did not supply an existing batch run
-directory. For a ScienceDirect/Elsevier request that does not need the unified batch, use
-`sd_institutional_skill.py`. For noisy beginner lists, start with
-`--beginner --preflight`. Formal runs may write `supplement_download_report.csv`
-and `supplements\`; use `--no-download-supplements` only when the user declines
-supplementary files. For clearly legal open-access assistance without institutional
-access, use `paper_skill.py` and report unresolved rows honestly.
+Always start a new literature task with `paper_batch.py start`. Do not expose
+or select `paper_skill.py` or `sd_institutional_skill.py` as standalone user
+routes. They are internal adapters used by the unified batch implementation;
+direct execution would bypass the shared state, failure classification, and
+Zotero fallback queue.
+
+The unified batch may still write separate OA, ScienceDirect, and institutional
+stage reports internally. Those are implementation details, not separate user
+workflows.
+
+The unified run may also produce `supplement_download_report.csv` and a
+`supplements\` directory when supplementary-material retrieval is enabled.
 
 ## Safety
 

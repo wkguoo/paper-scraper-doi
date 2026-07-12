@@ -29,7 +29,7 @@ powershell -ExecutionPolicy Bypass -File .\build_zotero_bridge_xpi.ps1 -OutputDi
 
 输入：`manifest.json`、`bootstrap.js`、`content/`、`locale/` 四项白名单源码。
 
-输出：`dist\zotero-paper-download-bridge-0.1.0.xpi`。脚本不会包含 `tests/`、`package.json`、日志、桥接队列、Cookie 或环境文件；拒绝输出路径链或插件源码树中的 junction/symlink；不会调用现有 Windows UI 打包脚本；不会自动安装到 Zotero。目标已存在时默认停止，只有显式添加 `-Force` 才允许替换。
+输出：按清单版本命名的 XPI，例如 `dist\zotero-paper-download-bridge-0.1.8.xpi`。脚本不会包含 `tests/`、`package.json`、日志、桥接队列、Cookie 或环境文件；拒绝输出路径链或插件源码树中的 junction/symlink；不会调用现有 Windows UI 打包脚本；不会自动安装到 Zotero。目标已存在时默认停止，只有显式添加 `-Force` 才允许替换。
 
 成功标准：命令显示 `Validated Zotero XPI created`，且压缩包根目录含 `manifest.json` 和 `bootstrap.js`。建议先安装到独立 Zotero 测试配置，不要直接使用主文库。
 
