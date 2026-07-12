@@ -4345,9 +4345,17 @@ class BatchCliTests(unittest.TestCase):
         self.assertFalse(options.skip_manual_retry)
         output = stdout.getvalue()
         for label in (
-            "运行目录：", "最终 PDF 目录：", "总计：5", "成功：2", "失败：3",
-            "待人工重试：1", "待 Zotero 回退：2", "人工重试清单：",
-            "Zotero 回退清单：", "报告目录：",
+            "运行目录：",
+            "下载清单：",
+            "结果文件夹：",
+            "总计：5",
+            "成功：2",
+            "失败：3",
+            "待人工重试：1",
+            "待 Zotero 回退：2",
+            "（内部）PDF 缓存：",
+            "（内部）报告：",
+            "（内部）Zotero 回退：",
         ):
             self.assertIn(label, output)
         script = (PROJECT_ROOT / "paper_batch.py").resolve()
@@ -4617,7 +4625,7 @@ class BatchCliTests(unittest.TestCase):
         self.assertIn("报告已更新", output)
         self.assertIn("批次未完成且可恢复", output)
         self.assertIn("未解决数量：3", output)
-        self.assertIn(f"最终 PDF 目录：{root / 'pdfs'}", output)
+        self.assertIn(f"结果文件夹：{root / '结果'}", output)
         self.assertNotIn("'resume' '--run-dir'", output)
 
     def test_finalize_without_unresolved_rows_prints_completion(self) -> None:

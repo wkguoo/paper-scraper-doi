@@ -58,12 +58,12 @@
 
 ## 桥接目标：当前打开的 Zotero
 
-桥接**不固定** `Zotero test`，也不看 `profiles.ini` 里谁是 Default。
+桥接**不固定**测试配置，也不看 `profiles.ini` 里谁是 Default。
 
 - 插件在轮询时写入 `active-instance.json` 与 `consumer-lease.json`：**谁打开、谁持有租约，任务就进谁的数据目录**。
 - 打开主库（例如数据在 `D:\zeterofiles`）→ 进主库；打开测试配置（例如 `D:\Zotero-Test-Data`）→ 进测试库。
 - 请只保留你要用的那个 Zotero；两个都开且都装了插件时，后开的会提示另一实例正在消费队列。
 - 你实际用的配置里需要已安装「文献下载桥接」插件（主配置与测试配置可各装一份）。
-- 隔离验收仍可用 `Zotero test`；日常请打开正式文库对应的 Zotero。
+- 隔离验收仍可用 `Zotero test`（Zotero test profile）；日常请打开正式文库对应的 Zotero。
 
 详细人工验收项见 [MANUAL_QA.md](../MANUAL_QA.md)。

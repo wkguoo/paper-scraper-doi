@@ -474,7 +474,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     result = bridge_result
                     _print_summary(result)
                     if result.failed_count == 0 and result.zotero_fallback_count == 0:
-                        print(f"批次已完成。最终 PDF 目录：{result.paths.pdfs}")
+                        print(
+                            f"批次已完成。结果文件夹："
+                            f"{Path(result.paths.root) / USER_DELIVERY_DIR_NAME}"
+                        )
                     else:
                         print("报告已更新。批次未完成且可恢复。")
                         print(f"未解决数量：{max(result.failed_count, result.zotero_fallback_count)}")
@@ -551,8 +554,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _print_summary(result)
         if args.command in {"finalize", "zotero"}:
+            delivery = Path(result.paths.root) / USER_DELIVERY_DIR_NAME
             if result.failed_count == 0 and result.zotero_fallback_count == 0:
-                print(f"批次已完成。最终 PDF 目录：{result.paths.pdfs}")
+                print(f"批次已完成。结果文件夹：{delivery}")
             else:
                 unresolved_count = max(
                     result.failed_count,
@@ -560,7 +564,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 print("报告已更新。批次未完成且可恢复。")
                 print(f"未解决数量：{unresolved_count}")
-                print(f"最终 PDF 目录：{result.paths.pdfs}")
+                print(f"结果文件夹：{delivery}")
         else:
             _print_next_step(result)
     except (ValueError, OSError, RuntimeError) as error:

@@ -129,8 +129,9 @@ class SkillPackagingTests(unittest.TestCase):
             "pdfs\\",
             "reports\\",
             "do not overwrite",
-            "Zotero test profile",
-            "do not install to the main profile yet",
+            # Bridge targets the currently open Zotero; isolation QA may still use test profile.
+            "当前打开",
+            "Zotero test",
         )
         for path in paths:
             with self.subTest(path=path.relative_to(PROJECT_ROOT)):
