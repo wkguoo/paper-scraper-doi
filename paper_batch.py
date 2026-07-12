@@ -280,9 +280,9 @@ def _finalize_command(
     return _powershell_command(
         "finalize",
         "--run-dir",
-        Path(result.paths.root).expanduser().resolve(),
+        Path(result.paths.root).expanduser(),
         "--zotero-results",
-        Path(results_path).expanduser().resolve(),
+        Path(results_path).expanduser(),
     )
 
 
@@ -351,7 +351,7 @@ def _print_summary(result: BatchRunResult) -> None:
 
 
 def _print_zotero_next_step(result: BatchRunResult, *, queued: bool = False) -> None:
-    run_dir = Path(result.paths.root).expanduser().resolve()
+    run_dir = Path(result.paths.root).expanduser()
     if queued:
         print("已自动将失败项排队到 Zotero 本地桥接。")
         print(
@@ -379,7 +379,7 @@ def _print_next_step(result: BatchRunResult) -> None:
         print(_powershell_command(
             "resume",
             "--run-dir",
-            Path(result.paths.root).expanduser().resolve(),
+            Path(result.paths.root).expanduser(),
         ))
         return
     if result.zotero_fallback_count > 0:
@@ -422,7 +422,7 @@ def _handle_bridge_run(bridge_run, *, rerun_command: str = "zotero") -> tuple[Ba
         print(f"桥接任务：{len(bridge_run.bridge.jobs)} 个子作业")
         print("请在 Zotero 中确认一次；确认后重新运行同一条命令即可继续。")
         if bridge_run.bridge.jobs:
-            run_dir = Path(bridge_run.bridge.jobs[0].run_dir).expanduser().resolve()
+            run_dir = Path(bridge_run.bridge.jobs[0].run_dir).expanduser()
             print(f"批次目录：{run_dir}")
             print(_powershell_command(rerun_command, "--run-dir", run_dir))
         return None, 3

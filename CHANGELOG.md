@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 2026-07-12 22:36:37 +08:00
+
+- 本次任务目标：修复 GitHub Actions Windows runner `windows-tests` 中由短路径/长路径差异和相对 PDF symlink 检查顺序导致的 5 个失败用例。
+- 新增、修改或删除的文件：
+  - 修改 `paper_automation/batch_workflow.py`
+  - 修改 `paper_automation/batch_stages.py`
+  - 修改 `paper_batch.py`
+  - 修改 `CHANGELOG.md`
+- 具体修改内容：
+  - PDF 复制内部继续使用规范路径，但返回调用者传入的路径写法，避免 `RUNNER~1` 与 `runneradmin` 在跨进程测试中被误判为不同文件。
+  - 相对 PDF 路径在 `resolve()` 前先检查最终路径是否为 symlink。
+  - CLI 恢复、Zotero 和 finalize 命令保留用户传入的 `--run-dir` 路径写法。
+- 修改原因：Windows runner 会在临时目录中混用 8.3 短路径和长路径；路径字符串不同但文件实际相同。先 resolve 再检查 symlink 还会隐藏相对链接的安全信号。
+- 生成的输出文件：未生成 PDF、下载结果、原始数据或 Windows UI 打包产物；测试仅在系统临时目录生成临时文件。
+- 如何检查是否成功：5 个失败用例定向测试通过；`compileall` 通过；完整测试为 `Ran 386 tests ... OK (skipped=2)`；`git diff --check` 通过。
+- 注意事项或潜在风险：未修改原始实验/文献数据，未修改 Git 历史，未自动打包；提交后仍需在 GitHub Actions 重新运行 `windows-tests` 确认远端 runner 结果。
+
 ## 2026-06-21 20:41:21
 
 - 本次任务目标：修复所有文件输入中的 DOI 识别、去重和误补 DOI 问题。

@@ -448,10 +448,15 @@ def _resolve_report_pdf(file: str, pdf_base_dir: Path) -> Path | None:
         except OSError:
             return None
     try:
-        base_dir = pdf_base_dir.expanduser().resolve()
-        candidate = base_dir / path
-        if candidate.is_symlink():
+        # Check the reported relative entry before resolving the base path.
+        # Windows can spell the same temp directory as a long path or an 8.3
+        # alias; resolving first can hide the final symlink from this guard.
+        base_input = pdf_base_dir.expanduser()
+        candidate_input = base_input / path
+        if candidate_input.is_symlink():
             return None
+        base_dir = base_input.resolve()
+        candidate = base_dir / path
         resolved = candidate.resolve()
         resolved.relative_to(base_dir)
     except (OSError, ValueError):

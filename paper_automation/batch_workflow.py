@@ -520,19 +520,27 @@ def copy_pdf_safely(
     source_path = Path(source).expanduser().resolve()
     if not source_path.is_file():
         raise ValueError("not_pdf_response")
-    destination = Path(destination_dir).expanduser().resolve()
+    # Keep the caller's absolute spelling for the returned path. Windows may
+    # resolve the same directory as either a long path or an 8.3 short path
+    # (for example RUNNER~1); returning the worker-local spelling makes
+    # otherwise identical paths compare differently across processes.
+    display_destination = Path(destination_dir).expanduser()
+    if not display_destination.is_absolute():
+        display_destination = Path.cwd() / display_destination
+    destination = display_destination.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     with _pdf_publish_lock(destination, timeout=lock_timeout):
         _cleanup_stale_pdf_snapshots(destination)
         snapshot = None
         try:
             snapshot, source_hash = _snapshot_pdf_source(source_path, destination)
-            return _publish_verified_pdf_snapshot(
+            published = _publish_verified_pdf_snapshot(
                 snapshot,
                 destination,
                 safe_filename,
                 source_hash,
             )
+            return display_destination / published.name
         finally:
             if snapshot is not None:
                 snapshot.unlink(missing_ok=True)
