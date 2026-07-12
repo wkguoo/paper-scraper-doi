@@ -8,6 +8,7 @@ from doi_batch_utils import DoiRecord, load_doi_records, write_pdf_bytes_atomic
 from paper_automation.file_manager import make_pdf_filename
 from paper_automation.metadata_resolver import MetadataResolver
 from paper_automation.models import MetadataResult, PaperCandidate
+from paper_automation.pdf_validation import is_pdf_bytes, is_valid_pdf
 
 from .browser_session import DebugBrowserSession
 from .models import InstitutionalPaper, InstitutionalReportRow, InstitutionalWorkflowResult
@@ -144,16 +145,29 @@ def _download_one(
     for candidate in adapter.build_pdf_candidates(paper, landing):
         target_path = pdf_dir / _make_filename(paper)
         if target_path.exists() and not overwrite:
-            return _report_row(
-                paper,
-                adapter=adapter.name,
-                status="pdf_downloaded",
-                file=str(target_path),
-                reason="file_exists",
-                landing_url=landing_url,
-                final_landing_url=landing.final_url,
-                pdf_url=candidate.url,
-            )
+            if is_valid_pdf(target_path):
+                return _report_row(
+                    paper,
+                    adapter=adapter.name,
+                    status="pdf_downloaded",
+                    file=str(target_path),
+                    reason="file_exists",
+                    landing_url=landing_url,
+                    final_landing_url=landing.final_url,
+                    pdf_url=candidate.url,
+                )
+            try:
+                target_path.unlink()
+            except OSError:
+                return _report_row(
+                    paper,
+                    adapter=adapter.name,
+                    status="error",
+                    reason="invalid_existing_pdf",
+                    landing_url=landing_url,
+                    final_landing_url=landing.final_url,
+                    pdf_url=candidate.url,
+                )
         try:
             capture = session.capture_pdf(candidate.url, candidate.fetch_patterns)
         except RuntimeError as exc:
@@ -162,7 +176,7 @@ def _download_one(
         except OSError as exc:
             attempt_notes.append(str(exc))
             continue
-        if capture.pdf_bytes:
+        if capture.pdf_bytes and is_pdf_bytes(capture.pdf_bytes):
             write_pdf_bytes_atomic(target_path, capture.pdf_bytes)
             return _report_row(
                 paper,
@@ -173,7 +187,10 @@ def _download_one(
                 final_landing_url=landing.final_url,
                 pdf_url=capture.pdf_url or candidate.url,
             )
-        attempt_notes.append(capture.note)
+        if capture.pdf_bytes:
+            attempt_notes.append("not_pdf_response")
+        else:
+            attempt_notes.append(capture.note)
     status, reason = adapter.classify_failure(landing, tuple(attempt_notes))
     return _report_row(
         paper,

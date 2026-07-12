@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from paper_automation.pdf_validation import is_pdf_bytes
+
 
 def url_looks_like_pdf(url: str) -> bool:
     lowered = (url or "").lower()
@@ -20,4 +22,4 @@ def content_type_looks_like_pdf(content_type: str) -> bool:
 
 
 def bytes_look_like_pdf(content: bytes) -> bool:
-    return bytes(content[:4]) == b"%PDF"
+    return is_pdf_bytes(content)

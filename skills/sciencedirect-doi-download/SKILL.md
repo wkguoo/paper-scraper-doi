@@ -11,8 +11,8 @@ description: Internal ScienceDirect institutional DOI adapter used by the unifie
 
 The unified workflow should try the Codex in-app browser first. If it is not
 available or cannot provide a usable session, the external browser fallback
-uses Edge first, then Chrome/Chromium; explicit `--browser-exe` and
-`PAPER_SCRAPER_BROWSER_EXE` overrides remain authoritative.
+uses Chrome first, then Edge channels, then Playwright Chromium; explicit
+`--browser-exe` and `PAPER_SCRAPER_BROWSER_EXE` overrides remain authoritative.
 
 Use the repository CLI instead of the Tkinter UI. Keep the OA resource assistance `paper_skill.py` workflow separate; this skill is specifically for ScienceDirect institutional access on the user's local machine.
 
@@ -37,7 +37,7 @@ For student-facing beginner instructions, refer to `docs/sciencedirect_skill_beg
 5. For noisy or beginner input, run `--beginner --preflight` first. Preflight is local intake review only; use `--resolve-title-only --auto-web-search` later only when the user explicitly wants title-only or short citation rows resolved by public metadata search.
 6. Inspect `doi_intake_preview.csv`. Treat `needs_review` rows as unresolved; do not invent DOI values.
 7. For direct download requests with clear DOI rows, run without `--beginner`/`--preflight`.
-8. Let the script manage Edge-first browser login. If institutional access is missing, it opens a debug browser window and polls until the user finishes login. Default browser order on Windows is Edge Stable, Edge Beta, Edge Dev/Canary, Chrome, then Playwright Chromium.
+8. Let the script manage Chrome-first browser login. If institutional access is missing, it opens a debug browser window and polls until the user finishes login. Default browser order on Windows is Google Chrome, Edge Stable/Beta/Dev/Canary, then Playwright Chromium.
 9. When PDF downloading is active, supplementary materials are downloaded by default into `supplements\`; add `--no-download-supplements` only when the user explicitly asks to skip them.
 10. Report preflight outputs separately from formal download outputs. For preflight, report the output directory, recognized/needs-review counts, `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, `run_summary.txt`, `run_summary.json`, and `00_给研究生查看\`. For formal downloads, also report PDF success/failure/skip counts, `pdf_download_report.csv`, `pdfs\`, `library_index.csv`, and `00_给研究生查看\paper_index.csv/xlsx`. Report supplement success/failure/skipped/not-found counts, `supplement_download_report.csv`, and `supplements\` only when PDF download and supplement download are both active.
 

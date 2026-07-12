@@ -24,6 +24,8 @@ class BatchOptions:
     login_wait_seconds: int = 0
     debug_port: int = 9333
     throttle_seconds: float = 1.0
+    # When True (default), auth/captcha failures go straight to zotero_fallback.
+    skip_manual_retry: bool = True
 
 
 @dataclass(frozen=True)

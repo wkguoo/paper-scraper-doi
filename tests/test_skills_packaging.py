@@ -364,6 +364,45 @@ class SkillPackagingTests(unittest.TestCase):
                 for phrase in blocked_first_pass_phrases:
                     self.assertNotIn(phrase, text)
 
+    def test_docs_and_skill_declare_paper_batch_as_default_entry(self) -> None:
+        """P0: product docs must funnel users to paper_batch, not legacy CLIs."""
+
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        readme_zh = (PROJECT_ROOT / "README_zh.md").read_text(encoding="utf-8")
+        ui_readme = (PROJECT_ROOT / "WINDOWS_UI_README.md").read_text(encoding="utf-8")
+        skill = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(encoding="utf-8")
+        agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        ui_source = (PROJECT_ROOT / "paper_scraper_ui.py").read_text(encoding="utf-8")
+
+        for text, path_name in (
+            (readme, "README.md"),
+            (readme_zh, "README_zh.md"),
+            (ui_readme, "WINDOWS_UI_README.md"),
+            (skill, "skills/paper-download/SKILL.md"),
+            (agents, "AGENTS.md"),
+        ):
+            with self.subTest(path=path_name):
+                self.assertIn("paper_batch.py", text)
+                self.assertRegex(
+                    text,
+                    r"(?i)(recommended entry|推荐入口|default product entry|默认入口|User-facing default|single entry point)",
+                )
+
+        self.assertIn("Recommended entry points", readme)
+        self.assertIn("Compatibility / advanced entry points", readme)
+        self.assertIn("推荐入口（新任务只用这些）", readme_zh)
+        self.assertIn("兼容 / 高级入口", readme_zh)
+        self.assertIn("统一批次（推荐）", ui_readme)
+        self.assertIn("DOI 批量下载（兼容）", ui_readme)
+        self.assertIn("Entry map (mandatory)", skill)
+        self.assertIn("User-facing default", agents)
+        self.assertIn('text="统一批次（推荐）"', ui_source)
+        self.assertIn('text="DOI 批量下载（兼容）"', ui_source)
+        self.assertIn('text="OA 资源辅助获取（兼容）"', ui_source)
+
+        # Must not tell users the DOI batch tab is still the default open page.
+        self.assertNotIn("界面默认打开“DOI 批量下载”页", ui_readme)
+
     def test_windows_ui_package_script_rebuilds_clean_package_dir(self) -> None:
         text = self._package_script_text()
 
@@ -380,6 +419,8 @@ class SkillPackagingTests(unittest.TestCase):
         text = self._package_script_text()
 
         expected_snippets = [
+            'call :copy_required "paper_batch.py" "%PACKAGE_DIR%\\"',
+            'call :copy_required "institutional_paper_skill.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "sd_scraper_en.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "student_handoff.py" "%PACKAGE_DIR%\\"',
@@ -391,9 +432,17 @@ class SkillPackagingTests(unittest.TestCase):
             'call :copy_required "MANUAL_QA.md" "%PACKAGE_DIR%\\"',
             'call :copy_required "install_codex_skills.ps1" "%PACKAGE_DIR%\\"',
             'call :copy_required "docs\\sciencedirect_skill_beginner_guide.md" "%PACKAGE_DIR%\\docs\\"',
+            'call :copy_required "docs\\zotero_bridge_beginner_guide.md" "%PACKAGE_DIR%\\docs\\"',
             'call :robocopy_required "paper_automation" "%PACKAGE_DIR%\\paper_automation"',
             'call :robocopy_required "skills" "%PACKAGE_DIR%\\skills"',
+            'call :verify_required "%PACKAGE_DIR%\\paper_batch.py"',
+            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\pdf_validation.py"',
+            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\batch_workflow.py"',
+            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\batch_stages.py"',
+            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\zotero_bridge.py"',
+            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\institutional\\workflow.py"',
             'call :verify_required "%PACKAGE_DIR%\\skills\\sciencedirect-doi-download\\references"',
+            'call :verify_required "%PACKAGE_DIR%\\skills\\paper-download\\SKILL.md"',
             (
                 'call :verify_required "%PACKAGE_DIR%\\skills\\sciencedirect-doi-download'
                 '\\references\\beginner-workflow.md"'
@@ -461,17 +510,18 @@ class BrowserProfileSafetyTests(unittest.TestCase):
         self.assertEqual(copied_files, {
             "Cookies",
             "Cookies-journal",
-            "Preferences",
-            "Secure Preferences",
         })
         self.assertEqual(copied_dirs, set())
         self.assertTrue(copied_files.isdisjoint({
+            "Preferences",
+            "Secure Preferences",
             "History",
             "Visited Links",
             "Web Data",
             "Login Data",
         }))
         self.assertTrue(copied_dirs.isdisjoint({
+            "Extensions",
             "Network",
             "Local Storage",
             "Session Storage",
@@ -479,6 +529,7 @@ class BrowserProfileSafetyTests(unittest.TestCase):
             "SharedStorage",
             "WebStorage",
         }))
+        self.assertIn("--disable-extensions", sd_scraper.BROWSER_DEBUG_EXTRA_ARGS)
 
     def test_english_debug_profile_copy_allowlist_excludes_sensitive_browser_state(self) -> None:
         import sd_scraper_en
@@ -489,17 +540,18 @@ class BrowserProfileSafetyTests(unittest.TestCase):
         self.assertEqual(copied_files, {
             "Cookies",
             "Cookies-journal",
-            "Preferences",
-            "Secure Preferences",
         })
         self.assertEqual(copied_dirs, set())
         self.assertTrue(copied_files.isdisjoint({
+            "Preferences",
+            "Secure Preferences",
             "History",
             "Visited Links",
             "Web Data",
             "Login Data",
         }))
         self.assertTrue(copied_dirs.isdisjoint({
+            "Extensions",
             "Network",
             "Local Storage",
             "Session Storage",
@@ -507,6 +559,7 @@ class BrowserProfileSafetyTests(unittest.TestCase):
             "SharedStorage",
             "WebStorage",
         }))
+        self.assertIn("--disable-extensions", sd_scraper_en.BROWSER_DEBUG_EXTRA_ARGS)
 
     def test_missing_curl_cffi_error_is_delayed_until_network_use(self) -> None:
         import sd_scraper

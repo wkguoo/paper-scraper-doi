@@ -4,15 +4,30 @@
 
 # 论文下载助手：统一批量下载与 Zotero 回退
 
-这是一个面向 Windows 的论文下载辅助工具。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。它可以配合 Codex Skills、图形界面或命令行，把 DOI 表格、AI 推荐文献列表、复制来的论文文本整理成可检查的报告，并下载 PDF。Codex Skill 是可选增强入口；不使用 Codex 时，也可以直接运行图形界面或命令行。
+这是一个面向 Windows 的论文下载辅助工具。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。它可以配合 Codex Skills、图形界面或命令行，把 DOI 表格、AI 推荐文献列表、复制来的论文文本整理成可检查的报告，并下载 PDF。
 
-本项目对用户只保留一条统一流程：
+## 推荐入口（新任务只用这些）
 
 | 使用场景 | 推荐入口 | 说明 |
 | --- | --- | --- |
-| 任意 DOI、题名、Markdown、TXT、CSV 或 Excel 文献清单 | `paper-download` / `paper_batch.py` | 按“公开 OA → 机构访问 → 一次人工重试 → Zotero 回退”统一处理。 |
+| 命令行批量下载 | `paper_batch.py` | 唯一推荐 CLI：`start` →（必要时）`resume` → `zotero` |
+| 图形界面 | `start_paper_scraper_ui.bat` → **统一批次（推荐）** | 同一套 `paper_batch` 流程 |
+| 自然语言 / Codex | `$paper-download` | 安装脚本只安装这一个 skill |
 
-`paper_skill.py` 和 `sd_institutional_skill.py` 仅作为统一流程的内部实现，不再作为用户独立入口。旧版 GUI 和 CLI 仍保留用于兼容，但不属于推荐流程。
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
+```
+
+**不要**把 `paper_skill.py`、`sd_institutional_skill.py`、`sd_scraper.py`、`sd_scraper_en.py` 当作新任务的首选入口；它们不走统一批次状态，失败项也进不了同一份 Zotero 回退清单。
+
+## 兼容 / 高级入口（非默认）
+
+| 入口 | 角色 |
+| --- | --- |
+| UI 的「DOI 批量下载 / 文献检索 / OA 资源辅助获取」 | 旧版专用路径，仅兼容维护 |
+| `sd_scraper.py` / `sd_scraper_en.py` | 旧版 ScienceDirect 中英文 CLI |
+| `sd_institutional_skill.py` / `paper_skill.py` / `institutional_paper_skill.py` | 统一流程内部适配器 |
+| `sciencedirect-doi-download` / `legal-oa-paper-download` skill | 内部说明；默认不安装 |
 
 ## 这个工具能做什么
 
@@ -109,7 +124,7 @@ DOI: 10.1016/j.actamat.2016.08.081
 DOI: 10.1016/j.scriptamat.2023.115000
 ```
 
-第一次运行时，先尝试使用 Codex 内置浏览器完成需要的登录或验证；如果内置浏览器不可用，项目才启动外部浏览器，并按 Edge Stable → Edge Beta/Dev/Canary → Chrome/Chromium 的顺序选择。项目 Python 下载器不能直接接管 Codex 内置浏览器的登录会话；请你自己完成学校、机构、VPN、CARSI 或图书馆登录，不要把账号密码发给 Codex。
+第一次运行时，先尝试使用 Codex 内置浏览器完成需要的登录或验证；如果内置浏览器不可用，项目才启动外部浏览器，并按 Google Chrome → Edge Stable/Beta/Dev/Canary → Playwright Chromium 的顺序选择。项目 Python 下载器不能直接接管 Codex 内置浏览器的登录会话；请你自己完成学校、机构、VPN、CARSI 或图书馆登录，不要把账号密码发给 Codex。
 
 ### 示例 2：混乱 AI 推荐列表先做 preflight
 
@@ -147,35 +162,35 @@ Example title copied from a bibliography
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
-.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
+```
+
+默认路径：合法 OA → 机构访问 → **失败项全部写入 `zotero_fallback.csv`（不再默认走 `resume`）**，且 `start` 结束后**自动排队** Zotero 本地桥接。请保持 Zotero 打开并启用桥接插件。退出码 `3` 表示已排队等待确认；在 Zotero 中接受一次批次确认后，只重跑：
+
+```powershell
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
 ```
 
-`start` 创建批次；只有 `working\manual_retry.csv` 有数据且你完成了项目提示的浏览器操作时，才运行一次 `resume`。只有 `zotero_fallback.csv` 的剩余行进入固定队列 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。若 `zotero` 返回退出码 `3`，保持 Zotero 打开并接受 one confirmation（一次确认）；多个分块仍是 one confirmation per batch。插件完成后只重跑同一条 `paper_batch.py zotero`，项目会自动校验结果并 finalize。
+可选：`start` 加 `--wait-seconds N` 同进程等待；`--no-auto-zotero` 改为稍后手动排队；`--enable-manual-retry` 恢复旧的一次登录/验证码门禁，此时仅当 `manual_retry.csv` 有数据时运行一次：
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
+```
+
+桥接队列固定在 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。多个分块仍是 one confirmation per batch。
 
 输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：最终 PDF 在 `pdfs\`，报告在 `reports\`。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。当前只完成源码和离线测试；先验收 Zotero test profile，do not install to the main profile yet。未经明确批准不生成 XPI。详细步骤见 [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)。
 
-## 兼容入口说明
+## 图形界面（推荐页：统一批次）
 
-如果你不想使用 Codex 或命令行，可以双击：
+双击：
 
 ```text
 start_paper_scraper_ui.bat
 ```
 
-首次启动会自动创建 `.venv` 并安装依赖。该 GUI 和旧版 CLI 仅用于兼容维护；新任务统一使用 `paper_batch.py`，这样失败项才能进入同一份 Zotero 回退清单。
+首次启动会自动创建 `.venv` 并安装依赖。打开后**默认在「统一批次（推荐）」页**；其它页签标明「兼容」，仅在你明确需要旧版 ScienceDirect 专用或 OA 专用流程时使用。
 
-ScienceDirect PDF 下载推荐使用 Cookie Editor 导出的 `cookies.json`。在界面中选择 `Cookie JSON 文件` 后，不需要再勾选“从本机 Chrome 读取 Cookie”。
-
-更详细的 UI 说明见 [WINDOWS_UI_README.md](WINDOWS_UI_README.md)。
-
-## 统一命令行入口
-
-```powershell
-.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
-```
-
-根据命令输出继续执行 `resume` 或 `zotero`。不要直接运行底层 OA 或 ScienceDirect 脚本，否则失败项不会进入统一 Zotero 回退流程。
+机构 PDF 可用 Cookie Editor 导出的 `cookies.json`。更详细说明见 [WINDOWS_UI_README.md](WINDOWS_UI_README.md)。
 
 ## 输入文件怎么准备
 

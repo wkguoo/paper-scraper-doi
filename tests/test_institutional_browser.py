@@ -124,7 +124,11 @@ class InstitutionalAdapterTests(unittest.TestCase):
             AaasAdapter,
             AcsAdapter,
             AipAdapter,
+            IeeeAdapter,
+            IopAdapter,
+            RscAdapter,
             TaylorFrancisAdapter,
+            WileyAdapter,
         )
         from paper_automation.institutional.models import InstitutionalPaper, PageSnapshot
 
@@ -176,6 +180,54 @@ class InstitutionalAdapterTests(unittest.TestCase):
                     landing_url="https://pubs.aip.org/aip/jap/article/93/10/10000/1.1569662",
                 ),
                 "https://pubs.aip.org/aip/jap/article-pdf/doi/10.1063/1.1569662",
+            ),
+            (
+                WileyAdapter(),
+                InstitutionalPaper(
+                    row_number=5,
+                    input_doi="10.1111/j.1234.2020.001",
+                    doi="10.1111/j.1234.2020.001",
+                    title="Wiley paper",
+                    publisher="Wiley",
+                    landing_url="https://onlinelibrary.wiley.com/doi/10.1111/j.1234.2020.001",
+                ),
+                "https://onlinelibrary.wiley.com/doi/pdf/10.1111/j.1234.2020.001",
+            ),
+            (
+                IeeeAdapter(),
+                InstitutionalPaper(
+                    row_number=6,
+                    input_doi="10.1109/TPAMI.2020.1234567",
+                    doi="10.1109/TPAMI.2020.1234567",
+                    title="IEEE paper",
+                    publisher="IEEE",
+                    landing_url="https://ieeexplore.ieee.org/document/9123456",
+                ),
+                "https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=9123456",
+            ),
+            (
+                RscAdapter(),
+                InstitutionalPaper(
+                    row_number=7,
+                    input_doi="10.1039/d0cc01234a",
+                    doi="10.1039/d0cc01234a",
+                    title="RSC paper",
+                    publisher="Royal Society of Chemistry",
+                    landing_url="https://pubs.rsc.org/en/content/articlelanding/2020/cc/d0cc01234a",
+                ),
+                "https://pubs.rsc.org/en/content/articlepdf/10.1039/d0cc01234a",
+            ),
+            (
+                IopAdapter(),
+                InstitutionalPaper(
+                    row_number=8,
+                    input_doi="10.1088/1361-6463/ab1234",
+                    doi="10.1088/1361-6463/ab1234",
+                    title="IOP paper",
+                    publisher="IOP Publishing",
+                    landing_url="https://iopscience.iop.org/article/10.1088/1361-6463/ab1234",
+                ),
+                "https://iopscience.iop.org/article/10.1088/1361-6463/ab1234/pdf",
             ),
         ]
 
@@ -250,6 +302,46 @@ class InstitutionalRegistryTests(unittest.TestCase):
                 ),
                 "aip",
             ),
+            (
+                InstitutionalPaper(
+                    row_number=6,
+                    input_doi="10.1111/j.1234.2020.001",
+                    doi="10.1111/j.1234.2020.001",
+                    title="Wiley paper",
+                    publisher="Wiley",
+                ),
+                "wiley",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=7,
+                    input_doi="10.1109/TPAMI.2020.1234567",
+                    doi="10.1109/TPAMI.2020.1234567",
+                    title="IEEE paper",
+                    publisher="IEEE",
+                ),
+                "ieee",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=8,
+                    input_doi="10.1039/d0cc01234a",
+                    doi="10.1039/d0cc01234a",
+                    title="RSC paper",
+                    publisher="Royal Society of Chemistry",
+                ),
+                "rsc",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=9,
+                    input_doi="10.1088/1361-6463/ab1234",
+                    doi="10.1088/1361-6463/ab1234",
+                    title="IOP paper",
+                    publisher="IOP Publishing",
+                ),
+                "iop",
+            ),
         ]
 
         for paper, expected_adapter in cases:
@@ -260,7 +352,7 @@ class InstitutionalRegistryTests(unittest.TestCase):
                 self.assertEqual(adapter.name, expected_adapter)
 
         unknown = InstitutionalPaper(
-            row_number=6,
+            row_number=99,
             input_doi="10.9999/example",
             doi="10.9999/example",
             title="Unknown paper",
@@ -281,8 +373,9 @@ class PdfCheckTests(unittest.TestCase):
         self.assertTrue(url_looks_like_pdf("https://example.org/content/pdf/10.1007/test.pdf"))
         self.assertTrue(url_looks_like_pdf("https://pubs.aip.org/aip/jap/article-pdf/doi/10.1063/1.1569662"))
         self.assertTrue(content_type_looks_like_pdf("application/pdf; charset=binary"))
-        self.assertTrue(bytes_look_like_pdf(b"%PDF-1.7\nbinary"))
+        self.assertTrue(bytes_look_like_pdf(b"%PDF-1.7\nbinary\n%%EOF\n"))
         self.assertFalse(bytes_look_like_pdf(b"HTML"))
+        self.assertFalse(bytes_look_like_pdf(b"%PDF-1.7\nmissing-eof"))
 
 
 class BrowserSessionTests(unittest.TestCase):
@@ -336,6 +429,9 @@ class BrowserSessionTests(unittest.TestCase):
                 session._launch()
 
         popen.assert_called_once()
+        launch_cmd = popen.call_args.args[0]
+        self.assertIn("--disable-extensions", launch_cmd)
+        self.assertIn(f"--user-data-dir={session.debug_profile}", launch_cmd)
 
 
 if __name__ == "__main__":

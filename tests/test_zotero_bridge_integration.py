@@ -102,10 +102,10 @@ class ZoteroBridgeIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project_pdf = root / "project-source.pdf"
-            project_payload = b"%PDF-1.7\nproject integration fixture"
+            project_payload = b"%PDF-1.7\nproject integration fixture\n%%EOF\n"
             project_pdf.write_bytes(project_payload)
             zotero_pdf = root / "zotero-source.pdf"
-            zotero_payload = b"%PDF-1.7\nzotero integration fixture"
+            zotero_payload = b"%PDF-1.7\nzotero integration fixture\n%%EOF\n"
             zotero_pdf.write_bytes(zotero_payload)
             source_bytes = {
                 project_pdf: project_pdf.read_bytes(),

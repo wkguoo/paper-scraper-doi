@@ -398,7 +398,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source.write_bytes(b"%PDF-1.7\nvalid payload")
+            source.write_bytes(b"%PDF-1.7\nvalid payload\n%%EOF\n")
             destination = root / "pdfs"
 
             first = copy_pdf_safely(source, destination, "paper.pdf")
@@ -414,7 +414,7 @@ class BatchFileTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             pdf = Path(tmp) / "paper.pdf"
-            payload = b"%PDF-1.7\nlogic symlink payload"
+            payload = b"%PDF-1.7\nlogic symlink payload\n%%EOF\n"
             pdf.write_bytes(payload)
             expected_hash = hashlib.sha256(payload).hexdigest()
 
@@ -431,7 +431,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            payload = b"%PDF-1.7\nreal symlink payload"
+            payload = b"%PDF-1.7\nreal symlink payload\n%%EOF\n"
             source.write_bytes(payload)
             destination = root / "pdfs"
             destination.mkdir()
@@ -461,7 +461,7 @@ class BatchFileTests(unittest.TestCase):
             self.assertEqual(copied.read_bytes(), payload)
             self.assertTrue(workflow.is_valid_pdf(copied))
 
-            source.write_bytes(b"%PDF-1.7\nsource changed later")
+            source.write_bytes(b"%PDF-1.7\nsource changed later\n%%EOF\n")
             self.assertEqual(copied.read_bytes(), payload)
 
     def test_same_pdf_concurrent_copies_publish_one_complete_target(self) -> None:
@@ -471,7 +471,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source.write_bytes(b"%PDF-1.7\nconcurrent identical payload")
+            source.write_bytes(b"%PDF-1.7\nconcurrent identical payload\n%%EOF\n")
             destination = root / "pdfs"
             publish_reached = context.Event()
             release_publish = context.Event()
@@ -536,7 +536,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            payload = b"%PDF-1.7\nrecoverable payload after termination"
+            payload = b"%PDF-1.7\nrecoverable payload after termination\n%%EOF\n"
             source.write_bytes(payload)
             destination = root / "pdfs"
             publish_reached = context.Event()
@@ -587,7 +587,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source.write_bytes(b"%PDF-1.7\npublish lock timeout payload")
+            source.write_bytes(b"%PDF-1.7\npublish lock timeout payload\n%%EOF\n")
             destination = root / "pdfs"
             publish_reached = context.Event()
             release_publish = context.Event()
@@ -628,7 +628,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source.write_bytes(b"%PDF-1.7\ninvalid timeout payload")
+            source.write_bytes(b"%PDF-1.7\ninvalid timeout payload\n%%EOF\n")
             destination = root / "pdfs"
 
             for index, timeout in enumerate(
@@ -653,7 +653,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source.write_bytes(b"%PDF-1.7\nhard link failure payload")
+            source.write_bytes(b"%PDF-1.7\nhard link failure payload\n%%EOF\n")
             destination = root / "pdfs"
 
             with patch.object(
@@ -673,7 +673,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source.write_bytes(b"%PDF-1.7\nvalid payload")
+            source.write_bytes(b"%PDF-1.7\nvalid payload\n%%EOF\n")
             destination = root / "pdfs"
             (destination / "nested").mkdir(parents=True)
             invalid_names = [
@@ -695,7 +695,7 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source.write_bytes(b"%PDF-1.7\nvalid payload")
+            source.write_bytes(b"%PDF-1.7\nvalid payload\n%%EOF\n")
             destination = root / "pdfs"
 
             for reserved in ("COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"):
@@ -716,8 +716,8 @@ class BatchFileTests(unittest.TestCase):
             root = Path(tmp)
             first_source = root / "first.pdf"
             second_source = root / "second.pdf"
-            first_payload = b"%PDF-1.7\nfirst payload"
-            second_payload = b"%PDF-1.7\nsecond payload"
+            first_payload = b"%PDF-1.7\nfirst payload\n%%EOF\n"
+            second_payload = b"%PDF-1.7\nsecond payload\n%%EOF\n"
             first_source.write_bytes(first_payload)
             second_source.write_bytes(second_payload)
             destination = root / "pdfs"
@@ -739,8 +739,8 @@ class BatchFileTests(unittest.TestCase):
             root = Path(tmp)
             sources = [root / "first.pdf", root / "second.pdf"]
             payloads = [
-                b"%PDF-1.7\nconcurrent first payload",
-                b"%PDF-1.7\nconcurrent second payload",
+                b"%PDF-1.7\nconcurrent first payload\n%%EOF\n",
+                b"%PDF-1.7\nconcurrent second payload\n%%EOF\n",
             ]
             for source, payload in zip(sources, payloads):
                 source.write_bytes(payload)
@@ -784,9 +784,9 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source_payload = b"%PDF-1.7\nnew source payload"
-            requested_payload = b"%PDF-1.7\nrequested target payload"
-            occupied_payload = b"%PDF-1.7\noccupied hash payload"
+            source_payload = b"%PDF-1.7\nnew source payload\n%%EOF\n"
+            requested_payload = b"%PDF-1.7\nrequested target payload\n%%EOF\n"
+            occupied_payload = b"%PDF-1.7\noccupied hash payload\n%%EOF\n"
             source.write_bytes(source_payload)
             destination = root / "pdfs"
             destination.mkdir()
@@ -809,11 +809,11 @@ class BatchFileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "source.pdf"
-            source_payload = b"%PDF-1.7\nstable snapshot payload"
+            source_payload = b"%PDF-1.7\nstable snapshot payload\n%%EOF\n"
             source.write_bytes(source_payload)
             destination = root / "pdfs"
             destination.mkdir()
-            (destination / "paper.pdf").write_bytes(b"%PDF-1.7\nexisting target")
+            (destination / "paper.pdf").write_bytes(b"%PDF-1.7\nexisting target\n%%EOF\n")
             expected_hash = hashlib.sha256(source_payload).hexdigest()[:8]
             original_copyfileobj = shutil.copyfileobj
             original_link = os.link
@@ -942,11 +942,11 @@ class BatchStageTests(unittest.TestCase):
                 "paper_automation.batch_stages.run_workflow",
                 return_value=SimpleNamespace(manifest_csv="", output_dir=""),
             ) as oa_lower:
-                oa_results = run_oa_stage([row], root / "oa-output", BatchOptions())
+                oa_results = run_oa_stage([row], root / "oa-output", BatchOptions(skip_manual_retry=False))
 
             input_path = write_stage_input([row], root / "input.csv")
             with patch("paper_automation.batch_stages.sd_main", return_value=0) as sd_lower:
-                sd_results = run_sciencedirect_stage(input_path, root / "sd-output", BatchOptions())
+                sd_results = run_sciencedirect_stage(input_path, root / "sd-output", BatchOptions(skip_manual_retry=False))
             with patch(
                 "paper_automation.batch_stages.run_institutional_workflow",
                 return_value=SimpleNamespace(report_path=""),
@@ -983,7 +983,7 @@ class BatchStageTests(unittest.TestCase):
             run_dir = Path(tmp) / "oa_run"
             valid_pdf = run_dir / "pdfs" / "owner.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture\n%%EOF\n")
             manifest = run_dir / "metadata" / "manifest.csv"
             manifest.parent.mkdir(parents=True)
             received_lines: list[str] = []
@@ -1004,7 +1004,7 @@ class BatchStageTests(unittest.TestCase):
                         {"task_id": "paper-0003", "doi": "https://doi.org/10.1000/OWNER", "title": "Duplicate"},
                     ],
                     run_dir.parent,
-                    BatchOptions(),
+                    BatchOptions(skip_manual_retry=False),
                 )
 
         self.assertEqual(received_lines, ["10.1000/owner"])
@@ -1024,7 +1024,7 @@ class BatchStageTests(unittest.TestCase):
             run_dir = root / "oa_run"
             valid_pdf = run_dir / "pdfs" / "oa.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nvalid fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nvalid fixture\n%%EOF\n")
             manifest = run_dir / "metadata" / "final_manifest.csv"
             manifest.parent.mkdir(parents=True)
             with manifest.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -1043,7 +1043,7 @@ class BatchStageTests(unittest.TestCase):
                         {"task_id": "paper-0002", "doi": "https://doi.org/10.1000/b", "title": "Original title B"},
                     ],
                     root,
-                    BatchOptions(email="researcher@example.edu"),
+                    BatchOptions(email="researcher@example.edu", skip_manual_retry=False),
                 )
 
         self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
@@ -1064,7 +1064,7 @@ class BatchStageTests(unittest.TestCase):
             run_dir = Path(tmp) / "oa_run"
             valid_pdf = run_dir / "pdfs" / "fallback.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nfallback fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nfallback fixture\n%%EOF\n")
             manifest = run_dir / "metadata" / "final_manifest.csv"
             manifest.parent.mkdir(parents=True)
             with manifest.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -1079,7 +1079,7 @@ class BatchStageTests(unittest.TestCase):
                 results = run_oa_stage(
                     [{"task_id": "paper-0001", "doi": "10.1000/a", "title": "A"}],
                     run_dir.parent,
-                    BatchOptions(),
+                    BatchOptions(skip_manual_retry=False),
                 )
 
         self.assertEqual(results[0].status, "downloaded")
@@ -1111,7 +1111,7 @@ class BatchStageTests(unittest.TestCase):
                         {"task_id": "paper-0002", "doi": "", "title": " normalized title "},
                     ],
                     run_dir.parent,
-                    BatchOptions(),
+                    BatchOptions(skip_manual_retry=False),
                 )
 
         self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
@@ -1127,7 +1127,7 @@ class BatchStageTests(unittest.TestCase):
             run_dir = Path(tmp) / "oa_run"
             valid_pdf = run_dir / "pdfs" / "after-empty.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nafter empty fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nafter empty fixture\n%%EOF\n")
             manifest = run_dir / "metadata" / "final_manifest.csv"
             manifest.parent.mkdir(parents=True)
             with manifest.open("w", newline="", encoding="utf-8-sig") as handle:
@@ -1145,7 +1145,7 @@ class BatchStageTests(unittest.TestCase):
                         {"task_id": "paper-0002", "doi": "10.1000/after-empty", "title": "Original"},
                     ],
                     run_dir.parent,
-                    BatchOptions(),
+                    BatchOptions(skip_manual_retry=False),
                 )
 
         self.assertEqual(mocked.call_args.args[0], "10.1000/after-empty")
@@ -1174,7 +1174,7 @@ class BatchStageTests(unittest.TestCase):
                     results = run_oa_stage(
                         [{"task_id": "paper-0001", "doi": "10.1000/a", "title": "A"}],
                         Path(tmp),
-                        BatchOptions(),
+                        BatchOptions(skip_manual_retry=False),
                     )
                 except Exception as exc:
                     caught = exc
@@ -1193,7 +1193,7 @@ class BatchStageTests(unittest.TestCase):
             root = Path(tmp)
             valid_pdf = root / "sciencedirect" / "pdfs" / "download.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nfixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nfixture\n%%EOF\n")
             input_path = write_stage_input(
                 [
                     {"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"},
@@ -1222,7 +1222,7 @@ class BatchStageTests(unittest.TestCase):
                         cookies="cookies.json",
                         browser_exe="C:/Browser/browser.exe",
                         login_wait_seconds=30,
-                    ),
+                    skip_manual_retry=False),
                 )
 
         argv = mocked.call_args.args[0]
@@ -1265,7 +1265,7 @@ class BatchStageTests(unittest.TestCase):
                 return 0
 
             with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
-                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual(results[0].status, "failed")
         self.assertEqual(results[0].reason, "invalid_pdf")
@@ -1282,7 +1282,7 @@ class BatchStageTests(unittest.TestCase):
                 root / "input.csv",
             )
             with patch("paper_automation.batch_stages.sd_main", return_value=3):
-                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual(results[0].status, "failed")
         self.assertEqual(results[0].reason, "stage_exit_code_3")
@@ -1296,7 +1296,7 @@ class BatchStageTests(unittest.TestCase):
             root = Path(tmp)
             valid_pdf = root / "sciencedirect" / "pdfs" / "partial.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\npartial fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\npartial fixture\n%%EOF\n")
             input_path = write_stage_input(
                 [
                     {"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"},
@@ -1315,7 +1315,7 @@ class BatchStageTests(unittest.TestCase):
                 return 7
 
             with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
-                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
         self.assertEqual(results[0].status, "downloaded")
@@ -1333,7 +1333,7 @@ class BatchStageTests(unittest.TestCase):
                 root / "input.csv",
             )
             with patch("paper_automation.batch_stages.sd_main", return_value=0):
-                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual(results[0].status, "failed")
         self.assertEqual(results[0].reason, "stage_report_missing")
@@ -1348,7 +1348,7 @@ class BatchStageTests(unittest.TestCase):
             root = Path(tmp)
             valid_pdf = root / "non_elsevier_institutional" / "pdfs" / "institutional.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\ninstitutional fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\ninstitutional fixture\n%%EOF\n")
             input_path = write_stage_input(
                 [
                     {"task_id": "paper-0001", "doi": "10.1038/a", "title": "A"},
@@ -1372,7 +1372,7 @@ class BatchStageTests(unittest.TestCase):
                 results = run_non_elsevier_stage(
                     input_path,
                     root,
-                    BatchOptions(browser_exe="C:/Browser/browser.exe", debug_port=9444, login_wait_seconds=20, throttle_seconds=0.0),
+                    BatchOptions(browser_exe="C:/Browser/browser.exe", debug_port=9444, login_wait_seconds=20, throttle_seconds=0.0, skip_manual_retry=False),
                 )
 
         self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
@@ -1392,7 +1392,7 @@ class BatchStageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             external = root / "external.pdf"
-            external.write_bytes(b"%PDF-1.7\nexternal fixture")
+            external.write_bytes(b"%PDF-1.7\nexternal fixture\n%%EOF\n")
             linked = root / "linked.pdf"
             try:
                 os.symlink(external, linked)
@@ -1414,7 +1414,7 @@ class BatchStageTests(unittest.TestCase):
                 return 0
 
             with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
-                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual(results[0].status, "downloaded")
         self.assertEqual(results[0].file, str(external.resolve()))
@@ -1430,7 +1430,7 @@ class BatchStageTests(unittest.TestCase):
             pdf_dir = report_dir / "pdfs"
             pdf_dir.mkdir(parents=True)
             escaped_pdf = report_dir / "escaped.pdf"
-            escaped_pdf.write_bytes(b"%PDF-1.7\nescaped fixture")
+            escaped_pdf.write_bytes(b"%PDF-1.7\nescaped fixture\n%%EOF\n")
             input_path = write_stage_input(
                 [{"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"}],
                 root / "input.csv",
@@ -1448,7 +1448,7 @@ class BatchStageTests(unittest.TestCase):
             os.chdir(pdf_dir)
             try:
                 with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
-                    results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                    results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
             finally:
                 os.chdir(original_cwd)
 
@@ -1463,7 +1463,7 @@ class BatchStageTests(unittest.TestCase):
             pdf_dir.mkdir()
             linked = pdf_dir / "linked.pdf"
             target = pdf_dir / "target.pdf"
-            target.write_bytes(b"%PDF-1.7\ntarget fixture")
+            target.write_bytes(b"%PDF-1.7\ntarget fixture\n%%EOF\n")
             original_resolve = Path.resolve
 
             def fake_resolve(path: Path, *args, **kwargs) -> Path:
@@ -1493,7 +1493,7 @@ class BatchStageTests(unittest.TestCase):
             root = Path(tmp)
             valid_pdf = root / "actual" / "absolute.pdf"
             valid_pdf.parent.mkdir()
-            valid_pdf.write_bytes(b"%PDF-1.7\nabsolute fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nabsolute fixture\n%%EOF\n")
             (root / "alias").mkdir()
             reported_pdf = root / "alias" / ".." / "actual" / "absolute.pdf"
             input_path = write_stage_input(
@@ -1512,7 +1512,7 @@ class BatchStageTests(unittest.TestCase):
                 return 0
 
             with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
-                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual(results[0].status, "downloaded")
         self.assertEqual(results[0].file, str(valid_pdf.resolve()))
@@ -1525,7 +1525,7 @@ class BatchStageTests(unittest.TestCase):
             alias_file = root / "junction-alias" / "paper.pdf"
             final_file = root / "real-target" / "paper.pdf"
             final_file.parent.mkdir()
-            final_file.write_bytes(b"%PDF-1.7\nreparse target fixture")
+            final_file.write_bytes(b"%PDF-1.7\nreparse target fixture\n%%EOF\n")
             original_resolve = Path.resolve
 
             def fake_resolve(path: Path, *args, **kwargs) -> Path:
@@ -1550,7 +1550,7 @@ class BatchStageTests(unittest.TestCase):
             target_dir = root / "junction-target"
             target_dir.mkdir()
             final_pdf = target_dir / "paper.pdf"
-            final_pdf.write_bytes(b"%PDF-1.7\njunction target fixture")
+            final_pdf.write_bytes(b"%PDF-1.7\njunction target fixture\n%%EOF\n")
             junction_dir = root / "junction-alias"
             created = subprocess.run(
                 ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction_dir), str(target_dir)],
@@ -1585,7 +1585,7 @@ class BatchStageTests(unittest.TestCase):
                     return 0
 
                 with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
-                    results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                    results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
             finally:
                 if junction_dir.exists():
                     junction_dir.rmdir()
@@ -1618,7 +1618,7 @@ class BatchStageTests(unittest.TestCase):
                 return SimpleNamespace(report_path=str(report))
 
             with patch("paper_automation.batch_stages.run_institutional_workflow", side_effect=fake_workflow):
-                results = run_non_elsevier_stage(input_path, root, BatchOptions())
+                results = run_non_elsevier_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
         self.assertEqual(results[0].reason, "missing_stage_report_row")
@@ -1647,7 +1647,7 @@ class BatchStageTests(unittest.TestCase):
                 ):
                     caught = None
                     try:
-                        results = run_non_elsevier_stage(input_path, root, BatchOptions())
+                        results = run_non_elsevier_stage(input_path, root, BatchOptions(skip_manual_retry=False))
                     except Exception as exc:
                         caught = exc
                         results = []
@@ -1666,7 +1666,7 @@ class BatchStageTests(unittest.TestCase):
             run_dir = Path(tmp) / "oa_run"
             valid_pdf = run_dir / "pdfs" / "owner.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture\n%%EOF\n")
             manifest = run_dir / "metadata" / "final_manifest.csv"
             manifest.parent.mkdir(parents=True)
             received_lines: list[str] = []
@@ -1686,7 +1686,7 @@ class BatchStageTests(unittest.TestCase):
                         {"task_id": "paper-0002", "doi": "10.1000/DUPLICATE", "title": "Duplicate"},
                     ],
                     run_dir.parent,
-                    BatchOptions(),
+                    BatchOptions(skip_manual_retry=False),
                 )
 
         self.assertEqual(received_lines, ["https://doi.org/10.1000/duplicate"])
@@ -1723,7 +1723,7 @@ class BatchStageTests(unittest.TestCase):
                         {"task_id": "paper-0002", "doi": "", "title": " normalized title "},
                     ],
                     run_dir.parent,
-                    BatchOptions(),
+                    BatchOptions(skip_manual_retry=False),
                 )
 
         self.assertEqual(received_lines, ["Normalized   Title"])
@@ -1739,7 +1739,7 @@ class BatchStageTests(unittest.TestCase):
             root = Path(tmp)
             valid_pdf = root / "sciencedirect" / "pdfs" / "owner.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture\n%%EOF\n")
             input_path = write_stage_input(
                 [
                     {"task_id": "paper-0001", "doi": "https://doi.org/10.1016/duplicate", "title": "Owner"},
@@ -1761,7 +1761,7 @@ class BatchStageTests(unittest.TestCase):
                 return 0
 
             with patch("paper_automation.batch_stages.sd_main", side_effect=fake_sd_main):
-                results = run_sciencedirect_stage(input_path, root, BatchOptions())
+                results = run_sciencedirect_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual(received_task_ids, ["paper-0001"])
         self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
@@ -1780,7 +1780,7 @@ class BatchStageTests(unittest.TestCase):
             root = Path(tmp)
             valid_pdf = root / "non_elsevier_institutional" / "pdfs" / "owner.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nowner fixture\n%%EOF\n")
             input_path = write_stage_input(
                 [
                     {"task_id": "paper-0001", "doi": "https://doi.org/10.1038/duplicate", "title": "Owner"},
@@ -1802,7 +1802,7 @@ class BatchStageTests(unittest.TestCase):
                 return SimpleNamespace(report_path=str(report))
 
             with patch("paper_automation.batch_stages.run_institutional_workflow", side_effect=fake_workflow):
-                results = run_non_elsevier_stage(input_path, root, BatchOptions())
+                results = run_non_elsevier_stage(input_path, root, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual(received_task_ids, ["paper-0001"])
         self.assertEqual([result.task_id for result in results], ["paper-0001", "paper-0002"])
@@ -1851,12 +1851,13 @@ class BatchRunTests(unittest.TestCase):
     def test_start_writes_only_manual_rows_to_retry_and_other_failures_to_zotero(self) -> None:
         import csv
 
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             valid_pdf = root / "fixture.pdf"
-            valid_pdf.write_bytes(b"%PDF-1.7\nfixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nfixture\n%%EOF\n")
 
             def initial(rows):
                 return [
@@ -1865,7 +1866,9 @@ class BatchRunTests(unittest.TestCase):
                     {**rows[2], "status": "no_open_pdf", "source": "oa", "file": "", "reason": "no_open_pdf"},
                 ]
 
-            result = start_batch(
+            # Default: skip manual retry — captcha goes to zotero_fallback with other failures.
+            default_result = start_batch(
+                options=BatchOptions(),
                 input_text="fixture",
                 input_path=None,
                 output_root=root,
@@ -1873,15 +1876,37 @@ class BatchRunTests(unittest.TestCase):
                 normalizer=lambda **_kwargs: self._normalized_rows(valid_pdf),
                 now=datetime(2026, 7, 10, 17, 0, 0),
             )
-            with result.paths.manual_retry.open("r", encoding="utf-8-sig") as handle:
+            with default_result.paths.manual_retry.open("r", encoding="utf-8-sig") as handle:
+                default_retry = list(csv.DictReader(handle))
+            with default_result.paths.zotero_fallback.open("r", encoding="utf-8-sig") as handle:
+                default_fallback = list(csv.DictReader(handle))
+            self.assertEqual(default_retry, [])
+            self.assertEqual(
+                sorted(row["task_id"] for row in default_fallback),
+                ["paper-0002", "paper-0003"],
+            )
+            self.assertEqual(default_result.manual_retry_count, 0)
+            self.assertEqual(default_result.zotero_fallback_count, 2)
+
+            # Compat: enable manual retry — captcha only in manual_retry.
+            compat_result = start_batch(
+                input_text="fixture",
+                input_path=None,
+                output_root=root,
+                options=BatchOptions(skip_manual_retry=False),
+                gateway=FakeBatchGateway(initial_updates=initial),
+                normalizer=lambda **_kwargs: self._normalized_rows(valid_pdf),
+                now=datetime(2026, 7, 10, 17, 1, 0),
+            )
+            with compat_result.paths.manual_retry.open("r", encoding="utf-8-sig") as handle:
                 retry_rows = list(csv.DictReader(handle))
-            with result.paths.zotero_fallback.open("r", encoding="utf-8-sig") as handle:
+            with compat_result.paths.zotero_fallback.open("r", encoding="utf-8-sig") as handle:
                 fallback_rows = list(csv.DictReader(handle))
 
-            self.assertEqual(len(list(result.paths.pdfs.glob("*.pdf"))), 1)
+            self.assertEqual(len(list(compat_result.paths.pdfs.glob("*.pdf"))), 1)
             self.assertEqual([row["task_id"] for row in retry_rows], ["paper-0002"])
             self.assertEqual([row["task_id"] for row in fallback_rows], ["paper-0003"])
-            self.assertEqual(result.success_count, 1)
+            self.assertEqual(compat_result.success_count, 1)
 
     def test_resume_runs_manual_retry_only_once_and_restores_saved_options(self) -> None:
         from paper_automation.batch_stages import BatchOptions
@@ -1890,8 +1915,8 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             valid_pdf = root / "fixture.pdf"
-            valid_pdf.write_bytes(b"%PDF-1.7\nfixture")
-            options = BatchOptions(email="reader@example.edu", cookies=str(root / "cookies.json"), debug_port=9444)
+            valid_pdf.write_bytes(b"%PDF-1.7\nfixture\n%%EOF\n")
+            options = BatchOptions(email="reader@example.edu", cookies=str(root / "cookies.json"), debug_port=9444, skip_manual_retry=False)
             gateway = FakeBatchGateway(initial_updates=lambda rows: [
                 {**rows[0], "status": "captcha_required", "source": "institutional", "file": "", "reason": "captcha_required"},
                 {**rows[1], "status": "duplicate", "source": "oa", "file": "", "reason": "duplicate_input"},
@@ -1916,6 +1941,7 @@ class BatchRunTests(unittest.TestCase):
             self.assertEqual(state["options"]["cookies"], str(root / "cookies.json"))
 
     def test_second_resume_returns_without_revalidating_deleted_pending_file(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import resume_batch, start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1923,6 +1949,7 @@ class BatchRunTests(unittest.TestCase):
                 {**rows[0], "status": "captcha_required", "source": "institutional", "file": "", "reason": "captcha_required"},
             ])
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=Path(tmp),
@@ -1941,10 +1968,12 @@ class BatchRunTests(unittest.TestCase):
     def test_resume_preclaim_failures_do_not_consume_manual_retry(self) -> None:
         import csv
 
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import load_batch_state, resume_batch, save_batch_state, start_batch
 
         def start_manual(root: Path):
             return start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=root,
@@ -1994,10 +2023,12 @@ class BatchRunTests(unittest.TestCase):
     def test_manual_retry_csv_must_exactly_match_all_current_manual_rows(self) -> None:
         import csv
 
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import load_batch_state, resume_batch, start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=Path(tmp),
@@ -2027,6 +2058,7 @@ class BatchRunTests(unittest.TestCase):
             self.assertEqual(gateway.retry_rows, [])
 
     def test_empty_manual_retry_set_does_not_claim_rewrite_or_call_gateway(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import load_batch_state, resume_batch, start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2034,6 +2066,7 @@ class BatchRunTests(unittest.TestCase):
                 {**rows[0], "status": "no_open_pdf", "source": "oa", "file": "", "reason": "no_open_pdf"},
             ])
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=Path(tmp),
@@ -2058,10 +2091,12 @@ class BatchRunTests(unittest.TestCase):
             self.assertEqual(resumed.zotero_fallback_count, 1)
 
     def test_empty_manual_retry_csv_rejects_manual_state_without_claiming(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import NORMALIZED_FIELDS, load_batch_state, resume_batch, start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=Path(tmp),
@@ -2087,10 +2122,12 @@ class BatchRunTests(unittest.TestCase):
     def test_manual_retry_csv_status_must_match_the_current_state_status(self) -> None:
         import csv
 
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import load_batch_state, resume_batch, start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=Path(tmp),
@@ -2161,10 +2198,12 @@ class BatchRunTests(unittest.TestCase):
             self.assertEqual(calls, ["state"])
 
     def test_resume_validates_corrupt_run_dir_even_after_retry_was_used(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import load_batch_state, resume_batch, save_batch_state, start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=Path(tmp),
@@ -2188,24 +2227,24 @@ class BatchRunTests(unittest.TestCase):
         from paper_automation.batch_workflow import start_batch
 
         invalid_options = [
-            BatchOptions(cookies="Cookie: session=topsecret"),
-            BatchOptions(cookies="session=topsecret; token=abc"),
-            BatchOptions(cookies='{"session":"topsecret"}'),
-            BatchOptions(cookies="https://example.test/cookies.json"),
-            BatchOptions(cookies="cookies.json\r\nCookie: secret=abc"),
-            BatchOptions(login_wait_seconds=True),
-            BatchOptions(login_wait_seconds=-1),
-            BatchOptions(login_wait_seconds=1.5),
+            BatchOptions(cookies="Cookie: session=topsecret", skip_manual_retry=False),
+            BatchOptions(cookies="session=topsecret; token=abc", skip_manual_retry=False),
+            BatchOptions(cookies='{"session":"topsecret"}', skip_manual_retry=False),
+            BatchOptions(cookies="https://example.test/cookies.json", skip_manual_retry=False),
+            BatchOptions(cookies="cookies.json\r\nCookie: secret=abc", skip_manual_retry=False),
+            BatchOptions(login_wait_seconds=True, skip_manual_retry=False),
+            BatchOptions(login_wait_seconds=-1, skip_manual_retry=False),
+            BatchOptions(login_wait_seconds=1.5, skip_manual_retry=False),
             BatchOptions(login_wait_seconds=float("nan")),
             BatchOptions(login_wait_seconds=float("inf")),
-            BatchOptions(debug_port=False),
-            BatchOptions(debug_port=-1),
-            BatchOptions(debug_port=0),
-            BatchOptions(debug_port=65536),
+            BatchOptions(debug_port=False, skip_manual_retry=False),
+            BatchOptions(debug_port=-1, skip_manual_retry=False),
+            BatchOptions(debug_port=0, skip_manual_retry=False),
+            BatchOptions(debug_port=65536, skip_manual_retry=False),
             BatchOptions(debug_port=float("nan")),
             BatchOptions(debug_port=float("inf")),
-            BatchOptions(throttle_seconds=True),
-            BatchOptions(throttle_seconds=-0.1),
+            BatchOptions(throttle_seconds=True, skip_manual_retry=False),
+            BatchOptions(throttle_seconds=-0.1, skip_manual_retry=False),
             BatchOptions(throttle_seconds=float("nan")),
             BatchOptions(throttle_seconds=float("inf")),
         ]
@@ -2243,7 +2282,7 @@ class BatchRunTests(unittest.TestCase):
                         login_wait_seconds=0,
                         debug_port=65535,
                         throttle_seconds=0.0,
-                    ),
+                    skip_manual_retry=False),
                     gateway=FakeBatchGateway(initial_updates=lambda rows: [
                         {**rows[0], "status": "duplicate", "source": "oa", "file": "", "reason": "duplicate_input"},
                     ]),
@@ -2270,6 +2309,7 @@ class BatchRunTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=Path(tmp),
@@ -2284,7 +2324,7 @@ class BatchRunTests(unittest.TestCase):
                 resume_batch(
                     started.paths.root,
                     gateway=FakeBatchGateway(),
-                    options=BatchOptions(cookies="Cookie: session=secret"),
+                    options=BatchOptions(cookies="Cookie: session=secret", skip_manual_retry=False),
                 )
 
             self.assertFalse(load_batch_state(started.paths.root)["manual_retry_used"])
@@ -2314,7 +2354,7 @@ class BatchRunTests(unittest.TestCase):
             for index, input_path in enumerate((markdown, csv_path, xlsx_path), start=1):
                 before = input_path.read_bytes()
                 paths = create_batch_paths(root, run_name=f"run-{index}")
-                rows = normalize_input(input_text=None, input_path=input_path, paths=paths, options=BatchOptions())
+                rows = normalize_input(input_text=None, input_path=input_path, paths=paths, options=BatchOptions(skip_manual_retry=False))
                 self.assertEqual(len(rows), 1)
                 self.assertTrue(rows[0]["doi"].startswith("10.1000/"))
                 self.assertEqual(input_path.read_bytes(), before)
@@ -2377,7 +2417,7 @@ class BatchRunTests(unittest.TestCase):
                         input_text=None,
                         input_path=input_path,
                         paths=paths,
-                        options=BatchOptions(),
+                        options=BatchOptions(skip_manual_retry=False),
                     )
 
                     self.assertEqual(
@@ -2440,7 +2480,7 @@ class BatchRunTests(unittest.TestCase):
                             input_text=None,
                             input_path=input_path,
                             paths=paths,
-                            options=BatchOptions(),
+                            options=BatchOptions(skip_manual_retry=False),
                         )
 
                     self.assertEqual(len(rows), 1)
@@ -2484,7 +2524,7 @@ class BatchRunTests(unittest.TestCase):
                     input_text=None,
                     input_path=input_path,
                     paths=paths,
-                    options=BatchOptions(),
+                    options=BatchOptions(skip_manual_retry=False),
                 )
 
         self.assertEqual(rows[0]["doi"], "10.5555/resolved-target")
@@ -2540,7 +2580,7 @@ class BatchRunTests(unittest.TestCase):
                     input_text="fixture",
                     input_path=None,
                     paths=paths,
-                    options=BatchOptions(),
+                    options=BatchOptions(skip_manual_retry=False),
                 )
 
         self.assertEqual([row["status"] for row in rows], ["metadata_uncertain", "metadata_uncertain", "pending"])
@@ -2558,12 +2598,12 @@ class BatchRunTests(unittest.TestCase):
                 input_text="Titanium",
                 input_path=None,
                 paths=paths,
-                options=BatchOptions(),
+                options=BatchOptions(skip_manual_retry=False),
             )
             with patch("paper_automation.batch_workflow.run_oa_stage") as oa_stage, patch(
                 "paper_automation.batch_workflow.run_sciencedirect_stage"
             ) as sd_stage, patch("paper_automation.batch_workflow.run_non_elsevier_stage") as other_stage:
-                updates = DefaultStageGateway().run_initial(rows, paths, BatchOptions())
+                updates = DefaultStageGateway().run_initial(rows, paths, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual(rows[0]["status"], "metadata_uncertain")
         self.assertEqual(updates, [])
@@ -2604,7 +2644,7 @@ class BatchRunTests(unittest.TestCase):
             with patch("paper_automation.batch_workflow.run_oa_stage", return_value=oa_result), patch(
                 "paper_automation.batch_workflow.run_sciencedirect_stage", return_value=sd_result
             ) as sciencedirect, patch("paper_automation.batch_workflow.run_non_elsevier_stage") as non_elsevier:
-                updates = DefaultStageGateway().run_initial(rows, paths, BatchOptions())
+                updates = DefaultStageGateway().run_initial(rows, paths, BatchOptions(skip_manual_retry=False))
 
         self.assertEqual([update["task_id"] for update in updates], ["paper-0001"])
         sciencedirect.assert_called_once()
@@ -2623,7 +2663,7 @@ class BatchRunTests(unittest.TestCase):
             with patch("paper_automation.batch_workflow.run_sciencedirect_stage", return_value=[]) as sciencedirect, patch(
                 "paper_automation.batch_workflow.run_non_elsevier_stage", return_value=[]
             ) as non_elsevier:
-                DefaultStageGateway().run_retry(rows, paths, BatchOptions())
+                DefaultStageGateway().run_retry(rows, paths, BatchOptions(skip_manual_retry=False))
 
         sciencedirect.assert_called_once()
         non_elsevier.assert_not_called()
@@ -2634,7 +2674,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "absolute.pdf"
-            source.write_bytes(b"%PDF-1.7\nabsolute fixture")
+            source.write_bytes(b"%PDF-1.7\nabsolute fixture\n%%EOF\n")
             gateway = FakeBatchGateway(initial_updates=lambda rows: [
                 {**rows[0], "status": "downloaded", "source": "oa", "file": str(source), "reason": ""},
             ])
@@ -2647,7 +2687,7 @@ class BatchRunTests(unittest.TestCase):
             )
 
             self.assertTrue(source.is_file())
-            self.assertEqual(source.read_bytes(), b"%PDF-1.7\nabsolute fixture")
+            self.assertEqual(source.read_bytes(), b"%PDF-1.7\nabsolute fixture\n%%EOF\n")
             self.assertEqual(Path(result.paths.root / "pdfs" / Path(result.paths.pdfs.glob("*.pdf").__next__().name)).read_bytes(), source.read_bytes())
 
     def test_successful_files_use_task5_compatible_canonical_statuses(self) -> None:
@@ -2657,8 +2697,8 @@ class BatchRunTests(unittest.TestCase):
             root = Path(tmp)
             oa_pdf = root / "oa.pdf"
             institutional_pdf = root / "institutional.pdf"
-            oa_pdf.write_bytes(b"%PDF-1.7\noa fixture")
-            institutional_pdf.write_bytes(b"%PDF-1.7\ninstitutional fixture")
+            oa_pdf.write_bytes(b"%PDF-1.7\noa fixture\n%%EOF\n")
+            institutional_pdf.write_bytes(b"%PDF-1.7\ninstitutional fixture\n%%EOF\n")
             gateway = FakeBatchGateway(initial_updates=lambda rows: [
                 {**rows[0], "status": "downloaded", "source": "oa", "file": str(oa_pdf), "reason": ""},
                 {**rows[1], "status": "downloaded", "source": "sciencedirect", "file": str(institutional_pdf), "reason": ""},
@@ -2688,7 +2728,7 @@ class BatchRunTests(unittest.TestCase):
             root = Path(tmp)
             valid_pdf = root / "valid.pdf"
             html_pdf = root / "login.pdf"
-            valid_pdf.write_bytes(b"%PDF-1.7\nvalid fixture")
+            valid_pdf.write_bytes(b"%PDF-1.7\nvalid fixture\n%%EOF\n")
             html_pdf.write_text("<html>login</html>", encoding="utf-8")
             gateway = FakeBatchGateway(initial_updates=lambda rows: [
                 {**rows[0], "status": "downloaded", "source": "mystery", "file": str(valid_pdf), "reason": ""},
@@ -2722,7 +2762,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "linked.pdf"
-            source.write_bytes(b"%PDF-1.7\nsymlink fixture")
+            source.write_bytes(b"%PDF-1.7\nsymlink fixture\n%%EOF\n")
             gateway = FakeBatchGateway(initial_updates=lambda rows: [
                 {**rows[0], "status": "downloaded", "source": "oa", "file": str(source), "reason": ""},
             ])
@@ -2821,6 +2861,7 @@ class BatchRunTests(unittest.TestCase):
         self.assertEqual(state["rows"][1]["status"], "metadata_uncertain")
 
     def test_resume_gateway_exception_enters_fallback_after_one_claim(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import load_batch_state, resume_batch, start_batch
 
         class RaisingRetryGateway(FakeBatchGateway):
@@ -2830,6 +2871,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=root,
@@ -2855,7 +2897,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             oa_pdf = root / "oa.pdf"
-            oa_pdf.write_bytes(b"%PDF-1.7\noa callback fixture")
+            oa_pdf.write_bytes(b"%PDF-1.7\noa callback fixture\n%%EOF\n")
             oa_results = [
                 StageResult("paper-0001", "10.1000/a", "A", "downloaded", str(oa_pdf), "", "oa"),
                 StageResult("paper-0002", "10.1038/b", "B", "no_open_pdf", "", "no_open_pdf", "oa"),
@@ -2894,7 +2936,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "oa.pdf"
-            source.write_bytes(b"%PDF-1.7\nidempotent callback fixture")
+            source.write_bytes(b"%PDF-1.7\nidempotent callback fixture\n%%EOF\n")
             result = start_batch(
                 input_text="fixture",
                 input_path=None,
@@ -2930,7 +2972,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pdf = root / "institutional.pdf"
-            pdf.write_bytes(b"%PDF-1.7\ncallback-only fixture")
+            pdf.write_bytes(b"%PDF-1.7\ncallback-only fixture\n%%EOF\n")
             result = start_batch(
                 input_text="fixture",
                 input_path=None,
@@ -2999,6 +3041,7 @@ class BatchRunTests(unittest.TestCase):
     def test_concurrent_resume_claims_retry_only_once(self) -> None:
         import threading
 
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import resume_batch, start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -3018,6 +3061,7 @@ class BatchRunTests(unittest.TestCase):
                 {**rows[0], "status": "auth_required", "source": "institutional", "file": "", "reason": "auth_required"},
             ])
             started = start_batch(
+                options=BatchOptions(skip_manual_retry=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=root,
@@ -3107,7 +3151,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             attachment = root / "zotero.pdf"
-            attachment.write_bytes(b"%PDF-1.7\nZotero fixture")
+            attachment.write_bytes(b"%PDF-1.7\nZotero fixture\n%%EOF\n")
             attachment_hash = hashlib.sha256(attachment.read_bytes()).hexdigest()
             html = root / "login.html"
             html.write_text("<html>login</html>", encoding="utf-8")
@@ -3184,7 +3228,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             valid_pdf = root / "attachment.pdf"
-            valid_pdf.write_bytes(b"%PDF-1.7\nshared attachment")
+            valid_pdf.write_bytes(b"%PDF-1.7\nshared attachment\n%%EOF\n")
             missing = root / "missing.pdf"
             directory = root / "attachment-directory"
             directory.mkdir()
@@ -3223,7 +3267,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             attachment = root / "uncertain.pdf"
-            attachment.write_bytes(b"%PDF-1.7\nuncertain")
+            attachment.write_bytes(b"%PDF-1.7\nuncertain\n%%EOF\n")
             paths = self._paths_with_state(
                 root,
                 [
@@ -3294,7 +3338,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             attachment = root / "attachment.pdf"
-            attachment.write_bytes(b"%PDF-1.7\nfixture")
+            attachment.write_bytes(b"%PDF-1.7\nfixture\n%%EOF\n")
             paths = self._paths_with_state(root, [self._row("paper-0001"), self._row("paper-0002")])
             zotero_csv = paths.working / "zotero_results.csv"
             self._write_zotero_csv(
@@ -3508,7 +3552,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "中文 附件" / "论文 文件.pdf"
             source.parent.mkdir()
-            source.write_bytes(b"%PDF-1.7\nunicode path fixture")
+            source.write_bytes(b"%PDF-1.7\nunicode path fixture\n%%EOF\n")
             before = hashlib.sha256(source.read_bytes()).hexdigest()
             resolved = workflow._local_zotero_attachment(str(source))
             source_unchanged = hashlib.sha256(source.read_bytes()).hexdigest() == before
@@ -3528,7 +3572,7 @@ class BatchFinalizeTests(unittest.TestCase):
             target_dir = root / "real target"
             target_dir.mkdir()
             source = target_dir / "paper.pdf"
-            source.write_bytes(b"%PDF-1.7\njunction fixture")
+            source.write_bytes(b"%PDF-1.7\njunction fixture\n%%EOF\n")
             junction_dir = root / "junction alias"
             created = subprocess.run(
                 ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction_dir), str(target_dir)],
@@ -3576,9 +3620,9 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project_pdf = root / "project.pdf"
-            project_pdf.write_bytes(b"%PDF-1.7\nproject success fixture")
+            project_pdf.write_bytes(b"%PDF-1.7\nproject success fixture\n%%EOF\n")
             zotero_pdf = root / "zotero.pdf"
-            zotero_pdf.write_bytes(b"%PDF-1.7\nzotero stale fixture")
+            zotero_pdf.write_bytes(b"%PDF-1.7\nzotero stale fixture\n%%EOF\n")
             paths = self._paths_with_state(root, [self._row("paper-0001")])
             zotero_csv = paths.working / "zotero_results.csv"
             self._write_zotero_csv(
@@ -3645,7 +3689,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project_pdf = root / "project-latest.pdf"
-            project_pdf.write_bytes(b"%PDF-1.7\nlatest project success")
+            project_pdf.write_bytes(b"%PDF-1.7\nlatest project success\n%%EOF\n")
             paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
             zotero_csv = paths.working / "zotero_results.csv"
             self._write_zotero_csv(
@@ -3742,8 +3786,8 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "attachment.pdf"
-            source.write_bytes(b"%PDF-1.7\noriginal safe attachment")
-            external_bytes = b"%PDF-1.7\nreplacement external attachment"
+            source.write_bytes(b"%PDF-1.7\noriginal safe attachment\n%%EOF\n")
+            external_bytes = b"%PDF-1.7\nreplacement external attachment\n%%EOF\n"
             paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
             real_sha256 = workflow._sha256
             hash_calls = 0
@@ -3770,7 +3814,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "attachment.pdf"
-            source.write_bytes(b"%PDF-1.7\noriginal safe attachment")
+            source.write_bytes(b"%PDF-1.7\noriginal safe attachment\n%%EOF\n")
             paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
             real_validator = workflow._local_zotero_attachment
             validation_calls = 0
@@ -3796,8 +3840,8 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "attachment.pdf"
-            original_bytes = b"%PDF-1.7\noriginal second-check attachment"
-            replacement_bytes = b"%PDF-1.7\nreplacement after second check"
+            original_bytes = b"%PDF-1.7\noriginal second-check attachment\n%%EOF\n"
+            replacement_bytes = b"%PDF-1.7\nreplacement after second check\n%%EOF\n"
             source.write_bytes(original_bytes)
             paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
             real_sha256 = workflow._sha256
@@ -3829,8 +3873,8 @@ class BatchFinalizeTests(unittest.TestCase):
             root = Path(tmp)
             source = root / "attachment.pdf"
             external = root / "external.pdf"
-            source.write_bytes(b"%PDF-1.7\noriginal before symlink")
-            external_bytes = b"%PDF-1.7\nexternal symlink target"
+            source.write_bytes(b"%PDF-1.7\noriginal before symlink\n%%EOF\n")
+            external_bytes = b"%PDF-1.7\nexternal symlink target\n%%EOF\n"
             external.write_bytes(external_bytes)
             probe = root / "symlink-probe.pdf"
             real_is_symlink = workflow.Path.is_symlink
@@ -3888,7 +3932,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "stable attachment.pdf"
-            source_bytes = b"%PDF-1.7\nstable same-handle attachment"
+            source_bytes = b"%PDF-1.7\nstable same-handle attachment\n%%EOF\n"
             source.write_bytes(source_bytes)
             source_hash = hashlib.sha256(source_bytes).hexdigest()
             paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
@@ -3999,10 +4043,10 @@ class BatchEndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project_pdf = root / "project.pdf"
-            project_payload = b"%PDF-1.7\nproject fixture"
+            project_payload = b"%PDF-1.7\nproject fixture\n%%EOF\n"
             project_pdf.write_bytes(project_payload)
             zotero_pdf = root / "zotero.pdf"
-            zotero_payload = b"%PDF-1.7\nzotero fixture"
+            zotero_payload = b"%PDF-1.7\nzotero fixture\n%%EOF\n"
             zotero_pdf.write_bytes(zotero_payload)
             source_hashes = {
                 project_pdf: hashlib.sha256(project_payload).hexdigest(),
@@ -4067,10 +4111,12 @@ class BatchEndToEndTests(unittest.TestCase):
                     for row in rows
                 ],
             )
+            from paper_automation.batch_stages import BatchOptions
             started = start_batch(
                 input_text="fixture",
                 input_path=None,
                 output_root=root,
+                options=BatchOptions(skip_manual_retry=False),
                 gateway=gateway,
                 normalizer=lambda **_kwargs: normalized,
                 now=datetime(2026, 7, 11, 6, 0, 0),
@@ -4260,6 +4306,7 @@ class BatchCliTests(unittest.TestCase):
                         "--cookies", secret, "--browser-exe", "browser.exe",
                         "--login-wait-seconds", "12", "--debug-port", "9444",
                         "--throttle-seconds", "0.5",
+                        "--enable-manual-retry", "--no-auto-zotero",
                     ])
 
         self.assertEqual(exit_code, 0)
@@ -4274,6 +4321,7 @@ class BatchCliTests(unittest.TestCase):
         self.assertEqual(options.login_wait_seconds, 12)
         self.assertEqual(options.debug_port, 9444)
         self.assertEqual(options.throttle_seconds, 0.5)
+        self.assertFalse(options.skip_manual_retry)
         output = stdout.getvalue()
         for label in (
             "运行目录：", "最终 PDF 目录：", "总计：5", "成功：2", "失败：3",
@@ -4309,12 +4357,12 @@ class BatchCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(resume.call_args.args, (str(root),))
         output = stdout.getvalue()
-        self.assertIn("请在 Zotero 中处理回退条目", output)
+        self.assertIn("Zotero 回退清单", output)
+        self.assertIn("'zotero'", output)
         script = (PROJECT_ROOT / "paper_batch.py").resolve()
         self.assertIn(
             f"& {self._ps_quote(Path(sys.executable).resolve())} {self._ps_quote(script)} "
-            f"'finalize' '--run-dir' {self._ps_quote(root)} "
-            f"'--zotero-results' {self._ps_quote(root / 'working' / 'zotero_results.csv')}",
+            f"'zotero' '--run-dir' {self._ps_quote(root)}",
             output,
         )
 
@@ -4496,7 +4544,7 @@ class BatchCliTests(unittest.TestCase):
             stdout = StringIO()
             with patch("paper_batch.start_batch", return_value=self._result(root, fallback=1)):
                 with redirect_stdout(stdout):
-                    exit_code = main(["start", "--text", "10.1000/example"])
+                    exit_code = main(["start", "--text", "10.1000/example", "--no-auto-zotero"])
             exists = (root / "working" / "zotero_results.csv").exists()
 
         self.assertEqual(exit_code, 0)
@@ -4667,8 +4715,90 @@ class BatchCliTests(unittest.TestCase):
                 main(["--help"])
         self.assertEqual(raised.exception.code, 0)
         output = stdout.getvalue()
-        for text in ("TXT/MD/CSV/XLSX/XLSM", "只重试一次", "合法 OA/授权访问", "非破坏复制", "start", "resume", "finalize", "zotero"):
+        for text in ("TXT/MD/CSV/XLSX/XLSM", "Zotero 回退", "非破坏复制", "start", "resume", "finalize", "zotero", "自动排队"):
             self.assertIn(text, output)
+
+
+    def test_start_auto_queues_zotero_bridge_when_fallback_rows_exist(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_automation.zotero_bridge import BridgeBatch, BridgeJob, BridgeRunResult
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "auto zotero run"
+            job = BridgeJob(
+                job_id="11111111-1111-4111-8111-111111111111",
+                payload_sha256="a" * 64,
+                request_path=root / "bridge" / "inbox" / "11111111-1111-4111-8111-111111111111.json",
+                result_path=root / "bridge" / "outbox" / "11111111-1111-4111-8111-111111111111.result.json",
+                run_dir=root,
+                chunk_index=1,
+                chunk_count=1,
+            )
+            waiting = BridgeRunResult(
+                status="awaiting_confirmation",
+                bridge=BridgeBatch(
+                    run_id=root.name,
+                    manifest_path=root / "working" / "zotero_bridge_jobs.json",
+                    jobs=(job,),
+                ),
+                zotero_results=None,
+                batch_result=None,
+            )
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=self._result(root, fallback=2)):
+                with patch("paper_batch.run_zotero_bridge", return_value=waiting) as bridge:
+                    with redirect_stdout(stdout):
+                        exit_code = main([
+                            "start", "--text", "10.1000/example", "--out", str(root),
+                            "--library-id", "7", "--wait-seconds", "0",
+                        ])
+
+        self.assertEqual(exit_code, 3)
+        self.assertEqual(bridge.call_count, 1)
+        self.assertEqual(bridge.call_args.args, (root,))
+        self.assertEqual(bridge.call_args.kwargs, {"library_id": 7, "wait_seconds": 0})
+        self.assertIn("已自动将失败项排队", stdout.getvalue())
+
+    def test_start_no_auto_zotero_skips_bridge(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "no auto zotero"
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=self._result(root, fallback=1)):
+                with patch("paper_batch.run_zotero_bridge") as bridge:
+                    with redirect_stdout(stdout):
+                        exit_code = main([
+                            "start", "--text", "10.1000/example", "--out", str(root),
+                            "--no-auto-zotero",
+                        ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(bridge.call_count, 0)
+        self.assertIn("'zotero'", stdout.getvalue())
+
+    def test_start_without_fallback_does_not_call_bridge(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "no fallback"
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=self._result(root, fallback=0)):
+                with patch("paper_batch.run_zotero_bridge") as bridge:
+                    with redirect_stdout(stdout):
+                        exit_code = main(["start", "--text", "10.1000/example", "--out", str(root)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(bridge.call_count, 0)
 
     def test_zotero_waiting_returns_three_and_prints_one_action(self) -> None:
         from contextlib import redirect_stdout

@@ -40,7 +40,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Browser-session institutional downloader for supported non-Elsevier publishers.",
+        description=(
+            "Non-Elsevier institutional adapter (internal / compatibility). "
+            "For new literature jobs prefer: paper_batch.py start ..."
+        ),
+        epilog="Default product entry is paper_batch.py (unified batch), not this script alone.",
     )
     parser.add_argument("--input", required=True, help="CSV/XLSX/XLSM/TXT/Markdown input with DOI/title rows")
     parser.add_argument("--out", required=True, help="Output root directory")

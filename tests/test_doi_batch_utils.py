@@ -383,10 +383,10 @@ class ReportTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "paper.pdf"
-            size = write_pdf_bytes_atomic(target, b"%PDF-1.7\nbody")
+            size = write_pdf_bytes_atomic(target, b"%PDF-1.7\nbody\n%%EOF\n")
 
             self.assertEqual(size, target.stat().st_size)
-            self.assertEqual(target.read_bytes(), b"%PDF-1.7\nbody")
+            self.assertEqual(target.read_bytes(), b"%PDF-1.7\nbody\n%%EOF\n")
             self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
 
     def test_write_pdf_bytes_atomic_rejects_non_pdf_without_target(self) -> None:
@@ -410,7 +410,7 @@ class ReportTests(unittest.TestCase):
 
             with patch("doi_batch_utils.os.replace", side_effect=OSError("replace failed")):
                 with self.assertRaises(OSError):
-                    write_pdf_bytes_atomic(target, b"%PDF-1.7\nbody")
+                    write_pdf_bytes_atomic(target, b"%PDF-1.7\nbody\n%%EOF\n")
 
             self.assertFalse(target.exists())
             self.assertEqual(list(Path(tmp).glob("*.tmp")), [])
@@ -1106,6 +1106,79 @@ class UiBehaviorTests(unittest.TestCase):
         self.assertNotIn("--browser-cookies", cmd)
         self.assertIn("OA 资源辅助获取", summary)
 
+    def test_ui_paper_batch_start_resume_zotero_commands(self) -> None:
+        try:
+            from tkinter import Tk
+        except Exception as exc:
+            self.skipTest(f"tkinter unavailable: {exc}")
+
+        from paper_scraper_ui import BATCH_SCRIPT, PaperScraperUI
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = Path(tmp)
+            input_path = root_dir / "papers.xlsx"
+            input_path.write_bytes(b"PK\x03\x04placeholder")
+            run_dir = root_dir / "paper_batch_demo"
+            run_dir.mkdir()
+            cookie_path = root_dir / "cookies.json"
+            cookie_path.write_text("[]", encoding="utf-8")
+
+            try:
+                root = Tk()
+            except Exception as exc:
+                self.skipTest(f"cannot start Tk root: {exc}")
+            root.withdraw()
+            try:
+                app = PaperScraperUI(root)
+                app.workflow_var.set("paper_batch")
+                app.batch_action_var.set("start")
+                app.batch_input_file_var.set(str(input_path))
+                app.output_var.set(str(root_dir / "out"))
+                app.oa_email_var.set("researcher@example.com")
+                app.cookies_file_var.set(str(cookie_path))
+                app.batch_login_wait_var.set("120")
+                start_cmd = app._build_command(materialize_paste=False)
+                app._refresh_task_summary()
+                start_summary = app.summary_var.get()
+
+                app.batch_action_var.set("resume")
+                app.batch_run_dir_var.set(str(run_dir))
+                resume_cmd = app._build_command(materialize_paste=False)
+
+                app.batch_action_var.set("zotero")
+                app.batch_library_id_var.set("2")
+                app.batch_wait_seconds_var.set("30")
+                zotero_cmd = app._build_command(materialize_paste=False)
+
+                app._capture_report_paths(f"运行目录：{run_dir}")
+                captured_run_dir = app.batch_run_dir_var.get()
+            finally:
+                root.destroy()
+
+        self.assertEqual(start_cmd[2], str(BATCH_SCRIPT))
+        self.assertEqual(start_cmd[3], "start")
+        self.assertIn("--input", start_cmd)
+        self.assertIn(str(input_path), start_cmd)
+        self.assertIn("--out", start_cmd)
+        self.assertIn("--email", start_cmd)
+        self.assertIn("researcher@example.com", start_cmd)
+        self.assertIn("--cookies", start_cmd)
+        self.assertIn("--login-wait-seconds", start_cmd)
+        self.assertIn("120", start_cmd)
+        self.assertIn("统一批次 start", start_summary)
+
+        self.assertEqual(resume_cmd[3], "resume")
+        self.assertIn("--run-dir", resume_cmd)
+        self.assertIn(str(run_dir), resume_cmd)
+
+        self.assertEqual(zotero_cmd[3], "zotero")
+        self.assertIn("--run-dir", zotero_cmd)
+        self.assertIn("--library-id", zotero_cmd)
+        self.assertIn("2", zotero_cmd)
+        self.assertIn("--wait-seconds", zotero_cmd)
+        self.assertIn("30", zotero_cmd)
+        self.assertEqual(captured_run_dir, str(run_dir))
+
     def test_ui_reads_structured_events_summary_and_resume_command(self) -> None:
         try:
             from tkinter import Tk, messagebox
@@ -1173,6 +1246,8 @@ class UiBehaviorTests(unittest.TestCase):
                 messagebox.showinfo = lambda *args, **kwargs: None
                 messagebox.showerror = lambda *args, **kwargs: None
                 app = PaperScraperUI(root)
+                app.workflow_var.set("sciencedirect")
+                app.mode_var.set("doi_batch")
                 app.input_file_var.set(str(out / "papers.csv"))
                 app.resume_from_var.set(str(out))
                 cmd = app._build_command(materialize_paste=False)
@@ -1253,6 +1328,8 @@ class UiBehaviorTests(unittest.TestCase):
                 messagebox.showinfo = lambda *args, **kwargs: None
                 messagebox.showerror = lambda *args, **kwargs: None
                 app = PaperScraperUI(tk_root)
+                app.workflow_var.set("sciencedirect")
+                app.mode_var.set("doi_batch")
                 app.input_file_var.set(str(input_path))
                 app.output_var.set(str(root_dir / "results"))
                 app.cookies_file_var.set(str(bad_cookie))

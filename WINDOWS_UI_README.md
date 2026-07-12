@@ -1,6 +1,9 @@
-# ScienceDirect Paper Scraper Windows UI
+# Paper Scraper Windows UI
 
-这个界面使用 Python 标准库 `tkinter` 编写，不需要额外安装 GUI 框架。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。当前版本提供 ScienceDirect 机构权限下载和 OA 资源辅助获取两个入口；Codex Skill 是可选增强，不影响图形界面单独使用。
+这个界面使用 Python 标准库 `tkinter` 编写，不需要额外安装 GUI 框架。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。
+
+**默认入口：统一批次（`paper_batch.py`）**——公开 OA → 机构访问 → **失败自动进 Zotero 并排队桥接**（默认无 `resume`）。  
+ScienceDirect 专用页、文献检索页、OA 专用页仅作**兼容**保留。命令行新任务请优先使用 `paper_batch.py`，不要默认走 `sd_scraper.py` / `paper_skill.py`。
 
 ## 来源声明
 
@@ -24,14 +27,49 @@ cd "<仓库路径>"
 .\start_paper_scraper_ui.bat
 ```
 
-## UI 中的两个入口
+## UI 中的入口
 
-- `DOI 批量下载` / `文献检索`：用于 ScienceDirect/Elsevier，依赖你的机构权限、Cookie JSON 或浏览器登录状态，PDF 下载仍使用原有 CDP/DevTools 流程。
-- `OA 资源辅助获取`：用于非 ScienceDirect 或混合来源论文列表，仅尝试识别并下载公开开放获取的 PDF 候选资源，不读取 Cookie、不打开机构登录浏览器。
+| 页签 | 定位 |
+| --- | --- |
+| **统一批次（推荐）** | 默认页。`paper_batch.py` 的 `start` / `resume` / `zotero` |
+| DOI 批量下载（兼容） | 旧版 ScienceDirect DOI 批量 |
+| 文献检索（兼容） | 旧版 ScienceDirect 检索 |
+| OA 资源辅助获取（兼容） | 旧版仅 OA 候选 |
+| 运行日志 | 查看输出与报告 |
 
-## 当前推荐操作流程：ScienceDirect DOI 批量下载 PDF
+## 推荐操作流程：统一批次（paper_batch）
 
-界面默认打开“DOI 批量下载”页，并按步骤分成“1 数据来源”“2 权限与输出”“3 预览检查”和底部运行按钮。
+1. 启动后默认在「统一批次（推荐）」页，子命令选择 `start`。
+2. 选择文献清单（TXT/MD/CSV/XLSX/XLSM），或直接粘贴 DOI/题名列表。
+3. 选择输出根目录；**强烈建议填写邮箱**（Unpaywall）；有机构权限时再选 Cookie JSON。
+4. 可选填写 Zotero `library-id` / 等待秒数（会传给 `start` 的自动桥接）。
+5. 保持 Zotero 9 与本地桥接插件可用，点击「开始运行」。失败项默认写入 `zotero_fallback` 并由 `start` **自动排队**。
+6. 若日志退出码为 3 或提示确认：在 Zotero 中接受一次批次确认；确认后子命令选 `zotero` 再运行同一批次即可。
+7. `resume` 仅用于兼容旧批次或显式启用人工重试的场景，默认新任务无需使用。
+
+批次目录结构示例：
+
+```text
+results\paper_batch_时间戳\
+├── pdfs\
+├── reports\
+└── working\
+    ├── batch_state.json
+    ├── manual_retry.csv
+    └── zotero_fallback.csv
+```
+
+也可用命令行完成同一流程：
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
+# 若需确认后继续：
+.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "results\paper_batch_时间戳"
+```
+
+## 兼容流程：ScienceDirect DOI 批量下载 PDF
+
+仅在你明确需要旧版 ScienceDirect 专用流程时使用。打开「DOI 批量下载（兼容）」页，按“1 数据来源”“2 权限与输出”“3 预览检查”操作。
 
 1. 在“1 数据来源”中选择 DOI 表格，例如 `lookup_preview.csv`、`papers.txt` 或 `papers.md`；也可以直接粘贴 DOI/表格内容。
 2. 如需指定 Excel 工作表或 DOI 列名，填写“Excel 工作表名”和“DOI 列名”。

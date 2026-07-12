@@ -47,7 +47,7 @@ class FakeSuccessBrowserSession:
         from paper_automation.institutional.models import PdfCaptureResult
 
         del fetch_patterns, timeout
-        return PdfCaptureResult(requested_url=url, pdf_url=url, pdf_bytes=b"%PDF-1.7\nsuccess")
+        return PdfCaptureResult(requested_url=url, pdf_url=url, pdf_bytes=b"%PDF-1.7\nsuccess\n%%EOF\n")
 
 
 class FakeAuthRequiredBrowserSession:

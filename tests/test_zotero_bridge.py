@@ -451,7 +451,7 @@ class ZoteroBridgeResultTests(ZoteroBridgeRequestTests):
             bridge = queue_bridge_jobs(run_dir, library_id=1, bridge_root=root / "bridge")
             job = bridge.jobs[0]
             pdf = root / "source.pdf"
-            pdf.write_bytes(b"%PDF-1.7\nfixture")
+            pdf.write_bytes(b"%PDF-1.7\nfixture\n%%EOF\n")
             job.result_path.write_text(
                 json.dumps(bridge_result(job, [{
                     "task_id": "paper-0001",

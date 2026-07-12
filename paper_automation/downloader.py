@@ -6,6 +6,7 @@ from typing import Callable
 from urllib.request import Request, urlopen
 
 from .models import DownloadResponse, DownloadResult, PdfCandidate
+from .pdf_validation import is_pdf_bytes, is_valid_pdf
 
 
 BytesGetter = Callable[[str, dict[str, str] | None, int], DownloadResponse]
@@ -31,7 +32,13 @@ def download_pdf(
 ) -> DownloadResult:
     target = Path(path)
     if target.exists() and not overwrite:
-        return DownloadResult("skipped", str(target), "file_exists")
+        if is_valid_pdf(target):
+            return DownloadResult("skipped", str(target), "file_exists")
+        # Corrupt / HTML leftovers must not block a real download.
+        try:
+            target.unlink()
+        except OSError:
+            return DownloadResult("failed", "", "invalid_existing_pdf")
 
     getter = http_bytes or get_bytes
     headers = dict(BROWSER_HEADERS)
@@ -63,5 +70,4 @@ def get_bytes(url: str, headers: dict[str, str] | None = None, timeout: int = 30
 
 
 def _is_pdf_response(response: DownloadResponse) -> bool:
-    content_type = response.content_type.lower()
-    return "pdf" in content_type or response.content.startswith(b"%PDF")
+    return is_pdf_bytes(response.content)

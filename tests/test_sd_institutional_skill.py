@@ -740,7 +740,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             root = Path(tmp)
             pdf_dir = root / "pdfs"
             pdf_dir.mkdir()
-            (pdf_dir / legacy_filename).write_bytes(b"%PDF legacy")
+            (pdf_dir / legacy_filename).write_bytes(b"%PDF-1.7\nlegacy\n%%EOF\n")
             fake_supplement_session = object()
             with patch.dict(sys.modules, {"websocket": fake_websocket_module}), patch(
                 "urllib.request.urlopen",

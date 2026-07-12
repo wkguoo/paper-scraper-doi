@@ -1,0 +1,4 @@
+[WARN  l10nregistry_ffi::env] L10nRegistry error: Missing resource in locale zh-CN: toolkit/global/profileSelection.ftl
+[WARN  l10nregistry_ffi::env] L10nRegistry error: Missing resource in locale zh-TW: toolkit/global/profileSelection.ftl
+[ERROR webrender_bindings::program_cache] shader-cache: Shader disk cache is not supported
+[WARN  webrender::device::gl] Missing optimized shader source for gpu_cache_update

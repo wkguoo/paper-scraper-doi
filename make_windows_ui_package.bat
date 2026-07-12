@@ -16,10 +16,12 @@ mkdir "%PACKAGE_DIR%" || exit /b 1
 
 call :copy_required "paper_scraper_ui.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "start_paper_scraper_ui.bat" "%PACKAGE_DIR%\" || exit /b 1
+call :copy_required "paper_batch.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_scraper.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_scraper_en.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_institutional_skill.py" "%PACKAGE_DIR%\" || exit /b 1
+call :copy_required "institutional_paper_skill.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "student_handoff.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "paper_skill.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "doi_batch_utils.py" "%PACKAGE_DIR%\" || exit /b 1
@@ -37,11 +39,22 @@ call :copy_optional "如何导出机构Cookie.md" "%PACKAGE_DIR%\" || exit /b 1
 call :robocopy_required "paper_automation" "%PACKAGE_DIR%\paper_automation" || exit /b 1
 if not exist "%PACKAGE_DIR%\docs" mkdir "%PACKAGE_DIR%\docs" || exit /b 1
 call :copy_required "docs\sciencedirect_skill_beginner_guide.md" "%PACKAGE_DIR%\docs\" || exit /b 1
+call :copy_required "docs\zotero_bridge_beginner_guide.md" "%PACKAGE_DIR%\docs\" || exit /b 1
 call :robocopy_required "skills" "%PACKAGE_DIR%\skills" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\paper_batch.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\institutional_paper_skill.py" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\sd_supplements.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\paper_automation\pdf_validation.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\paper_automation\batch_workflow.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\paper_automation\batch_stages.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\paper_automation\zotero_bridge.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\paper_automation\institutional\workflow.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\paper_automation\institutional\adapters\common_publishers.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\docs\zotero_bridge_beginner_guide.md" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\skills\sciencedirect-doi-download\references" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\skills\sciencedirect-doi-download\references\beginner-workflow.md" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\skills\sciencedirect-doi-download\references\failure-reasons.md" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\skills\paper-download\SKILL.md" || exit /b 1
 
 echo Package created:
 echo   %CD%\%PACKAGE_DIR%

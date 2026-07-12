@@ -58,7 +58,7 @@ IGNORED_DIR_NAMES = {
 COOKIE_DOMAINS = ("sciencedirect.com", "elsevier.com", "sciencedirectassets.com")
 COOKIE_CACHE_NAME = "sciencedirect_cookies.json"
 DEFAULT_LOGIN_WAIT_SECONDS = 600
-DEFAULT_METADATA_CONFIDENCE = 0.65
+DEFAULT_METADATA_CONFIDENCE = 0.92
 
 
 @dataclass(frozen=True)
@@ -413,7 +413,11 @@ def main(argv: list[str] | None = None) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="ScienceDirect institutional DOI downloader for Codex skill workflows.",
+        description=(
+            "ScienceDirect institutional adapter / preflight helper (internal & compatibility). "
+            "For new literature downloads prefer: paper_batch.py start ..."
+        ),
+        epilog="Default user entry is paper_batch.py or Codex skill paper-download, not this script alone.",
     )
     parser.add_argument("--text", action="append", help="DOI or pasted paper text; may be repeated")
     parser.add_argument("--input", action="append", help="Input file path; may be repeated")
@@ -442,7 +446,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--browser-exe",
-        help="Browser executable path for institutional login/download (defaults to Edge, then Chrome)",
+        help="Browser executable path for institutional login/download (defaults to Chrome, then Edge)",
     )
     return parser
 

@@ -9,7 +9,13 @@ from pathlib import Path
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from sd_scraper import BROWSER_PROFILE_COPY_DIRS, BROWSER_PROFILE_COPY_FILES, _BROWSER_COMPAT_JS, _dt_capture_pdf
+from sd_scraper import (
+    BROWSER_DEBUG_EXTRA_ARGS,
+    BROWSER_PROFILE_COPY_DIRS,
+    BROWSER_PROFILE_COPY_FILES,
+    _BROWSER_COMPAT_JS,
+    _dt_capture_pdf,
+)
 from windows_paths import browser_bin, browser_default_profile, browser_display_name, chrome_debug_log, chrome_debug_profile
 
 from .models import PageSnapshot, PdfCaptureResult
@@ -128,6 +134,7 @@ class DebugBrowserSession:
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
+            *BROWSER_DEBUG_EXTRA_ARGS,
         ]
         with Path(self.log_path).open("w", encoding="utf-8") as log_file:
             subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT)

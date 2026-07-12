@@ -77,13 +77,17 @@ except ImportError:
     HAS_OPENPYXL = False
 
 
+# Only cookie files may be copied into the temporary debug profile.
+# Never copy Preferences / Secure Preferences / Extensions (see sd_scraper.py).
 BROWSER_PROFILE_COPY_FILES = (
     "Cookies",
     "Cookies-journal",
-    "Preferences",
-    "Secure Preferences",
 )
 BROWSER_PROFILE_COPY_DIRS = ()
+BROWSER_DEBUG_EXTRA_ARGS = (
+    "--disable-extensions",
+    "--disable-component-extensions-with-background-pages",
+)
 
 
 def _curl_cffi_missing_message() -> str:
@@ -1316,6 +1320,7 @@ class ScienceDirectScraper:
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
+            *BROWSER_DEBUG_EXTRA_ARGS,
         ]
 
         log_path = chrome_debug_log("chrome_debug.log")
@@ -1776,10 +1781,16 @@ def interactive_mode():
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="ScienceDirect Paper Scraper v2.0",
+        description=(
+            "ScienceDirect Paper Scraper v2.0 (compatibility entry). "
+            "Prefer paper_batch.py or the UI tab 统一批次 for new literature jobs."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
+Recommended product entry:
+  python paper_batch.py start --input papers.xlsx --out results --email you@example.com
+
+This script is a legacy/advanced ScienceDirect-only CLI. Examples:
   python sd_scraper_en.py --interactive
   python sd_scraper_en.py --open-browser-login
   python sd_scraper_en.py -m keyword -q "machine learning" -n 100 --browser-cookies --format xlsx --download-pdfs

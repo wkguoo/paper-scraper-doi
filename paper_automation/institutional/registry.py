@@ -1,6 +1,17 @@
 from __future__ import annotations
 
-from .adapters import AaasAdapter, AcsAdapter, AipAdapter, IucrAdapter, SpringerNatureAdapter, TaylorFrancisAdapter
+from .adapters import (
+    AaasAdapter,
+    AcsAdapter,
+    AipAdapter,
+    IeeeAdapter,
+    IopAdapter,
+    IucrAdapter,
+    RscAdapter,
+    SpringerNatureAdapter,
+    TaylorFrancisAdapter,
+    WileyAdapter,
+)
 from .models import InstitutionalPaper
 
 
@@ -14,6 +25,10 @@ ADAPTERS = (
     TaylorFrancisAdapter(),
     AcsAdapter(),
     AipAdapter(),
+    WileyAdapter(),
+    IeeeAdapter(),
+    RscAdapter(),
+    IopAdapter(),
 )
 
 

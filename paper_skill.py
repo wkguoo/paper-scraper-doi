@@ -11,7 +11,11 @@ from paper_automation.workflow import run_workflow
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Identify paper text, resolve metadata, and download publicly available open-access PDF candidates.",
+        description=(
+            "OA-only helper (compatibility / internal adapter). "
+            "For new literature jobs prefer: paper_batch.py start ..."
+        ),
+        epilog="Default product entry is paper_batch.py (or the UI tab 统一批次), not this script.",
     )
     input_group = parser.add_mutually_exclusive_group(required=True)
     input_group.add_argument("--input", help="Text/CSV/Markdown file containing copied paper information")

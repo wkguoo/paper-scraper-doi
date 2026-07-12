@@ -266,7 +266,7 @@ class MetadataAndPdfTests(unittest.TestCase):
         self.assertEqual(metadata.doi, "10.1016/j.scriptamat.2012.04.034")
         self.assertEqual(metadata.journal, "Scripta Materialia")
         self.assertEqual(metadata.year, "2012")
-        self.assertGreaterEqual(metadata.confidence, 0.65)
+        self.assertGreaterEqual(metadata.confidence, 0.9)
 
     def test_resolver_accepts_abbreviated_journal_citation_fingerprint(self) -> None:
         from paper_automation.metadata_resolver import MetadataResolver
@@ -495,6 +495,163 @@ class MetadataAndPdfTests(unittest.TestCase):
 
         self.assertIsNone(choose_pdf_candidate(metadata))
 
+    def test_pdf_finder_rejects_unpaywall_html_landing_page(self) -> None:
+        from paper_automation.models import MetadataResult
+        from paper_automation.pdf_finder import choose_pdf_candidate
+
+        metadata = MetadataResult(
+            source_index=1,
+            query_title="Landing page",
+            doi="10.1000/landing",
+            title="Landing page",
+            unpaywall={
+                "is_oa": True,
+                "best_oa_location": {
+                    "url": "https://example.com/article/landing-page",
+                    "url_for_pdf": "",
+                },
+            },
+        )
+
+        self.assertIsNone(choose_pdf_candidate(metadata))
+
+    def test_pdf_finder_accepts_unpaywall_url_when_it_looks_like_pdf(self) -> None:
+        from paper_automation.models import MetadataResult
+        from paper_automation.pdf_finder import choose_pdf_candidate
+
+        metadata = MetadataResult(
+            source_index=1,
+            query_title="OA paper",
+            doi="10.1000/oa",
+            title="OA paper",
+            unpaywall={
+                "is_oa": True,
+                "best_oa_location": {
+                    "url": "https://repository.example/articles/paper.pdf",
+                    "url_for_pdf": "",
+                },
+            },
+        )
+
+        chosen = choose_pdf_candidate(metadata)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen.url, "https://repository.example/articles/paper.pdf")
+        self.assertEqual(chosen.source, "unpaywall")
+
+    def test_titles_are_safe_match_rejects_near_miss_topics(self) -> None:
+        from paper_automation.deduplicator import titles_are_safe_match
+
+        self.assertFalse(
+            titles_are_safe_match(
+                "A review of high entropy alloys",
+                "A review of medium entropy alloys",
+            )
+        )
+        self.assertFalse(
+            titles_are_safe_match(
+                "Additive manufacturing of metals",
+                "Additive manufacturing of metal alloys",
+            )
+        )
+        self.assertTrue(
+            titles_are_safe_match(
+                "Corrosion behavior of stainless steel",
+                "Corrosion behaviour of stainless steel",
+            )
+        )
+
+    def test_resolver_rejects_similar_but_wrong_title_only_match(self) -> None:
+        from paper_automation.metadata_resolver import MetadataResolver
+        from paper_automation.models import PaperCandidate
+
+        def fake_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
+            if "api.crossref.org/works?" in url:
+                return {
+                    "message": {
+                        "items": [
+                            {
+                                "DOI": "10.9999/wrong-medium",
+                                "title": ["A review of medium entropy alloys"],
+                                "publisher": "Example",
+                            }
+                        ]
+                    }
+                }
+            return {}
+
+        resolver = MetadataResolver(http_json=fake_json)
+        metadata = resolver.resolve_one(
+            PaperCandidate(
+                source_index=1,
+                raw_text="A review of high entropy alloys",
+                doi="",
+                title="A review of high entropy alloys",
+            )
+        )
+        self.assertEqual(metadata.doi, "")
+
+    def test_downloader_rejects_magic_only_without_eof(self) -> None:
+        from paper_automation.downloader import download_pdf
+        from paper_automation.models import DownloadResponse, PdfCandidate
+
+        def fake_getter(url: str, headers: dict[str, str] | None = None, timeout: int = 30) -> DownloadResponse:
+            return DownloadResponse(b"%PDF-1.7\ntruncated-without-eof", "application/pdf", url)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = download_pdf(
+                PdfCandidate(url="https://example.org/paper.pdf", source="test"),
+                Path(tmp) / "paper.pdf",
+                http_bytes=fake_getter,
+                retries=0,
+                delay_seconds=0,
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.reason, "response_not_pdf")
+
+    def test_downloader_redownloads_when_existing_file_is_invalid(self) -> None:
+        from paper_automation.downloader import download_pdf
+        from paper_automation.models import DownloadResponse, PdfCandidate
+
+        valid = b"%PDF-1.7\nreal content\n%%EOF\n"
+        calls = {"n": 0}
+
+        def fake_getter(url: str, headers: dict[str, str] | None = None, timeout: int = 30) -> DownloadResponse:
+            calls["n"] += 1
+            return DownloadResponse(valid, "application/pdf", url)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "paper.pdf"
+            target.write_bytes(b"NOT_A_PDF_JUST_GARBAGE")
+            result = download_pdf(
+                PdfCandidate(url="https://example.org/paper.pdf", source="test"),
+                target,
+                http_bytes=fake_getter,
+                overwrite=False,
+                retries=0,
+                delay_seconds=0,
+            )
+            self.assertEqual(result.status, "downloaded")
+            self.assertEqual(target.read_bytes(), valid)
+            self.assertEqual(calls["n"], 1)
+
+    def test_downloader_skips_valid_existing_pdf(self) -> None:
+        from paper_automation.downloader import download_pdf
+        from paper_automation.models import PdfCandidate
+
+        valid = b"%PDF-1.7\nreal content\n%%EOF\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "paper.pdf"
+            target.write_bytes(valid)
+            result = download_pdf(
+                PdfCandidate(url="https://example.org/paper.pdf", source="test"),
+                target,
+                http_bytes=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("should not download")),
+                overwrite=False,
+            )
+            self.assertEqual(result.status, "skipped")
+            self.assertEqual(result.reason, "file_exists")
+
     def test_downloader_sends_browser_like_user_agent(self) -> None:
         from paper_automation.downloader import download_pdf
         from paper_automation.models import DownloadResponse, PdfCandidate
@@ -503,7 +660,7 @@ class MetadataAndPdfTests(unittest.TestCase):
 
         def fake_getter(url: str, headers: dict[str, str] | None = None, timeout: int = 30) -> DownloadResponse:
             captured_headers.update(headers or {})
-            return DownloadResponse(b"%PDF-1.7\n", "application/pdf", url)
+            return DownloadResponse(b"%PDF-1.7\ncontent\n%%EOF\n", "application/pdf", url)
 
         with tempfile.TemporaryDirectory() as tmp:
             result = download_pdf(
@@ -514,6 +671,19 @@ class MetadataAndPdfTests(unittest.TestCase):
 
         self.assertEqual(result.status, "downloaded")
         self.assertIn("Mozilla/5.0", captured_headers.get("User-Agent", ""))
+
+    def test_pdf_validation_requires_header_and_eof(self) -> None:
+        from paper_automation.pdf_validation import is_pdf_bytes, is_valid_pdf, minimal_pdf_bytes
+
+        self.assertTrue(is_pdf_bytes(minimal_pdf_bytes(b"ok")))
+        self.assertFalse(is_pdf_bytes(b"%PDF-1.7\nno-eof"))
+        self.assertFalse(is_pdf_bytes(b"%PDF\n%%EOF\n"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "x.pdf"
+            path.write_bytes(minimal_pdf_bytes())
+            self.assertTrue(is_valid_pdf(path))
+            path.write_bytes(b"%PDF-1.7\nno-eof")
+            self.assertFalse(is_valid_pdf(path))
 
 
 class FileWorkflowTests(unittest.TestCase):

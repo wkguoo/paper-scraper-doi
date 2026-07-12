@@ -16,6 +16,9 @@ from paper_automation.batch_workflow import (
     ZOTERO_RESULT_FIELDS,
     BatchRunResult,
     finalize_batch,
+    load_batch_state,
+    paths_from_run_dir,
+    result_from_state,
     resume_batch,
     start_batch,
 )
@@ -146,14 +149,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         description=(
-            "项目优先的批量 PDF 工作流：支持 TXT/MD/CSV/XLSX/XLSM；"
-            "仅使用合法 OA/授权访问；登录或验证码项目只重试一次；"
-            "Zotero 附件以非破坏复制方式归并。"
+            "【推荐入口】统一批量 PDF 工作流：支持 TXT/MD/CSV/XLSX/XLSM；"
+            "合法 OA → 机构访问 → 失败项默认进 Zotero 回退（默认跳过人工 resume）；"
+            "start 默认自动排队 Zotero 桥接；附件以非破坏复制方式归并。"
+            "新任务请用本脚本，不要默认使用 paper_skill.py / sd_scraper.py 等兼容入口。"
         ),
+        epilog=(
+            "示例：paper_batch.py start --input papers.xlsx --out results --email you@example.com\n"
+            "默认：机构/登录失败不进 manual_retry，直接 zotero_fallback，并自动 queue 桥接。\n"
+            "兼容入口（非默认）：sd_scraper.py、paper_skill.py、sd_institutional_skill.py、UI 其它页签。"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    start = subparsers.add_parser("start", help="创建批次并执行 OA/授权访问阶段")
+    start = subparsers.add_parser("start", help="创建批次：OA/机构下载，失败进 Zotero 并默认自动排队")
     source = start.add_mutually_exclusive_group(required=True)
     source.add_argument("--input", help="文献清单：TXT/MD/CSV/XLSX/XLSM")
     source.add_argument("--text", help="直接粘贴的 DOI 或文献文本")
@@ -164,13 +174,30 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--browser-exe",
         default="",
-        help="显式指定外部浏览器路径（未指定时默认 Edge，然后 Chrome）",
+        help="显式指定外部浏览器路径（未指定时默认 Chrome，然后 Edge）",
     )
     start.add_argument("--login-wait-seconds", type=int, default=0, help="登录等待秒数")
     start.add_argument("--debug-port", type=int, default=9333, help="浏览器调试端口")
     start.add_argument("--throttle-seconds", type=float, default=1.0, help="请求间隔秒数")
+    start.add_argument(
+        "--enable-manual-retry",
+        action="store_true",
+        help="兼容：启用 manual_retry/resume 门禁（默认关闭，失败直接进 Zotero）",
+    )
+    start.add_argument(
+        "--no-auto-zotero",
+        action="store_true",
+        help="start 结束后不自动排队 Zotero 桥接（默认自动排队）",
+    )
+    start.add_argument("--library-id", type=int, default=1, help="自动 Zotero 时的文库 ID（默认：1）")
+    start.add_argument(
+        "--wait-seconds",
+        type=int,
+        default=0,
+        help="自动 Zotero 时等待结果的秒数（0=只排队；与 zotero 子命令相同）",
+    )
 
-    resume = subparsers.add_parser("resume", help="仅重试一次登录或验证码失败条目")
+    resume = subparsers.add_parser("resume", help="兼容：仅重试一次登录/验证码失败条目（默认批次已跳过）")
     resume.add_argument("--run-dir", required=True, help="已有批次目录")
 
     finalize = subparsers.add_parser("finalize", help="归并 Zotero 附件并生成最终报告")
@@ -278,9 +305,20 @@ def _print_summary(result: BatchRunResult) -> None:
     print(f"报告目录：{result.paths.reports}")
 
 
+def _print_zotero_next_step(result: BatchRunResult, *, queued: bool = False) -> None:
+    run_dir = Path(result.paths.root).expanduser().resolve()
+    if queued:
+        print("已自动将失败项排队到 Zotero 本地桥接。")
+        print("请保持 Zotero 打开并接受一次批次确认；确认后重新运行：")
+    else:
+        print("下一步：机构/OA 失败项已写入 Zotero 回退清单，请运行：")
+    print(_powershell_command("zotero", "--run-dir", run_dir))
+    print(f"Zotero 回退清单：{result.paths.zotero_fallback}")
+
+
 def _print_next_step(result: BatchRunResult) -> None:
     if result.manual_retry_count > 0:
-        print("下一步：完成登录或验证码后，只能重试一次：")
+        print("下一步：本批次启用了人工重试；完成登录或验证码后只能 resume 一次：")
         print(_powershell_command(
             "resume",
             "--run-dir",
@@ -288,10 +326,7 @@ def _print_next_step(result: BatchRunResult) -> None:
         ))
         return
     if result.zotero_fallback_count > 0:
-        print("下一步：请在 Zotero 中处理回退条目；附件将以非破坏复制方式归并。")
-        print(f"默认结果文件：{result.paths.zotero_results}")
-        print("完成后运行：")
-        print(_finalize_command(result))
+        _print_zotero_next_step(result, queued=False)
         return
     results_path, created = _ensure_header_only_zotero_results(result)
     if created:
@@ -321,6 +356,26 @@ def _print_error(error: Exception) -> None:
     print(message, file=sys.stderr)
 
 
+def _handle_bridge_run(bridge_run, *, rerun_command: str = "zotero") -> tuple[BatchRunResult | None, int | None]:
+    """Return (result, early_exit_code). early_exit_code is set for awaiting_confirmation."""
+
+    if bridge_run.status == "awaiting_confirmation":
+        if bridge_run.bridge is None:
+            raise RuntimeError("bridge_batch_result_missing")
+        print(f"桥接任务：{len(bridge_run.bridge.jobs)} 个子作业")
+        print("请在 Zotero 中确认一次；确认后重新运行同一条命令即可继续。")
+        if bridge_run.bridge.jobs:
+            run_dir = Path(bridge_run.bridge.jobs[0].run_dir).expanduser().resolve()
+            print(f"批次目录：{run_dir}")
+            print(_powershell_command(rerun_command, "--run-dir", run_dir))
+        return None, 3
+    if bridge_run.batch_result is None:
+        if bridge_run.status == "no_fallback":
+            return None, None
+        raise RuntimeError("bridge_batch_result_missing")
+    return bridge_run.batch_result, None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """解析参数、调用批次工作流，并返回适合脚本使用的退出码。"""
 
@@ -340,9 +395,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                     login_wait_seconds=args.login_wait_seconds,
                     debug_port=args.debug_port,
                     throttle_seconds=args.throttle_seconds,
+                    skip_manual_retry=not args.enable_manual_retry,
                 ),
             )
-        elif args.command == "resume":
+            _print_summary(result)
+            auto_zotero = not args.no_auto_zotero
+            if auto_zotero and result.zotero_fallback_count > 0:
+                print("机构/OA 失败项将自动排队 Zotero 桥接…")
+                bridge_run = run_zotero_bridge(
+                    result.paths.root,
+                    library_id=args.library_id,
+                    wait_seconds=args.wait_seconds,
+                )
+                bridge_result, early = _handle_bridge_run(bridge_run, rerun_command="zotero")
+                if early is not None:
+                    _print_zotero_next_step(result, queued=True)
+                    return early
+                if bridge_result is not None:
+                    result = bridge_result
+                    _print_summary(result)
+                    if result.failed_count == 0 and result.zotero_fallback_count == 0:
+                        print(f"批次已完成。最终 PDF 目录：{result.paths.pdfs}")
+                    else:
+                        print("报告已更新。批次未完成且可恢复。")
+                        print(f"未解决数量：{max(result.failed_count, result.zotero_fallback_count)}")
+                    return 0
+            _print_next_step(result)
+            return 0
+        if args.command == "resume":
             result = resume_batch(args.run_dir)
         elif args.command == "finalize":
             result = finalize_batch(args.run_dir, args.zotero_results)
@@ -352,16 +432,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 library_id=args.library_id,
                 wait_seconds=args.wait_seconds,
             )
-            if bridge_run.status == "awaiting_confirmation":
-                if bridge_run.bridge is None:
-                    raise RuntimeError("bridge_batch_result_missing")
-                print(f"桥接任务：{len(bridge_run.bridge.jobs)} 个子作业")
-                print("请在 Zotero 中确认一次；确认后重新运行同一条命令即可继续。")
-                print(f"批次目录：{Path(args.run_dir).expanduser().resolve()}")
-                return 3
-            if bridge_run.batch_result is None:
-                raise RuntimeError("bridge_batch_result_missing")
-            result = bridge_run.batch_result
+            bridge_result, early = _handle_bridge_run(bridge_run, rerun_command="zotero")
+            if early is not None:
+                return early
+            if bridge_result is None:
+                paths = paths_from_run_dir(args.run_dir)
+                result = result_from_state(paths, load_batch_state(paths.root))
+            else:
+                result = bridge_result
 
         _print_summary(result)
         if args.command in {"finalize", "zotero"}:

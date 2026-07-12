@@ -35,7 +35,9 @@ APP_DIR = Path(__file__).resolve().parent
 SD_SCRIPT = APP_DIR / "sd_scraper.py"
 SD_SKILL_SCRIPT = APP_DIR / "sd_institutional_skill.py"
 OA_SCRIPT = APP_DIR / "paper_skill.py"
+BATCH_SCRIPT = APP_DIR / "paper_batch.py"
 SETTINGS_FILE = APP_DIR / "results" / "_ui_settings.json"
+BATCH_ACTIONS = ("start", "resume", "zotero")
 PREVIEW_LIMIT = 200
 LOG_DRAIN_LIMIT = 200
 LOG_MAX_LINES = 5000
@@ -50,7 +52,7 @@ PREVIEW_STATUS_LABELS = {
 class PaperScraperUI:
     def __init__(self, root: Tk) -> None:
         self.root = root
-        self.root.title("Paper Download UI")
+        self.root.title("Paper Download UI · 推荐：统一批次")
         self.settings = self._load_settings_data()
         self.root.geometry(self.settings.get("geometry") or "1180x800")
         self.root.minsize(980, 680)
@@ -61,7 +63,7 @@ class PaperScraperUI:
         self.started_at: float | None = None
 
         self.mode_var = StringVar(value="doi_batch")
-        self.workflow_var = StringVar(value="sciencedirect")
+        self.workflow_var = StringVar(value=self.settings.get("workflow") or "paper_batch")
         self.query_var = StringVar(value="")
         self.journal_var = StringVar(value="")
         self.author_var = StringVar(value="")
@@ -81,6 +83,13 @@ class PaperScraperUI:
         self.oa_input_file_var = StringVar(value="")
         self.oa_email_var = StringVar(value=self.settings.get("oa_email") or "")
         self.oa_limit_var = StringVar(value="")
+        self.batch_action_var = StringVar(value=self.settings.get("batch_action") or "start")
+        self.batch_input_file_var = StringVar(value=self.settings.get("batch_input_file") or "")
+        self.batch_run_dir_var = StringVar(value=self.settings.get("batch_run_dir") or "")
+        self.batch_run_name_var = StringVar(value="")
+        self.batch_login_wait_var = StringVar(value=str(self.settings.get("batch_login_wait") or "0"))
+        self.batch_library_id_var = StringVar(value=str(self.settings.get("batch_library_id") or "1"))
+        self.batch_wait_seconds_var = StringVar(value=str(self.settings.get("batch_wait_seconds") or "0"))
 
         self.browser_cookies_var = BooleanVar(value=bool(self.settings.get("browser_cookies", False)))
         self.open_login_var = BooleanVar(value=bool(self.settings.get("open_login", False)))
@@ -153,6 +162,13 @@ class PaperScraperUI:
                 "download_pdf": bool(self.download_pdf_var.get()),
                 "download_supplements": bool(self.download_supplements_var.get()),
                 "oa_email": self.oa_email_var.get().strip(),
+                "workflow": self.workflow_var.get().strip(),
+                "batch_action": self.batch_action_var.get().strip(),
+                "batch_input_file": self.batch_input_file_var.get().strip(),
+                "batch_run_dir": self.batch_run_dir_var.get().strip(),
+                "batch_login_wait": self.batch_login_wait_var.get().strip(),
+                "batch_library_id": self.batch_library_id_var.get().strip(),
+                "batch_wait_seconds": self.batch_wait_seconds_var.get().strip(),
                 "active_tab": self.notebook.index(self.notebook.select()) if hasattr(self, "notebook") else 0,
             }
             SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -199,23 +215,26 @@ class PaperScraperUI:
         ttk.Label(header, text="论文下载集成界面", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
-            text="推荐流程：选择下载模式  →  填写数据来源  →  检查权限与输出  →  开始运行",
+            text="默认入口：统一批次（paper_batch）  start（失败自动排队 Zotero）· 其它页签仅兼容旧流程",
             style="Step.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         self.notebook = ttk.Notebook(root_frame)
         self.notebook.grid(row=2, column=0, sticky="nsew", pady=(10, 8))
 
+        self.batch_tab = ttk.Frame(self.notebook, padding=10)
         self.doi_tab = ttk.Frame(self.notebook, padding=10)
         self.search_tab = ttk.Frame(self.notebook, padding=10)
         self.oa_tab = ttk.Frame(self.notebook, padding=10)
         self.run_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.doi_tab, text="DOI 批量下载")
-        self.notebook.add(self.search_tab, text="文献检索")
-        self.notebook.add(self.oa_tab, text="OA 资源辅助获取")
+        self.notebook.add(self.batch_tab, text="统一批次（推荐）")
+        self.notebook.add(self.doi_tab, text="DOI 批量下载（兼容）")
+        self.notebook.add(self.search_tab, text="文献检索（兼容）")
+        self.notebook.add(self.oa_tab, text="OA 资源辅助获取（兼容）")
         self.notebook.add(self.run_tab, text="运行日志")
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
+        self._build_batch_tab(self.batch_tab)
         self._build_doi_tab(self.doi_tab)
         self._build_search_tab(self.search_tab)
         self._build_oa_tab(self.oa_tab)
@@ -223,7 +242,7 @@ class PaperScraperUI:
         try:
             self.notebook.select(int(self.settings.get("active_tab", 0)))
         except Exception:
-            self.notebook.select(self.doi_tab)
+            self.notebook.select(self.batch_tab)
 
         footer = ttk.Frame(root_frame)
         footer.grid(row=3, column=0, sticky="ew", pady=(10, 0))
@@ -245,6 +264,108 @@ class PaperScraperUI:
         self.continue_button.grid(row=0, column=4, padx=(8, 0))
         ttk.Button(footer, text="打开输出目录", command=self.open_output_dir).grid(row=0, column=5, padx=(8, 0))
         ttk.Button(footer, text="清空日志", command=self.clear_log).grid(row=0, column=6, padx=(8, 0))
+
+    def _build_batch_tab(self, frame: ttk.Frame) -> None:
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+
+        ttk.Label(
+            frame,
+            text="默认入口 · 统一批次：OA → 机构授权 → 一次人工重试 → Zotero（paper_batch.py）",
+            font=("Microsoft YaHei UI", 11, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        body = ttk.Frame(frame)
+        body.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(0, weight=1)
+
+        left = ttk.LabelFrame(body, text="1 操作与输入", padding=10)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        left.columnconfigure(1, weight=1)
+        left.rowconfigure(5, weight=1)
+
+        ttk.Label(left, text="子命令").grid(row=0, column=0, sticky="w")
+        action_combo = ttk.Combobox(
+            left,
+            textvariable=self.batch_action_var,
+            values=list(BATCH_ACTIONS),
+            state="readonly",
+            width=16,
+        )
+        action_combo.grid(row=0, column=1, sticky="w", pady=(0, 8))
+        action_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_parameter_changed())
+
+        ttk.Label(left, text="文献清单（start）").grid(row=1, column=0, sticky="w")
+        ttk.Entry(left, textvariable=self.batch_input_file_var).grid(row=1, column=1, sticky="ew", pady=(0, 4))
+        ttk.Button(left, text="选择文件", command=self.choose_batch_input_file).grid(
+            row=1, column=2, sticky="ew", padx=(6, 0), pady=(0, 4)
+        )
+
+        ttk.Label(left, text="或粘贴 DOI / 题名 / 推荐列表").grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.batch_text = Text(left, height=12, width=52, wrap="word", font=("Consolas", 9))
+        self.batch_text.grid(row=3, column=0, columnspan=3, sticky="nsew", pady=(2, 6))
+        self.batch_text.bind("<KeyRelease>", self._on_batch_text_changed)
+        self.batch_text.bind("<<Paste>>", self._on_batch_text_changed)
+        ttk.Button(left, text="清空粘贴", command=self.clear_batch_text).grid(row=4, column=0, sticky="ew")
+
+        ttk.Label(left, text="已有批次目录（resume / zotero）").grid(row=5, column=0, sticky="nw", pady=(8, 0))
+        ttk.Entry(left, textvariable=self.batch_run_dir_var).grid(row=5, column=1, sticky="ew", pady=(8, 0))
+        ttk.Button(left, text="选择目录", command=self.choose_batch_run_dir).grid(
+            row=5, column=2, sticky="ew", padx=(6, 0), pady=(8, 0)
+        )
+
+        right = ttk.LabelFrame(body, text="2 权限与输出", padding=10)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+
+        ttk.Label(right, text="输出根目录（start）").grid(row=0, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.output_var).grid(row=1, column=0, sticky="ew", pady=(2, 8))
+        ttk.Button(right, text="选择输出目录", command=self.choose_output_dir).grid(row=2, column=0, sticky="ew", pady=(0, 8))
+
+        ttk.Label(right, text="可选批次名称（run-name）").grid(row=3, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.batch_run_name_var).grid(row=4, column=0, sticky="ew", pady=(2, 8))
+
+        ttk.Label(right, text="邮箱（Unpaywall / 礼貌访问，强烈建议填写）").grid(row=5, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.oa_email_var).grid(row=6, column=0, sticky="ew", pady=(2, 8))
+
+        ttk.Label(right, text="Cookie JSON（机构权限，可选）").grid(row=7, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.cookies_file_var).grid(row=8, column=0, sticky="ew", pady=(2, 4))
+        ttk.Button(right, text="选择 Cookie 文件", command=self.choose_cookies_file).grid(row=9, column=0, sticky="ew", pady=(0, 8))
+
+        ttk.Label(right, text="登录等待秒数（start，可选）").grid(row=10, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.batch_login_wait_var, width=12).grid(row=11, column=0, sticky="w", pady=(2, 8))
+
+        ttk.Label(right, text="Zotero library-id（start 自动桥接 / zotero）").grid(row=12, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.batch_library_id_var, width=12).grid(row=13, column=0, sticky="w", pady=(2, 8))
+
+        ttk.Label(right, text="等待 Zotero 结果秒数（start/zotero，0=只排队）").grid(row=14, column=0, sticky="w")
+        ttk.Entry(right, textvariable=self.batch_wait_seconds_var, width=12).grid(row=15, column=0, sticky="w", pady=(2, 8))
+
+        ttk.Label(
+            right,
+            text=(
+                "start：OA + 机构，失败默认进 Zotero 并自动排队桥接；"
+                "resume：兼容旧批次的一次人工重试；"
+                "zotero：确认后重跑或手动排队桥接。"
+            ),
+            foreground="#555555",
+            wraplength=420,
+        ).grid(row=16, column=0, sticky="ew", pady=(8, 0))
+
+        hint = ttk.LabelFrame(frame, text="说明", padding=10)
+        hint.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        ttk.Label(
+            hint,
+            text=(
+                "新任务请只用本页。默认无需 resume：机构失败会写入 zotero_fallback 并由 start 自动排队。"
+                "保持 Zotero 打开；若提示确认，在插件中点一次后可用子命令 zotero 继续。"
+                "日志出现「运行目录：…」后会自动填回「已有批次目录」。"
+            ),
+            wraplength=1020,
+            foreground="#444444",
+        ).grid(row=0, column=0, sticky="w")
 
     def _build_doi_tab(self, frame: ttk.Frame) -> None:
         frame.columnconfigure(0, weight=1)
@@ -664,6 +785,13 @@ class PaperScraperUI:
             self.oa_input_file_var,
             self.oa_email_var,
             self.oa_limit_var,
+            self.batch_action_var,
+            self.batch_input_file_var,
+            self.batch_run_dir_var,
+            self.batch_run_name_var,
+            self.batch_login_wait_var,
+            self.batch_library_id_var,
+            self.batch_wait_seconds_var,
             self.browser_cookies_var,
             self.open_login_var,
             self.download_pdf_var,
@@ -691,9 +819,14 @@ class PaperScraperUI:
     def _on_oa_text_changed(self, *_args: object) -> None:
         self.root.after_idle(self._on_parameter_changed)
 
+    def _on_batch_text_changed(self, *_args: object) -> None:
+        self.root.after_idle(self._on_parameter_changed)
+
     def _on_tab_changed(self, _event: object) -> None:
         selected = self.notebook.select()
-        if selected == str(self.doi_tab):
+        if selected == str(self.batch_tab):
+            self.workflow_var.set("paper_batch")
+        elif selected == str(self.doi_tab):
             self.workflow_var.set("sciencedirect")
             if self.mode_var.get() != "doi_batch":
                 self.mode_var.set("doi_batch")
@@ -708,6 +841,37 @@ class PaperScraperUI:
             self._save_settings()
 
     def _refresh_task_summary(self) -> None:
+        if self.workflow_var.get() == "paper_batch":
+            action = self.batch_action_var.get().strip() or "start"
+            output_dir = self.output_var.get().strip() or "(默认 results)"
+            run_dir = self.batch_run_dir_var.get().strip() or "未选择"
+            if action == "start":
+                source = self.batch_input_file_var.get().strip() or ("粘贴内容" if self._get_batch_text() else "未选择")
+                email = self.oa_email_var.get().strip() or "未填写（Unpaywall 将跳过）"
+                cookie = self.cookies_file_var.get().strip() or "未选择 Cookie"
+                library_id = self.batch_library_id_var.get().strip() or "1"
+                wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
+                summary = (
+                    f"统一批次 start：输入={source}；输出根目录={output_dir}；"
+                    f"邮箱={email}；Cookie={cookie}；流程=OA→机构→失败自动 Zotero；"
+                    f"library-id={library_id}；wait-seconds={wait_seconds}。"
+                )
+            elif action == "resume":
+                summary = f"统一批次 resume（兼容）：run-dir={run_dir}；仅重试一次登录/验证码失败项。"
+            else:
+                library_id = self.batch_library_id_var.get().strip() or "1"
+                wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
+                summary = (
+                    f"统一批次 zotero：run-dir={run_dir}；library-id={library_id}；"
+                    f"wait-seconds={wait_seconds}。"
+                )
+            self.summary_var.set(summary)
+            preflight_items = self._get_preflight_items()
+            warnings = [message for level, message in preflight_items if level != "ok"]
+            self.warning_var.set("；".join(warnings))
+            self._refresh_preflight_panel(preflight_items)
+            return
+
         if self.workflow_var.get() == "legal_oa":
             output_dir = self.output_var.get().strip() or "(默认 results)"
             input_text = self.oa_input_file_var.get().strip() or ("粘贴内容" if self._get_oa_text() else "未选择")
@@ -763,8 +927,66 @@ class PaperScraperUI:
         self._refresh_preflight_panel(preflight_items)
 
     def _get_preflight_items(self) -> list[tuple[str, str]]:
+        if self.workflow_var.get() == "paper_batch":
+            items: list[tuple[str, str]] = list(("warn", warning) for warning in self.startup_warnings)
+            if not BATCH_SCRIPT.exists():
+                items.append(("error", f"找不到统一批次脚本: {BATCH_SCRIPT}"))
+            action = self.batch_action_var.get().strip() or "start"
+            if action not in BATCH_ACTIONS:
+                items.append(("error", f"未知子命令: {action}"))
+            if action == "start":
+                input_path = self.batch_input_file_var.get().strip()
+                pasted = self._get_batch_text()
+                if input_path:
+                    if Path(input_path).exists():
+                        items.append(("ok", f"批次输入文件存在: {input_path}"))
+                    else:
+                        items.append(("error", f"批次输入文件不存在: {input_path}"))
+                elif pasted:
+                    items.append(("ok", "已填写批次粘贴内容"))
+                else:
+                    items.append(("error", "start 需要选择文献清单或粘贴内容"))
+                output_dir = Path(self.output_var.get().strip() or APP_DIR / "results")
+                if output_dir.exists():
+                    if output_dir.is_dir() and os.access(output_dir, os.W_OK):
+                        items.append(("ok", f"输出目录可写: {output_dir}"))
+                    else:
+                        items.append(("error", f"输出目录不可写: {output_dir}"))
+                elif output_dir.parent.exists() and os.access(output_dir.parent, os.W_OK):
+                    items.append(("warn", f"输出目录不存在，运行时会尝试创建: {output_dir}"))
+                else:
+                    items.append(("error", f"输出目录父目录不可写或不存在: {output_dir.parent}"))
+                if not self.oa_email_var.get().strip():
+                    items.append(("warn", "未填写邮箱：Unpaywall OA 查询将跳过，公开 OA 候选命中率会下降"))
+                cookie_path = self.cookies_file_var.get().strip()
+                if cookie_path:
+                    items.append(("ok", check_cookie_json(cookie_path).message))
+                else:
+                    items.append(("warn", "未选择 Cookie：非 OA 的机构下载可能需要浏览器登录"))
+            else:
+                run_dir = self.batch_run_dir_var.get().strip()
+                if not run_dir:
+                    items.append(("error", f"{action} 需要填写已有批次目录 --run-dir"))
+                elif not Path(run_dir).is_dir():
+                    items.append(("error", f"批次目录不存在: {run_dir}"))
+                else:
+                    items.append(("ok", f"批次目录存在: {run_dir}"))
+                    state_path = Path(run_dir) / "working" / "batch_state.json"
+                    if state_path.is_file():
+                        items.append(("ok", "检测到 batch_state.json"))
+                    else:
+                        items.append(("warn", "未检测到 working/batch_state.json，请确认目录是否为完整批次"))
+                if action == "zotero":
+                    library_id = self.batch_library_id_var.get().strip() or "1"
+                    if not library_id.isdigit() or int(library_id) <= 0:
+                        items.append(("error", "library-id 必须是正整数"))
+                    wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
+                    if not wait_seconds.isdigit() or not (0 <= int(wait_seconds) <= 86400):
+                        items.append(("error", "wait-seconds 必须是 0–86400 的整数"))
+            return items
+
         if self.workflow_var.get() == "legal_oa":
-            items: list[tuple[str, str]] = []
+            items = []
             input_path = self.oa_input_file_var.get().strip()
             pasted_text = self._get_oa_text()
             if input_path:
@@ -852,6 +1074,63 @@ class PaperScraperUI:
         self.preflight_text.configure(state="disabled")
 
     def _validate_inputs(self) -> bool:
+        if self.workflow_var.get() == "paper_batch":
+            if not BATCH_SCRIPT.exists():
+                messagebox.showerror("文件缺失", f"找不到必要脚本：\n{BATCH_SCRIPT}")
+                return False
+            action = self.batch_action_var.get().strip() or "start"
+            if action not in BATCH_ACTIONS:
+                messagebox.showerror("参数错误", f"未知统一批次子命令：{action}")
+                return False
+            if action == "start":
+                input_path = self.batch_input_file_var.get().strip()
+                if not input_path and not self._get_batch_text():
+                    messagebox.showerror("参数错误", "start 需要选择文献清单，或粘贴 DOI/题名列表。")
+                    return False
+                if input_path and not Path(input_path).exists():
+                    messagebox.showerror("参数错误", f"输入文件不存在：\n{input_path}")
+                    return False
+                wait_text = self.batch_login_wait_var.get().strip() or "0"
+                try:
+                    if int(wait_text) < 0:
+                        raise ValueError
+                except ValueError:
+                    messagebox.showerror("参数错误", "登录等待秒数必须是非负整数。")
+                    return False
+                try:
+                    output_dir = Path(self.output_var.get().strip() or APP_DIR / "results")
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    probe = output_dir / ".write_test.tmp"
+                    probe.write_text("ok", encoding="utf-8")
+                    probe.unlink(missing_ok=True)
+                except Exception as exc:
+                    messagebox.showerror("输出目录不可写", str(exc))
+                    return False
+            else:
+                run_dir = self.batch_run_dir_var.get().strip()
+                if not run_dir:
+                    messagebox.showerror("参数错误", f"{action} 需要填写已有批次目录。")
+                    return False
+                if not Path(run_dir).is_dir():
+                    messagebox.showerror("参数错误", f"批次目录不存在：\n{run_dir}")
+                    return False
+                if action == "zotero":
+                    library_id = self.batch_library_id_var.get().strip() or "1"
+                    wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
+                    try:
+                        if int(library_id) <= 0:
+                            raise ValueError
+                    except ValueError:
+                        messagebox.showerror("参数错误", "library-id 必须是正整数。")
+                        return False
+                    try:
+                        if not (0 <= int(wait_seconds) <= 86400):
+                            raise ValueError
+                    except ValueError:
+                        messagebox.showerror("参数错误", "wait-seconds 必须是 0–86400 的整数。")
+                        return False
+            return True
+
         if self.workflow_var.get() == "legal_oa":
             input_path = self.oa_input_file_var.get().strip()
             if not input_path and not self._get_oa_text():
@@ -969,6 +1248,9 @@ class PaperScraperUI:
         return True
 
     def _build_command(self, materialize_paste: bool = False, auto_retry_input: bool = False) -> list[str]:
+        if self.workflow_var.get() == "paper_batch":
+            return self._build_paper_batch_command(materialize_paste=materialize_paste)
+
         if self.workflow_var.get() == "legal_oa":
             cmd = [sys.executable, "-u", str(OA_SCRIPT)]
             input_path = self.oa_input_file_var.get().strip()
@@ -1040,6 +1322,41 @@ class PaperScraperUI:
             if not self.download_supplements_var.get():
                 cmd.append("--no-download-supplements")
 
+        return cmd
+
+    def _build_paper_batch_command(self, materialize_paste: bool = False) -> list[str]:
+        action = self.batch_action_var.get().strip() or "start"
+        cmd = [sys.executable, "-u", str(BATCH_SCRIPT), action]
+        if action == "start":
+            input_path = self.batch_input_file_var.get().strip()
+            if input_path:
+                self._append_value(cmd, "--input", input_path)
+            elif self._get_batch_text():
+                if materialize_paste:
+                    self._append_value(cmd, "--text", self._get_batch_text())
+                else:
+                    self._append_value(cmd, "--text", "<粘贴内容将在运行时传入>")
+            self._append_value(cmd, "--out", self.output_var.get().strip() or str(APP_DIR / "results"))
+            self._append_value(cmd, "--run-name", self.batch_run_name_var.get())
+            self._append_value(cmd, "--email", self.oa_email_var.get())
+            self._append_value(cmd, "--cookies", self.cookies_file_var.get())
+            wait_text = self.batch_login_wait_var.get().strip()
+            if wait_text and wait_text != "0":
+                self._append_value(cmd, "--login-wait-seconds", wait_text)
+            library_id = self.batch_library_id_var.get().strip() or "1"
+            self._append_value(cmd, "--library-id", library_id)
+            wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
+            if wait_seconds and wait_seconds != "0":
+                self._append_value(cmd, "--wait-seconds", wait_seconds)
+            return cmd
+
+        self._append_value(cmd, "--run-dir", self.batch_run_dir_var.get())
+        if action == "zotero":
+            library_id = self.batch_library_id_var.get().strip() or "1"
+            wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
+            self._append_value(cmd, "--library-id", library_id)
+            if wait_seconds and wait_seconds != "0":
+                self._append_value(cmd, "--wait-seconds", wait_seconds)
         return cmd
 
     def _build_beginner_preflight_command(self, materialize_paste: bool = False) -> list[str]:
@@ -1118,6 +1435,31 @@ class PaperScraperUI:
         if selected:
             self.oa_input_file_var.set(selected)
 
+    def choose_batch_input_file(self) -> None:
+        selected = filedialog.askopenfilename(
+            initialdir=str(APP_DIR),
+            filetypes=[
+                ("支持的输入文件", "*.xlsx *.xlsm *.csv *.tsv *.txt *.md *.markdown"),
+                ("Excel 文件", "*.xlsx *.xlsm"),
+                ("表格文本", "*.csv *.tsv"),
+                ("纯文本/Markdown", "*.txt *.md *.markdown"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if selected:
+            self.batch_input_file_var.set(selected)
+            if self.batch_action_var.get().strip() != "start":
+                self.batch_action_var.set("start")
+
+    def choose_batch_run_dir(self) -> None:
+        selected = filedialog.askdirectory(
+            initialdir=self.batch_run_dir_var.get().strip()
+            or self.output_var.get().strip()
+            or str(APP_DIR / "results")
+        )
+        if selected:
+            self.batch_run_dir_var.set(selected)
+
     def choose_cookies_file(self) -> None:
         selected = filedialog.askopenfilename(
             initialdir=str(APP_DIR),
@@ -1169,6 +1511,11 @@ class PaperScraperUI:
             return ""
         return self.oa_text.get("1.0", "end").strip()
 
+    def _get_batch_text(self) -> str:
+        if not hasattr(self, "batch_text"):
+            return ""
+        return self.batch_text.get("1.0", "end").strip()
+
     @staticmethod
     def _extract_doi_from_text(text: str) -> str:
         return extract_doi_from_text(text)
@@ -1214,6 +1561,12 @@ class PaperScraperUI:
     def clear_oa_text(self) -> None:
         if hasattr(self, "oa_text"):
             self.oa_text.delete("1.0", "end")
+        self._refresh_command_preview()
+        self._refresh_task_summary()
+
+    def clear_batch_text(self) -> None:
+        if hasattr(self, "batch_text"):
+            self.batch_text.delete("1.0", "end")
         self._refresh_command_preview()
         self._refresh_task_summary()
 
@@ -1312,6 +1665,14 @@ class PaperScraperUI:
     def run_smart_doi_wizard(self) -> None:
         if self.process is not None:
             messagebox.showinfo("正在运行", "当前任务还没有结束。")
+            return
+        if self.workflow_var.get() == "paper_batch":
+            messagebox.showinfo(
+                "智能准备并运行",
+                "统一批次请直接点击“开始运行”。\n\n"
+                "推荐：子命令选 start，填写清单后运行；失败项会自动排队 Zotero。"
+                "若插件要求确认，在 Zotero 点一次后可用 zotero 子命令继续。",
+            )
             return
         if self.workflow_var.get() == "legal_oa":
             messagebox.showinfo("智能准备并运行", "智能准备并运行仅用于 ScienceDirect DOI 批量下载。OA 资源辅助获取请直接点击“开始运行”。")
@@ -1449,8 +1810,11 @@ class PaperScraperUI:
         if self.process is not None:
             messagebox.showinfo("正在运行", "当前任务还没有结束。")
             return
-        if self.workflow_var.get() == "legal_oa":
-            messagebox.showinfo("新手预检", "新手预检仅用于 ScienceDirect DOI 批量下载。")
+        if self.workflow_var.get() in {"legal_oa", "paper_batch"}:
+            messagebox.showinfo(
+                "新手预检",
+                "新手预检仅用于 ScienceDirect DOI 批量下载。统一批次请直接使用 start / resume / zotero。",
+            )
             return
         if self.mode_var.get() != "doi_batch":
             self.mode_var.set("doi_batch")
@@ -1595,7 +1959,16 @@ class PaperScraperUI:
         self._update_result_buttons()
 
     def _capture_report_paths(self, line: str) -> None:
-        if "结构化事件 ->" in line:
+        if line.startswith("运行目录：") or line.startswith("运行目录:"):
+            run_dir = self._extract_colon_path_from_log(line)
+            if run_dir is not None:
+                self.last_run_output_dir = run_dir
+                self.batch_run_dir_var.set(str(run_dir))
+        elif line.startswith("最终 PDF 目录：") or line.startswith("最终 PDF 目录:"):
+            pdf_dir = self._extract_colon_path_from_log(line)
+            if pdf_dir is not None and self.last_run_output_dir is None:
+                self.last_run_output_dir = pdf_dir.parent
+        elif "结构化事件 ->" in line:
             self.last_events_path = self._extract_report_path_from_log(line)
             self.last_event_count = 0
             if self.last_events_path:
@@ -1646,12 +2019,29 @@ class PaperScraperUI:
 
     @staticmethod
     def _extract_colon_path_from_log(line: str) -> Path | None:
-        if ":" not in line:
+        text = str(line or "").strip()
+        # Prefer Chinese fullwidth colon so Windows drive letters (C:\) stay intact.
+        if "：" in text:
+            path_text = text.split("：", 1)[1].strip()
+        elif ": " in text:
+            path_text = text.split(": ", 1)[1].strip()
+        elif ":" in text:
+            # Fallback: drop only the label before the first colon when the rest
+            # still looks like a Windows absolute path (e.g. "label:C:\path").
+            label, remainder = text.split(":", 1)
+            remainder = remainder.strip()
+            if re.match(r"^[A-Za-z]:[\\/]", remainder):
+                path_text = remainder
+            elif re.match(r"^[A-Za-z]$", label.strip()) and remainder.startswith(("\\", "/")):
+                path_text = f"{label.strip()}:{remainder}"
+            else:
+                path_text = remainder
+        else:
             return None
-        path_text = line.split(":", 1)[1].strip()
+        path_text = path_text.strip().strip('"')
         if not path_text:
             return None
-        return Path(path_text.strip('"'))
+        return Path(path_text)
 
     def _refresh_result_summary(self) -> None:
         if not self.last_run_output_dir and self.last_summary_path:
@@ -1667,6 +2057,19 @@ class PaperScraperUI:
             if self.workflow_var.get() == "legal_oa" and self.last_run_output_dir:
                 self.result_summary_var.set(
                     f"OA 资源辅助获取任务已结束；请查看输出目录中的 metadata\\manifest.csv 和 failed\\duplicates.csv：{self.last_run_output_dir}"
+                )
+                self._update_result_buttons()
+                return
+            if self.workflow_var.get() == "paper_batch" and self.last_run_output_dir:
+                run_dir = self.last_run_output_dir
+                self.result_summary_var.set(
+                    "统一批次已结束。"
+                    f"运行目录：{run_dir}；"
+                    f"PDF：{run_dir / 'pdfs'}；"
+                    f"报告：{run_dir / 'reports'}；"
+                    f"人工重试：{run_dir / 'working' / 'manual_retry.csv'}；"
+                    f"Zotero 回退：{run_dir / 'working' / 'zotero_fallback.csv'}。"
+                    "默认已自动排队 Zotero；若需确认或继续，将运行目录填入「已有批次目录」后执行 zotero。"
                 )
                 self._update_result_buttons()
                 return

@@ -10,16 +10,42 @@
 
 Windows-friendly unified DOI batch workflow with authorized access, OA discovery, and Zotero fallback.
 
-This project helps researchers turn DOI tables, copied bibliography text, and AI-recommended paper lists into reviewable reports through one user-facing batch workflow. The lower-level OA and publisher adapters remain internal implementation modules.
+This project helps researchers turn DOI tables, copied bibliography text, and AI-recommended paper lists into reviewable reports through **one user-facing batch workflow**. Lower-level OA, ScienceDirect, and publisher adapters are implementation details—not separate product entry points.
+
+## Recommended entry points (use these)
+
+| Situation | Use | Notes |
+| --- | --- | --- |
+| Any mixed DOI / title / Excel / Markdown list | `paper_batch.py` | Default CLI: OA → institutional access → one manual retry → Zotero fallback |
+| Same workflow in a GUI | `start_paper_scraper_ui.bat` → tab **统一批次（推荐）** | Graphical shell around `paper_batch.py` |
+| Natural-language agent | Codex skill `$paper-download` | Install script installs only this skill |
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
+.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"   # only if manual_retry has rows
+.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"   # remaining failures only
+```
+
+Do **not** start new literature jobs with `paper_skill.py`, `sd_institutional_skill.py`, `sd_scraper.py`, or `sd_scraper_en.py` unless you intentionally want a compatibility path. Those scripts skip the shared batch state and Zotero fallback queue.
+
+## Compatibility / advanced entry points (not the default)
+
+| Entry | Role |
+| --- | --- |
+| UI tabs `DOI 批量下载` / `文献检索` / `OA 资源辅助获取` | Legacy GUI paths for ScienceDirect-only or OA-only tasks |
+| `sd_scraper.py` / `sd_scraper_en.py` | Legacy ScienceDirect search + DOI batch CLIs (CN / EN) |
+| `sd_institutional_skill.py` | Internal ScienceDirect intake/download adapter (also used by preflight) |
+| `paper_skill.py` | Internal OA-only adapter |
+| `institutional_paper_skill.py` | Internal non-Elsevier institutional adapter |
+| Skills `sciencedirect-doi-download` / `legal-oa-paper-download` | Internal skill docs; not installed by default |
 
 ## What It Does
 
 - Reads DOI lists from Excel, CSV, TXT, Markdown, or pasted text.
-- Runs a beginner preflight to identify valid DOI rows, duplicates, invalid rows, and records that need manual review.
-- Saves ScienceDirect PDFs when you already have authorized access through your institution, browser login state, or exported cookies.
-- Attempts ScienceDirect supplementary material downloads and records attachment status.
-- Searches public metadata sources for PDF candidates without using institutional cookies.
-- Installs Codex Skills so the same workflows can be started with natural language.
+- Runs a beginner preflight (when requested) to identify valid DOI rows, duplicates, invalid rows, and records that need manual review.
+- Through the **unified batch**, tries open-access discovery, then authorized publisher access, one manual retry, and optional Zotero fallback.
+- May download ScienceDirect supplementary materials when that stage runs with supplements enabled.
+- Installs the single Codex skill `paper-download` so agents follow the same unified route.
 
 ## What It Does Not Do
 
@@ -38,20 +64,20 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Check the unified command-line entry point:
+Check the **recommended** CLI:
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py --help
 .\.venv\Scripts\python.exe paper_batch.py start --help
 ```
 
-Open the Windows UI:
+Open the Windows UI (first tab is **统一批次（推荐）**):
 
 ```powershell
 .\start_paper_scraper_ui.bat
 ```
 
-Install or refresh Codex Skills:
+Install or refresh Codex Skills (only `paper-download`):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1 -DryRun
@@ -62,9 +88,9 @@ The dry run only shows the target skill path and planned changes. The install co
 
 ## Common Workflows
 
-### Beginner Preflight
+### Beginner Preflight (optional before a formal download)
 
-Use preflight before downloading from a messy recommendation list:
+For messy AI recommendation lists, preflight first (local intake review; no PDF download):
 
 ```text
 Use $paper-download to preflight these paper recommendations with --beginner --preflight.
@@ -75,53 +101,45 @@ Save results to D:\Literature\ScienceDirect.
 3. unclear recommendation about alloy fatigue without enough bibliographic information
 ```
 
-Preflight only performs local intake, deduplication, and review hints. It does not download PDFs, parse ScienceDirect PII values, or create supplementary material folders. Check `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_failed.csv`, `run_summary.txt`, and `00_给研究生查看\` before running a real download.
+Check `doi_intake_preview.csv`, `merged_doi_input.csv`, and related reports, then run **`paper_batch.py start`** (or the UI unified-batch tab) on the confirmed list.
 
-### Single User-Facing Batch Workflow
-
-Use `paper_batch.py` for every literature list. It performs OA discovery,
-authorized publisher access, one permitted manual retry, and Zotero fallback
-for remaining failures:
+### Recommended: unified batch with Zotero fallback
 
 ```powershell
-.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
+.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
 ```
 
-### Unified Batch With Zotero Fallback
-
-Use this Codex-guided workflow for a mixed DOI/title list when the project
-should try its documented routes first and only remaining failures may be
-checked through Zotero 9. Keep Zotero open with the local paper-download bridge
-plugin enabled; normal execution no longer performs direct Zotero MCP writes.
+Default path: OA → institutional access → **all remaining failures go to
+`zotero_fallback.csv`** (no `resume` gate). `start` **auto-queues** the Zotero
+bridge when fallback rows exist. Keep Zotero open with the bridge plugin
+enabled. Exit code 3 means the job is queued; accept one Zotero confirmation
+for the whole batch, then rerun only:
 
 ```powershell
-.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
-.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
 ```
 
-Run `resume` only once and only after `working\manual_retry.csv` contains rows
-and the required browser action is complete. Only `zotero_fallback.csv` rows
-enter `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`. Exit code 3 means the
-job is queued; accept one Zotero confirmation for the whole batch, then rerun
-only the same `paper_batch.py zotero` command after the plugin finishes.
+Optional: `--wait-seconds N` on `start` to poll in-process; `--no-auto-zotero`
+to queue later; `--enable-manual-retry` for the legacy one-shot login/CAPTCHA
+path (then `resume` once if `manual_retry.csv` has rows).
 
 Final PDFs are in `pdfs\`, reports are in `reports\`, and handoff files remain
-in `working\`. Finalization validates and copies ordinary PDF files without
-moving Zotero attachments or overwriting existing files. See the
+in `working\`. See the
 [Zotero bridge beginner guide](docs/zotero_bridge_beginner_guide.md). The XPI
-remains approval-gated: test only in a Zotero test profile first and do not
-install it in the main profile yet.
+remains approval-gated: test only in a Zotero test profile first.
 
 For institutional login or verification, try the Codex in-app browser first.
-If it is unavailable or cannot provide a usable session to the local project,
-the external browser fallback prefers Edge Stable, then Edge Beta/Dev/Canary,
-then Chrome/Chromium. An explicit `--browser-exe` or
-`PAPER_SCRAPER_BROWSER_EXE` override always wins.
+If it is unavailable, the external browser fallback prefers Google Chrome, then
+Edge Stable/Beta/Dev/Canary, then Playwright Chromium. An explicit `--browser-exe`
+or `PAPER_SCRAPER_BROWSER_EXE` override always wins.
 
 ## Outputs
 
-ScienceDirect batch runs create a timestamped result folder containing reports such as:
+**Unified batch** (`paper_batch.py`) writes one timestamped run directory with
+normalized input, stage reports, `manual_retry.csv` / `zotero_fallback.csv`,
+final manifests, and `pdfs\`.
+
+Legacy ScienceDirect-only runs may still create folders with reports such as:
 
 - `doi_intake_preview.csv`
 - `merged_doi_input.csv`
@@ -134,8 +152,6 @@ ScienceDirect batch runs create a timestamped result folder containing reports s
 - `00_给研究生查看\`
 - `pdfs\`
 - `supplements\`
-
-The unified batch writes normalized input, stage reports, fallback files, final manifests, and PDFs under one timestamped run directory.
 
 ## Security Notes
 

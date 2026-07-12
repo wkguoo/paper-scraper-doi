@@ -426,7 +426,7 @@ class ScienceDirectSupplementDownloadTests(unittest.TestCase):
         response = FakeStreamingResponse(
             status_code=403,
             headers={"Content-Type": "application/pdf"},
-            chunks=[b"%PDF"],
+            chunks=[b"%PDF-1.7\nchunk\n%%EOF\n"],
             forbid_content=True,
         )
         session = FakeSession([response])
@@ -446,7 +446,7 @@ class ScienceDirectSupplementDownloadTests(unittest.TestCase):
     def test_stream_write_failure_removes_temp_file_and_records_failed(self) -> None:
         response = FakeStreamingResponse(
             headers={"Content-Type": "application/pdf"},
-            chunks=[b"%PDF-1.7\n"],
+            chunks=[b"%PDF-1.7\n\n%%EOF\n"],
             forbid_content=True,
             iter_error=OSError("stream exploded"),
             iter_error_after_chunks=1,

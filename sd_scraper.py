@@ -92,6 +92,7 @@ from windows_paths import (
     chrome_debug_log,
     chrome_debug_profile,
 )
+from paper_automation.pdf_validation import is_pdf_bytes, is_valid_pdf
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -113,13 +114,19 @@ except ImportError:
     HAS_OPENPYXL = False
 
 
+# Only cookie files may be copied into the temporary debug profile.
+# Never copy Preferences / Secure Preferences / Extensions: Chromium stores
+# extension IDs and install paths in Preferences, so cloning them into Edge
+# (or vice versa) can load the user's full extension set into the debug browser.
 BROWSER_PROFILE_COPY_FILES = (
     "Cookies",
     "Cookies-journal",
-    "Preferences",
-    "Secure Preferences",
 )
 BROWSER_PROFILE_COPY_DIRS = ()
+BROWSER_DEBUG_EXTRA_ARGS = (
+    "--disable-extensions",
+    "--disable-component-extensions-with-background-pages",
+)
 
 
 def _curl_cffi_missing_message() -> str:
@@ -431,7 +438,7 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35, fetch_patterns=Non
                     body = result.get("body")
                     if body:
                         data = _b64.b64decode(body) if result.get("base64Encoded") else body.encode("latin-1", errors="ignore")
-                        if data[:4] == b"%PDF":
+                        if is_pdf_bytes(data):
                             return data, fetch_meta.get(req_id, {}).get("url") or last_pdf_url or url
                 try:
                     send("Fetch.continueRequest", {"requestId": req_id})
@@ -444,7 +451,7 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35, fetch_patterns=Non
                     body = result.get("body")
                     if body:
                         data = _b64.b64decode(body) if result.get("base64Encoded") else body.encode("latin-1", errors="ignore")
-                        if data[:4] == b"%PDF":
+                        if is_pdf_bytes(data):
                             return data, last_pdf_url or url
     finally:
         try:
@@ -1519,9 +1526,16 @@ class ScienceDirectScraper:
                 filepath = os.path.join(pdf_dir, filename)
 
                 if os.path.exists(filepath):
-                    print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
-                    skip += 1
-                    continue
+                    if is_valid_pdf(filepath):
+                        print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
+                        skip += 1
+                        continue
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        print(f"  [{idx}/{total}] 无效已存在文件无法清理: {filename}")
+                        fail += 1
+                        continue
 
                 article_url = f"{self.BASE_URL}/science/article/pii/{pii}"
 
@@ -1594,7 +1608,7 @@ class ScienceDirectScraper:
                         allow_redirects=True, timeout=90,
                     )
                     ct = resp.headers.get("content-type", "")
-                    if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
+                    if is_pdf_bytes(resp.content):
                         size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
                         print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)")
                         success += 1
@@ -2099,12 +2113,21 @@ class ScienceDirectScraper:
                 filename = self._make_pdf_filename(idx, article)
                 filepath = os.path.join(pdf_dir, filename)
 
-                if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
-                    print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
-                    skip += 1
-                    _record(article, "skipped", file=filename, reason="文件已存在")
-                    _download_supplements(article, idx, filename)
-                    continue
+                if os.path.exists(filepath):
+                    if is_valid_pdf(filepath):
+                        print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
+                        skip += 1
+                        _record(article, "skipped", file=filename, reason="文件已存在")
+                        _download_supplements(article, idx, filename)
+                        continue
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        print(f"  [{idx}/{total}] 无效已存在文件无法清理: {filename}")
+                        fail += 1
+                        _record(article, "failed", file=filename, reason="invalid_existing_pdf")
+                        _skip_supplements_for_pdf_failure(article, idx, filename)
+                        continue
 
                 pdf_url = article.get("pdf_url") or ""
                 if not pdf_url or "pdfft" not in pdf_url:
@@ -2174,7 +2197,7 @@ class ScienceDirectScraper:
                             time.sleep(BLOCK_WAIT_2)
                             pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
 
-                if pdf_bytes and pdf_bytes[:4] == b"%PDF":
+                if pdf_bytes and is_pdf_bytes(pdf_bytes):
                     size_kb = write_pdf_bytes_atomic(filepath, pdf_bytes) // 1024
                     print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)")
                     success += 1
@@ -2310,6 +2333,7 @@ class ScienceDirectScraper:
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
+            *BROWSER_DEBUG_EXTRA_ARGS,
         ]
 
         log_path = chrome_debug_log("chrome_debug.log")
@@ -2559,9 +2583,16 @@ class ScienceDirectScraper:
                 filepath = os.path.join(pdf_dir, filename)
 
                 if os.path.exists(filepath):
-                    print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
-                    skip += 1
-                    continue
+                    if is_valid_pdf(filepath):
+                        print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
+                        skip += 1
+                        continue
+                    try:
+                        os.remove(filepath)
+                    except OSError:
+                        print(f"  [{idx}/{total}] 无效已存在文件无法清理: {filename}")
+                        fail += 1
+                        continue
 
                 article_url = f"{self.BASE_URL}/science/article/pii/{pii}"
 
@@ -2583,7 +2614,7 @@ class ScienceDirectScraper:
                             timeout=60,
                         )
                         ct = resp.headers.get("content-type", "")
-                        if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
+                        if is_pdf_bytes(resp.content):
                             size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
                             print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)  [直连]")
                             success += 1
@@ -2656,7 +2687,7 @@ class ScienceDirectScraper:
                         timeout=60,
                     )
                     ct = resp.headers.get("content-type", "")
-                    if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
+                    if is_pdf_bytes(resp.content):
                         size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
                         print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)  [CDP+直连]")
                         success += 1
@@ -2805,10 +2836,16 @@ def interactive_mode():
 
 def build_parser():
     parser = argparse.ArgumentParser(
-        description="ScienceDirect 论文抓取工具 v2.0",
+        description=(
+            "ScienceDirect 论文抓取工具 v2.0（兼容入口）。"
+            "新文献任务请优先使用 paper_batch.py 或 UI「统一批次（推荐）」。"
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-使用示例:
+推荐入口（默认产品路径）:
+  python paper_batch.py start --input papers.xlsx --out results --email you@example.com
+
+本脚本为兼容 / 高级 ScienceDirect 专用 CLI。使用示例:
   python sd_scraper.py --interactive
   python sd_scraper.py --open-browser-login
   python sd_scraper.py -m keyword -q "machine learning" -n 100 --browser-cookies --format xlsx --download-pdfs
@@ -2843,7 +2880,7 @@ def build_parser():
                         help="自动从本机 Chrome 读取 cookie")
     parser.add_argument("--cookies",       help="Cookie JSON 文件路径")
     parser.add_argument("--browser-exe",
-                        help="Browser executable path for institutional login/download (defaults to Edge, then Chrome)")
+                        help="Browser executable path for institutional login/download (defaults to Chrome, then Edge)")
     parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
                         help="在保存文献列表后，继续下载对应 PDF")

@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 
 from doi_batch_utils import clean_doi
 
-from .deduplicator import title_similarity
+from .deduplicator import title_similarity, titles_are_safe_match
 from .models import MetadataResult, PaperCandidate
 
 
@@ -197,10 +197,13 @@ def _merge_openalex(result: MetadataResult, item: dict) -> MetadataResult:
 def _best_crossref_item(title: str, items: list[dict]) -> dict:
     best: tuple[dict, float] | None = None
     for item in items:
-        score = title_similarity(title, _first(item.get("title")))
+        candidate_title = _first(item.get("title"))
+        if not titles_are_safe_match(title, candidate_title):
+            continue
+        score = title_similarity(title, candidate_title)
         if not best or score > best[1]:
             best = (item, score)
-    return best[0] if best and best[1] >= 0.65 else {}
+    return best[0] if best else {}
 
 
 def _best_crossref_citation_item(citation_text: str, items: list[dict]) -> dict:
@@ -213,10 +216,13 @@ def _best_crossref_citation_item(citation_text: str, items: list[dict]) -> dict:
 def _best_openalex_item(title: str, items: list[dict]) -> dict:
     best: tuple[dict, float] | None = None
     for item in items:
-        score = title_similarity(title, str(item.get("title") or ""))
+        candidate_title = str(item.get("title") or "")
+        if not titles_are_safe_match(title, candidate_title):
+            continue
+        score = title_similarity(title, candidate_title)
         if not best or score > best[1]:
             best = (item, score)
-    return best[0] if best and best[1] >= 0.65 else {}
+    return best[0] if best else {}
 
 
 def semantic_scholar_search_provider(
@@ -261,12 +267,12 @@ def _search_candidate_matches(candidate: PaperCandidate, search_item: dict[str, 
     query_title = candidate.title or candidate.raw_text
     if _citation_fingerprint_matches(candidate.raw_text, crossref_item):
         return True
-    if title_similarity(query_title, crossref_title) >= 0.65:
+    if titles_are_safe_match(query_title, crossref_title):
         return True
     if (
         search_title
-        and title_similarity(search_title, crossref_title) >= 0.85
-        and title_similarity(query_title, search_title) >= 0.65
+        and titles_are_safe_match(search_title, crossref_title, min_ratio=0.85)
+        and titles_are_safe_match(query_title, search_title)
     ):
         return True
     return False

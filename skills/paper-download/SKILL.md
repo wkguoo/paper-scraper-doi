@@ -5,6 +5,22 @@ description: Use when Codex needs ScienceDirect, institutional, or open-access P
 
 # Paper Download
 
+## Entry map (mandatory)
+
+Recommended entry / default product entry for agents and users: `paper_batch.py`
+(this skill). Compatibility CLIs and other skills are not primary routes.
+
+| User intent | Use | Do not use as primary |
+| --- | --- | --- |
+| New literature list (any publisher mix) | `paper_batch.py start` (auto-queues Zotero on failures) | `paper_skill.py`, `sd_scraper.py`, `sd_scraper_en.py` |
+| Bridge confirmation / continue after start | `paper_batch.py zotero --run-dir` | direct Zotero MCP for normal runs |
+| Optional one-shot login/CAPTCHA retry (compat) | `paper_batch.py resume --run-dir` only with `--enable-manual-retry` batches | restart `start` unnecessarily |
+| GUI | UI tab **统一批次（推荐）** | UI “兼容” tabs unless user asks for legacy SD/OA-only |
+
+Skills `sciencedirect-doi-download` and `legal-oa-paper-download` are **internal
+compatibility references**; they are not the default install and must not be
+chosen as standalone user routes when this skill applies.
+
 Use this as the single entry point for a mixed DOI/title paper list. Run the
 project workflow first. Only `zotero_fallback.csv` rows enter the bridge. Never
 send the complete input list to Zotero again.
@@ -13,7 +29,8 @@ send the complete input list to Zotero again.
 
 This rule overrides every later section, including prerequisites, recovery,
 and direct routes. It applies when the user supplies an existing `<run-dir>`
-and says the one manual retry is already finished.
+and OA/institutional stages are already done (default path skips manual
+resume; `manual_retry.csv` is usually empty).
 
 Do not inspect `paper_skill.py --help`. Never run `paper_skill.py` for an existing batch run directory.
 Do not invent `zotero-fallback`, `--input`, or `--wait`. Do not run `start`,
@@ -46,7 +63,7 @@ or session data, and never automate a CAPTCHA.
 For login or verification, try the Codex in-app browser first when it is
 available. If the in-app browser cannot be called or cannot provide a session
 usable by the local project, let the external browser fallback run. On Windows
-the fallback order is Edge Stable, Edge Beta/Dev/Canary, Chrome, then
+the fallback order is Google Chrome, Edge Stable/Beta/Dev/Canary, then
 Playwright Chromium. An explicit `--browser-exe` or
 `PAPER_SCRAPER_BROWSER_EXE` override always takes precedence.
 
@@ -80,27 +97,28 @@ task IDs, and non-exact headers. Stop on validation failure; do not guess.
 Keep the CLI's printed run directory as `<run-dir>`. Do not edit the original
 input or any project-generated pending CSV.
 
-1. Run the project workflow first:
+1. Run the project workflow (default: no manual resume; failures go to Zotero
+   and `start` auto-queues the bridge):
 
    ```powershell
    .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
    ```
 
-2. Read `<run-dir>\working\manual_retry.csv`. If it has data rows, pause once
-   for the user to finish the required browser action, then run exactly one
-   retry:
+   Keep Zotero 9 open with the bridge plugin enabled before or during `start`.
+   Optional: `--wait-seconds N` to poll in the same process; `--no-auto-zotero`
+   only if the user asks to queue later; `--enable-manual-retry` only for the
+   old one-shot login/CAPTCHA path.
 
-   ```powershell
-   .\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
-   ```
+2. Default batches write empty `manual_retry.csv`. Skip `resume` unless the
+   user explicitly started with `--enable-manual-retry` and that file has data
+   rows. For that compat path only: pause once for the browser action, then
+   run exactly one `resume`. Never run `resume` a second time.
 
-   Never run `resume` a second time. Skip it when the file has no data rows.
+3. Only `zotero_fallback.csv` rows enter the bridge. Do not use direct Zotero
+   MCP writes for normal bridge execution.
 
-3. Read `<run-dir>\working\zotero_fallback.csv` after that one permitted
-   retry. Only `zotero_fallback.csv` rows enter the bridge. Do not use direct
-   Zotero MCP writes for normal bridge execution.
-
-4. Run the local bridge command:
+4. If auto-queue was disabled (`--no-auto-zotero`) or bridge was not run yet,
+   run the local bridge command once after `start`:
 
    ```powershell
    .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"

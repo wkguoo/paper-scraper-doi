@@ -47,6 +47,40 @@ def title_similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, normalized_left, normalized_right).ratio()
 
 
+# Auto DOI / title-only match: high floor plus near-exact token check for mid-high scores.
+TITLE_MATCH_MIN_RATIO = 0.92
+TITLE_MATCH_NEAR_EXACT_RATIO = 0.98
+_TITLE_STOPWORDS = frozenset({
+    "a", "an", "the", "of", "and", "or", "in", "on", "for", "to", "with", "by",
+    "from", "at", "as", "via", "using", "based",
+})
+
+
+def titles_are_safe_match(
+    left: str,
+    right: str,
+    *,
+    min_ratio: float = TITLE_MATCH_MIN_RATIO,
+    near_exact_ratio: float = TITLE_MATCH_NEAR_EXACT_RATIO,
+) -> bool:
+    """True only when titles are safe enough to auto-bind a DOI.
+
+    Near-identical titles (ratio >= near_exact) pass. Mid-high ratios must still
+    share the same non-stopword token set so pairs like high/medium entropy alloys
+    are rejected even when SequenceMatcher scores look strong.
+    """
+    ratio = title_similarity(left, right)
+    if ratio < min_ratio:
+        return False
+    if ratio >= near_exact_ratio:
+        return True
+    left_tokens = set(normalize_title(left).split()) - _TITLE_STOPWORDS
+    right_tokens = set(normalize_title(right).split()) - _TITLE_STOPWORDS
+    if not left_tokens or not right_tokens:
+        return False
+    return left_tokens == right_tokens
+
+
 def deduplicate_candidates(
     candidates: list[PaperCandidate],
     title_threshold: float = 0.88,

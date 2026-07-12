@@ -360,12 +360,11 @@ def claim_manual_retry(
         return True, state
 
 
-def is_valid_pdf(path: str | Path, minimum_size: int = 12) -> bool:
-    target = Path(path)
-    if not target.is_file() or target.stat().st_size < minimum_size:
-        return False
-    with target.open("rb") as handle:
-        return handle.read(5) == b"%PDF-"
+def is_valid_pdf(path: str | Path, minimum_size: int | None = None) -> bool:
+    """Validate a local PDF via shared header + %%EOF checks."""
+    from paper_automation.pdf_validation import DEFAULT_MINIMUM_SIZE, is_valid_pdf as _is_valid_pdf
+
+    return _is_valid_pdf(path, minimum_size if minimum_size is not None else DEFAULT_MINIMUM_SIZE)
 
 
 def _sha256(path: Path) -> str:
@@ -774,7 +773,7 @@ def normalize_input(
         output_dir=paths.working / "intake",
         resolve_metadata=True,
         resolve_title_only_files=True,
-        min_confidence=0.65,
+        min_confidence=0.92,
         email=str(getattr(options, "email", "") or ""),
     )
 
@@ -1097,14 +1096,23 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "login_wait_seconds",
         "debug_port",
         "throttle_seconds",
+        "skip_manual_retry",
     }
-    if not isinstance(data, dict) or set(data) != expected_fields:
+    if not isinstance(data, dict):
         raise ValueError("invalid_batch_options")
-    if not isinstance(data["email"], str) or not isinstance(data["browser_exe"], str):
+    # Backward compatible with pre-skip_manual_retry batch_state snapshots.
+    payload = dict(data)
+    if "skip_manual_retry" not in payload:
+        payload["skip_manual_retry"] = True
+    if set(payload) != expected_fields:
         raise ValueError("invalid_batch_options")
-    if not isinstance(data["cookies"], str):
+    if not isinstance(payload["email"], str) or not isinstance(payload["browser_exe"], str):
+        raise ValueError("invalid_batch_options")
+    if not isinstance(payload["cookies"], str):
         raise ValueError("cookies_must_be_path")
-    cookie_path = data["cookies"].strip()
+    if type(payload["skip_manual_retry"]) is not bool:
+        raise ValueError("invalid_batch_options")
+    cookie_path = payload["cookies"].strip()
     lowered_cookie = cookie_path.lower()
     if cookie_path and (
         any(character in cookie_path for character in ("\r", "\n", "=", ";"))
@@ -1115,13 +1123,13 @@ def _validate_options_data(data: object) -> dict[str, object]:
     ):
         raise ValueError("cookies_must_be_path")
 
-    login_wait_seconds = data["login_wait_seconds"]
+    login_wait_seconds = payload["login_wait_seconds"]
     if type(login_wait_seconds) is not int or login_wait_seconds < 0:
         raise ValueError("invalid_login_wait_seconds")
-    debug_port = data["debug_port"]
+    debug_port = payload["debug_port"]
     if type(debug_port) is not int or not 1 <= debug_port <= 65535:
         raise ValueError("invalid_debug_port")
-    throttle_seconds = data["throttle_seconds"]
+    throttle_seconds = payload["throttle_seconds"]
     if (
         isinstance(throttle_seconds, bool)
         or not isinstance(throttle_seconds, (int, float))
@@ -1130,12 +1138,13 @@ def _validate_options_data(data: object) -> dict[str, object]:
     ):
         raise ValueError("invalid_throttle_seconds")
     return {
-        "email": data["email"],
+        "email": payload["email"],
         "cookies": cookie_path,
-        "browser_exe": data["browser_exe"],
+        "browser_exe": payload["browser_exe"],
         "login_wait_seconds": login_wait_seconds,
         "debug_port": debug_port,
         "throttle_seconds": float(throttle_seconds),
+        "skip_manual_retry": payload["skip_manual_retry"],
     }
 
 
@@ -1776,10 +1785,12 @@ def start_batch(
     )]
     _validate_stage_updates(rows, [])
     _write_csv_rows(paths.normalized_input, rows)
+    skip_manual = bool(serialized_options.get("skip_manual_retry", True))
     state = {
         "version": 1,
         "run_dir": str(paths.root),
-        "manual_retry_used": False,
+        # skip_manual_retry: treat as already used so all failures go to zotero_fallback.
+        "manual_retry_used": skip_manual,
         "options": serialized_options,
         "rows": rows,
     }
@@ -1798,7 +1809,7 @@ def start_batch(
     _write_latest_state_outputs(
         paths,
         state,
-        pending_manual_retry_used=False,
+        pending_manual_retry_used=bool(state.get("manual_retry_used")),
     )
     return _result_from_state(paths, state)
 

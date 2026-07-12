@@ -9,6 +9,10 @@ dist/
 build/
 .eggs/
 
+# Built Zotero plugin packages — keep out of the tree and git
+# (tests assert the repository contains no *.xpi; build only into dist/ or outside the repo)
+*.xpi
+
 # Virtual environments
 .venv/
 venv/

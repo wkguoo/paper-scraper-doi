@@ -10,7 +10,7 @@ def choose_pdf_candidate(metadata: MetadataResult) -> PdfCandidate | None:
     if unpaywall.get("is_oa"):
         location = unpaywall.get("best_oa_location") or {}
         url = _location_pdf_url(location)
-        if _allowed_url(url):
+        if _allowed_url(url) and _looks_like_pdf_url(url):
             return PdfCandidate(
                 url=url,
                 source="unpaywall",
@@ -37,14 +37,21 @@ def choose_pdf_candidate(metadata: MetadataResult) -> PdfCandidate | None:
         for link in metadata.crossref.get("link") or []:
             url = str(link.get("URL") or "")
             content_type = str(link.get("content-type") or "")
-            if _allowed_url(url) and ("pdf" in content_type.lower() or url.lower().endswith(".pdf")):
+            if _allowed_url(url) and ("pdf" in content_type.lower() or _looks_like_pdf_url(url)):
                 return PdfCandidate(url=url, source="crossref", evidence="crossref_open_license_pdf_link")
 
     return None
 
 
 def _location_pdf_url(location: dict) -> str:
-    return str(location.get("url_for_pdf") or location.get("url") or "")
+    """Prefer Unpaywall ``url_for_pdf``; only fall back to ``url`` when it looks like a PDF."""
+    direct = str(location.get("url_for_pdf") or "").strip()
+    if direct:
+        return direct
+    fallback = str(location.get("url") or "").strip()
+    if fallback and _looks_like_pdf_url(fallback):
+        return fallback
+    return ""
 
 
 def _allowed_url(url: str) -> bool:
@@ -58,7 +65,16 @@ def _looks_like_pdf_url(url: str) -> bool:
     parsed = urlparse(url)
     path = parsed.path.lower()
     query = parsed.query.lower()
-    return path.endswith(".pdf") or "/pdf" in path or "pdf" in query
+    return (
+        path.endswith(".pdf")
+        or "/pdf" in path
+        or "/epdf" in path
+        or "article-pdf" in path
+        or "pdf=" in query
+        or "download=pdf" in query
+        or "content/pdf" in path
+        or "pdf" in query
+    )
 
 
 def _crossref_has_open_license(crossref: dict) -> bool:

@@ -26,6 +26,10 @@ if errorlevel 1 (
     if errorlevel 1 goto install_failed
 )
 
+echo.
+echo [提示] 默认入口：UI「统一批次（推荐）」= paper_batch.py
+echo [提示] 其它页签与 sd_scraper / paper_skill 仅为兼容路径。
+echo.
 "%PY_EXE%" "paper_scraper_ui.py"
 if errorlevel 1 (
     echo.

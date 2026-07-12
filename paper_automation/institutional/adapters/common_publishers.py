@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 from ..models import InstitutionalPaper, PageSnapshot, PdfUrlCandidate
@@ -156,6 +157,124 @@ class AipAdapter(DirectDoiPdfAdapter):
                 PDF_FETCH_PATTERNS,
             ),
         )
+
+
+class WileyAdapter(DirectDoiPdfAdapter):
+    name = "wiley"
+    doi_prefixes = ("10.1002/", "10.1111/")
+    publisher_terms = ("wiley", "john wiley", "wiley-vch", "wiley-blackwell")
+    hosts = ("onlinelibrary.wiley.com", "agupubs.onlinelibrary.wiley.com")
+
+    def _direct_pdf_candidates(
+        self,
+        paper: InstitutionalPaper,
+        landing: PageSnapshot,
+    ) -> tuple[PdfUrlCandidate, ...]:
+        doi = paper.doi
+        if not doi:
+            return ()
+        return (
+            PdfUrlCandidate(
+                "wiley_doi_pdf",
+                f"https://onlinelibrary.wiley.com/doi/pdf/{doi}",
+                PDF_FETCH_PATTERNS,
+            ),
+            PdfUrlCandidate(
+                "wiley_doi_pdfdirect",
+                f"https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}?download=true",
+                PDF_FETCH_PATTERNS,
+            ),
+        )
+
+
+class IeeeAdapter(DirectDoiPdfAdapter):
+    name = "ieee"
+    doi_prefixes = ("10.1109/",)
+    publisher_terms = ("ieee", "institute of electrical and electronics engineers")
+    hosts = ("ieeexplore.ieee.org",)
+
+    def _direct_pdf_candidates(
+        self,
+        paper: InstitutionalPaper,
+        landing: PageSnapshot,
+    ) -> tuple[PdfUrlCandidate, ...]:
+        # IEEE PDF URLs need an arnumber; prefer landing-page meta/link extraction.
+        # Keep a stamp/document fallback when the landing URL already embeds the id.
+        base_url = landing.final_url or landing.requested_url or paper.landing_url
+        arnumber = _ieee_arnumber(base_url, landing.html)
+        if not arnumber:
+            return ()
+        return (
+            PdfUrlCandidate(
+                "ieee_stamp_pdf",
+                f"https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber={arnumber}",
+                PDF_FETCH_PATTERNS + ("*stamp*", "*getPDF*", "*arnumber*"),
+            ),
+            PdfUrlCandidate(
+                "ieee_stamp_pdf_direct",
+                f"https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={arnumber}",
+                PDF_FETCH_PATTERNS + ("*stamp*", "*getPDF*", "*arnumber*"),
+            ),
+        )
+
+
+class RscAdapter(DirectDoiPdfAdapter):
+    name = "rsc"
+    doi_prefixes = ("10.1039/",)
+    publisher_terms = ("royal society of chemistry", "rsc")
+    hosts = ("pubs.rsc.org",)
+
+    def _direct_pdf_candidates(
+        self,
+        paper: InstitutionalPaper,
+        landing: PageSnapshot,
+    ) -> tuple[PdfUrlCandidate, ...]:
+        doi = paper.doi
+        if not doi:
+            return ()
+        return (
+            PdfUrlCandidate(
+                "rsc_articlepdf",
+                f"https://pubs.rsc.org/en/content/articlepdf/{doi}",
+                PDF_FETCH_PATTERNS,
+            ),
+        )
+
+
+class IopAdapter(DirectDoiPdfAdapter):
+    name = "iop"
+    doi_prefixes = ("10.1088/",)
+    publisher_terms = ("iop publishing", "institute of physics")
+    hosts = ("iopscience.iop.org",)
+
+    def _direct_pdf_candidates(
+        self,
+        paper: InstitutionalPaper,
+        landing: PageSnapshot,
+    ) -> tuple[PdfUrlCandidate, ...]:
+        doi = paper.doi
+        if not doi:
+            return ()
+        return (
+            PdfUrlCandidate(
+                "iop_article_pdf",
+                f"https://iopscience.iop.org/article/{doi}/pdf",
+                PDF_FETCH_PATTERNS,
+            ),
+            PdfUrlCandidate(
+                "iop_article_pdf_download",
+                f"https://iopscience.iop.org/article/{doi}/pdf?download=true",
+                PDF_FETCH_PATTERNS,
+            ),
+        )
+
+
+def _ieee_arnumber(url: str, html: str) -> str:
+    for source in (url or "", html or ""):
+        match = re.search(r"(?:arnumber=|/document/)(\d{5,})", source, flags=re.I)
+        if match:
+            return match.group(1)
+    return ""
 
 
 def _host_matches(host: str, candidate: str) -> bool:
