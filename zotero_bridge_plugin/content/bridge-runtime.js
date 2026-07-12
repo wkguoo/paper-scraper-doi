@@ -74,8 +74,44 @@
   };
 
   const zotero = {
-    pluginVersion: "0.1.8",
+    pluginVersion: "0.1.9",
     version: String(Zotero.version || "9.0"),
+    getInstanceIdentity() {
+      let dataDir = "";
+      try {
+        if (Zotero.DataDirectory && Zotero.DataDirectory.dir) {
+          dataDir = String(Zotero.DataDirectory.dir || "");
+        } else if (Zotero.Prefs && typeof Zotero.Prefs.get === "function") {
+          dataDir = String(Zotero.Prefs.get("dataDir") || "");
+        }
+      } catch (_error) {
+        dataDir = "";
+      }
+      let profileDir = "";
+      try {
+        if (Zotero.Profile && Zotero.Profile.dir) {
+          profileDir = String(Zotero.Profile.dir || "");
+        }
+      } catch (_error) {
+        profileDir = "";
+      }
+      const profileName = profileDir
+        ? String(profileDir).replaceAll("\\", "/").split("/").filter(Boolean).at(-1) || ""
+        : "";
+      const instanceSeed = `${dataDir}|${profileDir}`.toLowerCase();
+      const instanceId = instanceSeed
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 160) || "unknown-instance";
+      return {
+        instance_id: instanceId,
+        data_dir: dataDir,
+        profile_dir: profileDir,
+        profile_name: profileName,
+        zotero_version: String(Zotero.version || "9.0"),
+        plugin_version: "0.1.9",
+      };
+    },
     async getLibraryName(libraryID) {
       const library = Zotero.Libraries.get(libraryID);
       return library?.name || `文库 ${libraryID}`;
@@ -562,6 +598,31 @@
     return String(generated).replace(/[^a-zA-Z0-9-]/g, "");
   }
 
+  // Heartbeat / lease: bridge always targets whichever Zotero instance is open
+  // and currently holding the consumer lease — not a fixed test profile.
+  const INSTANCE_LEASE_SECONDS = 45;
+  const ACTIVE_INSTANCE_FIELDS = new Set([
+    "schema_version",
+    "instance_id",
+    "data_dir",
+    "profile_dir",
+    "profile_name",
+    "zotero_version",
+    "plugin_version",
+    "updated_at",
+  ]);
+  const CONSUMER_LEASE_FIELDS = new Set([
+    "schema_version",
+    "instance_id",
+    "data_dir",
+    "profile_dir",
+    "profile_name",
+    "zotero_version",
+    "plugin_version",
+    "claimed_at",
+    "expires_at",
+  ]);
+
   function queuePaths() {
     const localAppData = String(env.get("LOCALAPPDATA") || "").trim();
     if (!localAppData) throw new Error("bridge_localappdata_missing");
@@ -573,6 +634,8 @@
       outbox: io.join(root, "outbox"),
       archive: io.join(root, "archive"),
       state: io.join(root, "plugin-state.json"),
+      activeInstance: io.join(root, "active-instance.json"),
+      consumerLease: io.join(root, "consumer-lease.json"),
     });
   }
 
@@ -582,6 +645,138 @@
       await io.makeDir(directory);
     }
     return paths;
+  }
+
+  function resolveInstanceIdentity() {
+    if (typeof zotero?.getInstanceIdentity === "function") {
+      const identity = zotero.getInstanceIdentity();
+      if (isPlainObject(identity) && typeof identity.instance_id === "string" && identity.instance_id) {
+        return {
+          instance_id: String(identity.instance_id).slice(0, 160),
+          data_dir: String(identity.data_dir || "").slice(0, MAX_BRIDGE_TEXT_LENGTH),
+          profile_dir: String(identity.profile_dir || "").slice(0, MAX_BRIDGE_TEXT_LENGTH),
+          profile_name: String(identity.profile_name || "").slice(0, MAX_BRIDGE_TEXT_LENGTH),
+          zotero_version: String(identity.zotero_version || zotero?.version || "9.0")
+            .slice(0, MAX_BRIDGE_TEXT_LENGTH),
+          plugin_version: String(identity.plugin_version || zotero?.pluginVersion || "0.1.9")
+            .slice(0, MAX_BRIDGE_TEXT_LENGTH),
+        };
+      }
+    }
+    return {
+      instance_id: "unknown-instance",
+      data_dir: "",
+      profile_dir: "",
+      profile_name: "",
+      zotero_version: String(zotero?.version || "9.0").slice(0, MAX_BRIDGE_TEXT_LENGTH),
+      plugin_version: String(zotero?.pluginVersion || "0.1.9").slice(0, MAX_BRIDGE_TEXT_LENGTH),
+    };
+  }
+
+  function instanceLabel(identity) {
+    const profile = identity.profile_name || identity.profile_dir || "未知配置";
+    const dataDir = identity.data_dir || "未知数据目录";
+    return `配置=${profile}；数据目录=${dataDir}`;
+  }
+
+  async function publishActiveInstance(paths, identity = resolveInstanceIdentity()) {
+    const document = {
+      schema_version: 1,
+      instance_id: identity.instance_id,
+      data_dir: identity.data_dir,
+      profile_dir: identity.profile_dir,
+      profile_name: identity.profile_name,
+      zotero_version: identity.zotero_version,
+      plugin_version: identity.plugin_version,
+      updated_at: nowISO(),
+    };
+    if (!hasExactFields(document, ACTIVE_INSTANCE_FIELDS)) {
+      throw new Error("bridge_instance_invalid");
+    }
+    await replaceJSON(paths.activeInstance, document);
+    return document;
+  }
+
+  async function readConsumerLease(paths) {
+    if (!await io.exists(paths.consumerLease)) return null;
+    try {
+      const value = JSON.parse(await io.readUTF8(paths.consumerLease));
+      if (!hasExactFields(value, CONSUMER_LEASE_FIELDS) || value.schema_version !== 1) {
+        return null;
+      }
+      if (!validUTCTimestamp(value.claimed_at) || !validUTCTimestamp(value.expires_at)) {
+        return null;
+      }
+      return value;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async function writeConsumerLease(paths, identity, claimedAt = null) {
+    const claimed = claimedAt || nowISO();
+    // Renew expiry from "now" so the open consumer keeps the lease alive.
+    const renewBase = now();
+    const document = {
+      schema_version: 1,
+      instance_id: identity.instance_id,
+      data_dir: identity.data_dir,
+      profile_dir: identity.profile_dir,
+      profile_name: identity.profile_name,
+      zotero_version: identity.zotero_version,
+      plugin_version: identity.plugin_version,
+      claimed_at: claimed,
+      expires_at: new Date(renewBase.getTime() + INSTANCE_LEASE_SECONDS * 1000).toISOString(),
+    };
+    if (!hasExactFields(document, CONSUMER_LEASE_FIELDS)) {
+      throw new Error("bridge_instance_invalid");
+    }
+    await replaceJSON(paths.consumerLease, document);
+    return document;
+  }
+
+  /**
+   * Only the currently open Zotero instance that holds (or can take) the lease
+   * processes the shared queue. Stale leases expire so switching Zotero profiles works.
+   * active-instance.json always reflects the lease holder (the bridge target).
+   */
+  async function acquireConsumerLease(paths) {
+    const identity = resolveInstanceIdentity();
+    const existing = await readConsumerLease(paths);
+    const nowMs = now().getTime();
+    if (existing) {
+      const expiresMs = Date.parse(existing.expires_at);
+      const stillValid = Number.isFinite(expiresMs) && expiresMs > nowMs;
+      if (stillValid && existing.instance_id !== identity.instance_id) {
+        return {
+          acquired: false,
+          identity,
+          lease: existing,
+          reason: "another_instance_active",
+        };
+      }
+      const claimedAt = existing.instance_id === identity.instance_id
+        ? existing.claimed_at
+        : nowISO();
+      const lease = await writeConsumerLease(paths, identity, claimedAt);
+      await publishActiveInstance(paths, identity);
+      return { acquired: true, identity, lease, reason: "renewed" };
+    }
+    const lease = await writeConsumerLease(paths, identity, nowISO());
+    await publishActiveInstance(paths, identity);
+    return { acquired: true, identity, lease, reason: "claimed" };
+  }
+
+  async function releaseConsumerLease(paths) {
+    const identity = resolveInstanceIdentity();
+    const existing = await readConsumerLease(paths);
+    if (!existing || existing.instance_id !== identity.instance_id) return false;
+    try {
+      await io.remove(paths.consumerLease);
+      return true;
+    } catch (_error) {
+      return false;
+    }
   }
 
   function serializeJSON(value) {
@@ -808,7 +1003,13 @@
         || !arraysEqual(completedRun.job_ids, value.last_undo.job_ids)
         || !arraysEqual(completedRun.payload_sha256, value.last_undo.payload_sha256)
       ) {
-        throw new Error("bridge_state_invalid");
+        // Recoverable: stale last_undo without matching runs (e.g. after re-queue cleanup).
+        // Drop last_undo instead of hard-failing every scan.
+        value = {
+          schema_version: 1,
+          runs: value.runs,
+          last_undo: null,
+        };
       }
     }
     return value;
@@ -822,7 +1023,17 @@
     } catch (_error) {
       throw new Error("bridge_state_invalid");
     }
-    return validateState(value);
+    const rawUndo = value && value.last_undo;
+    const validated = validateState(value);
+    // Persist self-heal when last_undo was dropped due to missing runs.
+    if (rawUndo && validated.last_undo === null) {
+      try {
+        await replaceJSON(paths.state, validated);
+      } catch (_error) {
+        // Non-fatal: in-memory state is already usable for this scan.
+      }
+    }
+    return validated;
   }
 
   function cloneRuns(runs) {
@@ -1428,7 +1639,7 @@
       schema_version: 1,
       job_id: request.job_id,
       payload_sha256: request.payload_sha256,
-      plugin_version: String(zotero?.pluginVersion || "0.1.8"),
+      plugin_version: String(zotero?.pluginVersion || "0.1.9"),
       zotero_version: String(zotero?.version || "9.0"),
       started_at: startedAt,
       finished_at: finishedAt,
@@ -1502,7 +1713,10 @@
     const libraryName = typeof zotero?.getLibraryName === "function"
       ? await zotero.getLibraryName(first.library_id)
       : `文库 ${first.library_id}`;
+    const identity = resolveInstanceIdentity();
     const message = [
+      "桥接目标 = 当前打开的这个 Zotero（不是固定测试配置）。",
+      `当前实例：${instanceLabel(identity)}`,
       `目标文库：${libraryName}（ID: ${first.library_id}）`,
       `文献数量：${itemCount}`,
       `目标集合：${first.collection_name}`,
@@ -1516,6 +1730,9 @@
       libraryName,
       itemCount,
       collectionName: first.collection_name,
+      instanceId: identity.instance_id,
+      dataDir: identity.data_dir,
+      profileName: identity.profile_name,
       message,
     }));
   }
@@ -2284,6 +2501,29 @@
 
   async function scanOnce() {
     const paths = await ensureQueue();
+    let leaseResult;
+    try {
+      leaseResult = await acquireConsumerLease(paths);
+    } catch (error) {
+      reportError(errorCode(error));
+      return { status: "instance_error", completeRuns: 0, incompleteRuns: 0 };
+    }
+    if (!leaseResult.acquired) {
+      const other = leaseResult.lease;
+      lastStatus = [
+        "另一 Zotero 实例正在消费桥接队列。",
+        `当前本窗口：${instanceLabel(leaseResult.identity)}`,
+        `占用中：配置=${other.profile_name || other.profile_dir || "未知"}；数据目录=${other.data_dir || "未知"}`,
+        "请只保留你要用的那个 Zotero 打开，或等待另一实例关闭后自动切换。",
+      ].join(" ");
+      return {
+        status: "another_instance_active",
+        completeRuns: 0,
+        incompleteRuns: 0,
+        identity: leaseResult.identity,
+      };
+    }
+
     let state;
     try {
       state = await loadState(paths);
@@ -2365,9 +2605,17 @@
       }
     }
 
-    if (!groups.length) lastStatus = "没有待处理的 Zotero 桥接任务。";
-    else if (incompleteRuns) lastStatus = `有 ${incompleteRuns} 个批次仍在等待完整分块。`;
-    return { status: "scanned", completeRuns, incompleteRuns };
+    if (!groups.length) {
+      lastStatus = `没有待处理的 Zotero 桥接任务。（当前 ${instanceLabel(leaseResult.identity)}）`;
+    } else if (incompleteRuns) {
+      lastStatus = `有 ${incompleteRuns} 个批次仍在等待完整分块。（当前 ${instanceLabel(leaseResult.identity)}）`;
+    }
+    return {
+      status: "scanned",
+      completeRuns,
+      incompleteRuns,
+      identity: leaseResult.identity,
+    };
   }
 
   function scanNow() {
@@ -2399,24 +2647,34 @@
     if (timer && typeof clock.clearInterval === "function") clock.clearInterval(timer);
     timer = null;
     if (scanInFlight) await scanInFlight;
+    try {
+      const paths = queuePaths();
+      await releaseConsumerLease(paths);
+    } catch (_error) {
+      // Best-effort lease release on shutdown.
+    }
   }
 
   function showStatus() {
+    const identity = resolveInstanceIdentity();
     const labels = {
       waiting: "等待分块",
       running: "正在处理",
       completed: "已完成",
       undone: "已撤销",
     };
+    const instanceLine = `当前桥接实例：${instanceLabel(identity)}`;
     const message = lastRunSummary
       ? [
+        instanceLine,
+        "（桥接始终跟随当前打开的 Zotero，不固定测试配置）",
         `批次：${lastRunSummary.runID}`,
         `状态：${labels[lastRunSummary.state] || lastRunSummary.state}`,
         `总数：${lastRunSummary.totalCount}`,
         `成功：${lastRunSummary.successCount}`,
         `失败：${lastRunSummary.failureCount}`,
       ].join("\n")
-      : lastStatus;
+      : [instanceLine, lastStatus || "空闲"].join("\n");
     if (typeof prompt.alert === "function") prompt.alert("文献下载桥接", message);
     return message;
   }
@@ -2687,5 +2945,9 @@
     shutdown,
     showStatus,
     undoLastBatch,
+    resolveInstanceIdentity,
+    publishActiveInstance,
+    acquireConsumerLease,
+    releaseConsumerLease,
   };
 });

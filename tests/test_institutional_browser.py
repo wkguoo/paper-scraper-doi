@@ -124,8 +124,11 @@ class InstitutionalAdapterTests(unittest.TestCase):
             AaasAdapter,
             AcsAdapter,
             AipAdapter,
+            ApsAdapter,
+            EcsAdapter,
             IeeeAdapter,
             IopAdapter,
+            MrsAdapter,
             RscAdapter,
             TaylorFrancisAdapter,
             WileyAdapter,
@@ -229,6 +232,42 @@ class InstitutionalAdapterTests(unittest.TestCase):
                 ),
                 "https://iopscience.iop.org/article/10.1088/1361-6463/ab1234/pdf",
             ),
+            (
+                ApsAdapter(),
+                InstitutionalPaper(
+                    row_number=9,
+                    input_doi="10.1103/PhysRevB.98.214203",
+                    doi="10.1103/PhysRevB.98.214203",
+                    title="APS PRB paper",
+                    publisher="American Physical Society",
+                    landing_url="https://journals.aps.org/prb/abstract/10.1103/PhysRevB.98.214203",
+                ),
+                "https://journals.aps.org/prb/pdf/10.1103/PhysRevB.98.214203",
+            ),
+            (
+                EcsAdapter(),
+                InstitutionalPaper(
+                    row_number=10,
+                    input_doi="10.1149/2.0031501jes",
+                    doi="10.1149/2.0031501jes",
+                    title="ECS JES paper",
+                    publisher="The Electrochemical Society",
+                    landing_url="https://iopscience.iop.org/article/10.1149/2.0031501jes",
+                ),
+                "https://iopscience.iop.org/article/10.1149/2.0031501jes/pdf",
+            ),
+            (
+                MrsAdapter(),
+                InstitutionalPaper(
+                    row_number=11,
+                    input_doi="10.1557/s43578-021-00115-7",
+                    doi="10.1557/s43578-021-00115-7",
+                    title="JMR paper",
+                    publisher="Materials Research Society",
+                    landing_url="https://link.springer.com/article/10.1557/s43578-021-00115-7",
+                ),
+                "https://link.springer.com/content/pdf/10.1557/s43578-021-00115-7.pdf",
+            ),
         ]
 
         for adapter, paper, expected_url in cases:
@@ -243,6 +282,60 @@ class InstitutionalAdapterTests(unittest.TestCase):
                 urls = [candidate.url for candidate in adapter.build_pdf_candidates(paper, snapshot)]
 
                 self.assertIn(expected_url, urls)
+
+    def test_aps_candidates_include_link_and_abstract_routes(self) -> None:
+        from paper_automation.institutional.adapters.common_publishers import ApsAdapter
+        from paper_automation.institutional.models import InstitutionalPaper, PageSnapshot
+
+        adapter = ApsAdapter()
+        paper = InstitutionalPaper(
+            row_number=1,
+            input_doi="10.1103/PhysRevLett.116.061102",
+            doi="10.1103/PhysRevLett.116.061102",
+            title="PRL paper",
+            publisher="American Physical Society",
+            landing_url="https://link.aps.org/doi/10.1103/PhysRevLett.116.061102",
+        )
+        snapshot = PageSnapshot(
+            requested_url=paper.landing_url,
+            final_url="https://journals.aps.org/prl/abstract/10.1103/PhysRevLett.116.061102",
+            html="<html><body>PDF</body></html>",
+            text="PDF",
+        )
+
+        urls = [candidate.url for candidate in adapter.build_pdf_candidates(paper, snapshot)]
+
+        self.assertIn("https://link.aps.org/pdf/10.1103/PhysRevLett.116.061102", urls)
+        self.assertIn("https://journals.aps.org/prl/pdf/10.1103/PhysRevLett.116.061102", urls)
+
+    def test_mrs_cambridge_landing_adds_cup_routes(self) -> None:
+        from paper_automation.institutional.adapters.common_publishers import MrsAdapter
+        from paper_automation.institutional.models import InstitutionalPaper, PageSnapshot
+
+        adapter = MrsAdapter()
+        paper = InstitutionalPaper(
+            row_number=1,
+            input_doi="10.1557/jmr.2019.38",
+            doi="10.1557/jmr.2019.38",
+            title="Legacy JMR paper",
+            publisher="Materials Research Society",
+            landing_url=(
+                "https://www.cambridge.org/core/journals/journal-of-materials-research/"
+                "article/example-article/ABCDEF123456"
+            ),
+        )
+        snapshot = PageSnapshot(
+            requested_url=paper.landing_url,
+            final_url=paper.landing_url,
+            html='<meta name="citation_pdf_url" content="/core/services/aop-cambridge-core/content/view/ABCDEF123456/S088429141900038X.pdf">',
+            text="PDF",
+        )
+
+        urls = [candidate.url for candidate in adapter.build_pdf_candidates(paper, snapshot)]
+
+        self.assertIn("https://link.springer.com/content/pdf/10.1557/jmr.2019.38.pdf", urls)
+        self.assertTrue(any("cambridge.org" in url and url.endswith("/pdf") for url in urls))
+        self.assertTrue(any("citation" in url or "aop-cambridge-core" in url for url in urls))
 
 
 class InstitutionalRegistryTests(unittest.TestCase):
@@ -341,6 +434,38 @@ class InstitutionalRegistryTests(unittest.TestCase):
                     publisher="IOP Publishing",
                 ),
                 "iop",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=10,
+                    input_doi="10.1103/PhysRevMaterials.5.013604",
+                    doi="10.1103/PhysRevMaterials.5.013604",
+                    title="PRMaterials paper",
+                    publisher="American Physical Society",
+                ),
+                "aps",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=11,
+                    input_doi="10.1149/2.0031501jes",
+                    doi="10.1149/2.0031501jes",
+                    title="ECS paper",
+                    publisher="The Electrochemical Society",
+                    landing_url="https://iopscience.iop.org/article/10.1149/2.0031501jes",
+                ),
+                "ecs",
+            ),
+            (
+                InstitutionalPaper(
+                    row_number=12,
+                    input_doi="10.1557/s43578-021-00115-7",
+                    doi="10.1557/s43578-021-00115-7",
+                    title="MRS/JMR paper",
+                    publisher="Materials Research Society",
+                    landing_url="https://link.springer.com/article/10.1557/s43578-021-00115-7",
+                ),
+                "mrs",
             ),
         ]
 

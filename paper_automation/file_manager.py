@@ -45,7 +45,8 @@ def sanitize_filename(value: str) -> str:
 
 def _safe_component(value: str, fallback: str) -> str:
     cleaned = sanitize_filename(value)
-    cleaned = re.sub(r"[^A-Za-z0-9\u4e00-\u9fff._ -]+", " ", cleaned)
+    # Keep common Latin letters used in author names (ä, ö, ü, ñ, …).
+    cleaned = re.sub(r"[^A-Za-z0-9\u00C0-\u024F\u4e00-\u9fff._ -]+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ._-")
     return cleaned or fallback
 

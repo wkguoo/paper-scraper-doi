@@ -360,7 +360,8 @@ class PaperScraperUI:
             hint,
             text=(
                 "新任务请只用本页。默认无需 resume：机构失败会写入 zotero_fallback 并由 start 自动排队。"
-                "保持 Zotero 打开；若提示确认，在插件中点一次后可用子命令 zotero 继续。"
+                "保持你要用的 Zotero 打开（桥接跟随当前打开的实例，不固定测试配置）；"
+                "若提示确认，在插件中点一次后可用子命令 zotero 继续。"
                 "日志出现「运行目录：…」后会自动填回「已有批次目录」。"
             ),
             wraplength=1020,

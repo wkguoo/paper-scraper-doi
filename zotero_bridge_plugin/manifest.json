@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Paper Download Bridge",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "One-confirmation local bridge between paper-scraper-doi and Zotero 9.",
   "author": "wkguoo",
   "applications": {

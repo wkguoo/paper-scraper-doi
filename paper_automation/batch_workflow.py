@@ -7,6 +7,7 @@ import inspect
 import json
 import math
 import os
+import shutil
 import stat
 import tempfile
 import time
@@ -112,6 +113,23 @@ FINAL_REPORT_FILENAMES = (
     "batch_status.csv",
     "batch_status.json",
 )
+# User-facing delivery (keep this simple — one inventory + one results folder).
+USER_DELIVERY_DIR_NAME = "结果"
+USER_INVENTORY_NAME = "下载清单.csv"
+USER_INVENTORY_FIELDS = [
+    "序号",
+    "状态",
+    "DOI",
+    "题名",
+    "作者",
+    "年份",
+    "期刊",
+    "下载来源",
+    "结果文件",
+    "补充材料",
+    "失败原因",
+    "task_id",
+]
 _STAGE_SUCCESS_STATUSES = {"downloaded", "oa_downloaded", "institutional_downloaded"}
 _INSTITUTIONAL_SOURCES = {"sciencedirect", "non_elsevier", "institutional"}
 
@@ -921,7 +939,9 @@ def _copy_successful_pdf(row: dict, paths: BatchPaths) -> dict:
         result.update(status="not_pdf_response", file="", reason="not_pdf_response")
         return result
     try:
-        copied = copy_pdf_safely(source_path, paths.pdfs, f"{row['task_id']}.pdf")
+        # Prefer year_author_title_hash naming at first write (optimization #8).
+        preferred_name = _filename_for_batch_row(row)
+        copied = copy_pdf_safely(source_path, paths.pdfs, preferred_name)
     except (OSError, ValueError) as exc:
         result.update(
             status="not_pdf_response",
@@ -1485,6 +1505,217 @@ def _validate_manual_retry_preclaim(state: dict, paths: BatchPaths) -> list[dict
     return rows
 
 
+def _status_label_zh(status: object) -> str:
+    value = str(status or "").strip().lower()
+    if value in SUCCESS_STATUSES:
+        return "成功"
+    if value == "duplicate":
+        return "重复"
+    return "失败"
+
+
+def _source_label_zh(source: object) -> str:
+    value = str(source or "").strip().lower()
+    labels = {
+        "oa": "开放获取",
+        "sciencedirect": "ScienceDirect",
+        "non_elsevier": "机构（非Elsevier）",
+        "institutional": "机构",
+        "zotero": "Zotero",
+    }
+    return labels.get(value, str(source or "").strip() or "")
+
+
+def _safe_delivery_name(name: str, *, fallback: str) -> str:
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        cleaned = fallback
+    cleaned = cleaned.replace("\\", "_").replace("/", "_")
+    cleaned = "".join(
+        "_" if (ch in _WINDOWS_INVALID_CHARS or ord(ch) < 32) else ch
+        for ch in cleaned
+    ).strip(" .")
+    if not cleaned or cleaned in {".", ".."}:
+        cleaned = fallback
+    stem = cleaned.split(".", 1)[0].upper()
+    if stem in _WINDOWS_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+    return cleaned[:180] or fallback
+
+
+def _collect_supplement_dirs(row: dict, paths: BatchPaths) -> list[Path]:
+    """Locate supplement folders written by stage downloaders for this paper."""
+
+    candidates: list[Path] = []
+    file_value = str(row.get("file", "") or "").strip()
+    stems: list[str] = []
+    if file_value:
+        path = Path(file_value)
+        stems.append(path.stem)
+        # Stage copies may keep paper-0001 while delivery uses year_author names.
+    task_id = str(row.get("task_id", "") or "").strip()
+    if task_id:
+        stems.append(task_id)
+    doi = str(row.get("doi", "") or row.get("input_doi", "") or "").strip().lower()
+    if doi:
+        stems.append(doi.replace("/", "_"))
+        stems.append(doi.rsplit("/", 1)[-1])
+
+    search_roots = [
+        paths.reports / "sciencedirect" / "supplements",
+        paths.reports / "sciencedirect" / "pdfs" / "supplements",
+        paths.reports / "oa" / "supplements",
+        paths.reports / "non_elsevier_institutional" / "supplements",
+        paths.pdfs / "supplements",
+        paths.root / "supplements",
+    ]
+    seen: set[str] = set()
+    for root in search_roots:
+        if not root.is_dir():
+            continue
+        for stem in stems:
+            if not stem:
+                continue
+            folder = root / stem
+            key = str(folder).lower()
+            if key in seen:
+                continue
+            if folder.is_dir() and any(folder.iterdir()):
+                candidates.append(folder)
+                seen.add(key)
+    return candidates
+
+
+def _copy_tree_files(source_dir: Path, destination_dir: Path) -> list[str]:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    relative_names: list[str] = []
+    for source in sorted(source_dir.rglob("*")):
+        if not source.is_file() or source.is_symlink():
+            continue
+        rel = source.relative_to(source_dir)
+        target = destination_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        relative_names.append(str(rel).replace("\\", "/"))
+    return relative_names
+
+
+def _replace_user_directory(target: Path, staging: Path) -> None:
+    backup: Path | None = None
+    if target.exists() or target.is_symlink():
+        backup = target.with_name(f".{target.name}.bak_{time.time_ns()}")
+        if backup.exists() or backup.is_symlink():
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                backup.unlink(missing_ok=True)
+        target.replace(backup)
+    try:
+        staging.replace(target)
+    except Exception:
+        if backup is not None and backup.exists() and not target.exists():
+            backup.replace(target)
+        raise
+    if backup is not None:
+        if backup.is_dir() and not backup.is_symlink():
+            shutil.rmtree(backup, ignore_errors=True)
+        else:
+            backup.unlink(missing_ok=True)
+
+
+def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
+    """Publish the only user-facing deliverables: 下载清单.csv + 结果/.
+
+    Internal reports/ and working/ remain for the pipeline; daily use only needs
+    these two paths at the run root.
+    """
+
+    paths.root.mkdir(parents=True, exist_ok=True)
+    staging_root = Path(
+        tempfile.mkdtemp(prefix=".user_delivery_staging_", dir=paths.root)
+    )
+    staging_results = staging_root / USER_DELIVERY_DIR_NAME
+    staging_results.mkdir(parents=True, exist_ok=True)
+    inventory_rows: list[dict[str, str]] = []
+    used_names: set[str] = set()
+
+    try:
+        for index, row in enumerate(rows, start=1):
+            status = str(row.get("status", "") or "").strip()
+            label = _status_label_zh(status)
+            reason = ""
+            if label == "失败":
+                reason = str(row.get("reason", "") or "").strip() or status or "unknown_failure"
+            elif label == "重复":
+                reason = str(row.get("reason", "") or "").strip() or "duplicate"
+
+            result_rel = ""
+            supplements_rel = ""
+            if label == "成功":
+                source_file = str(row.get("file", "") or "").strip()
+                source_path = Path(source_file).expanduser() if source_file else None
+                if source_path is not None and source_path.is_file() and not source_path.is_symlink():
+                    preferred = _safe_delivery_name(
+                        source_path.name if source_path.suffix.lower() == ".pdf" else f"{source_path.stem}.pdf",
+                        fallback=f"{row.get('task_id') or f'paper-{index:04d}'}.pdf",
+                    )
+                    if not preferred.lower().endswith(".pdf"):
+                        preferred = f"{preferred}.pdf"
+                    base = preferred
+                    counter = 2
+                    while preferred.lower() in used_names:
+                        preferred = f"{Path(base).stem}_{counter}.pdf"
+                        counter += 1
+                    used_names.add(preferred.lower())
+                    target_pdf = staging_results / preferred
+                    shutil.copy2(source_path, target_pdf)
+                    result_rel = f"{USER_DELIVERY_DIR_NAME}/{preferred}"
+
+                    supplement_dirs = _collect_supplement_dirs(row, paths)
+                    if supplement_dirs:
+                        suppl_folder_name = f"{Path(preferred).stem}_supplements"
+                        suppl_dest = staging_results / suppl_folder_name
+                        copied_names: list[str] = []
+                        for folder in supplement_dirs:
+                            copied_names.extend(_copy_tree_files(folder, suppl_dest))
+                        if copied_names:
+                            supplements_rel = (
+                                f"{USER_DELIVERY_DIR_NAME}/{suppl_folder_name}"
+                                f"（{len(copied_names)}个文件）"
+                            )
+                else:
+                    label = "失败"
+                    reason = str(row.get("reason", "") or "").strip() or "missing_result_pdf"
+
+            inventory_rows.append(
+                {
+                    "序号": str(index),
+                    "状态": label,
+                    "DOI": str(row.get("doi", "") or row.get("input_doi", "") or ""),
+                    "题名": str(row.get("title", "") or row.get("input_title", "") or ""),
+                    "作者": str(row.get("authors", "") or ""),
+                    "年份": str(row.get("year", "") or ""),
+                    "期刊": str(row.get("journal", "") or ""),
+                    "下载来源": _source_label_zh(row.get("source", "")),
+                    "结果文件": result_rel,
+                    "补充材料": supplements_rel,
+                    "失败原因": reason,
+                    "task_id": str(row.get("task_id", "") or ""),
+                }
+            )
+
+        inventory_staging = staging_root / USER_INVENTORY_NAME
+        _write_report_csv(inventory_staging, USER_INVENTORY_FIELDS, inventory_rows)
+
+        delivery_target = paths.root / USER_DELIVERY_DIR_NAME
+        inventory_target = paths.root / USER_INVENTORY_NAME
+        _replace_user_directory(delivery_target, staging_results)
+        os.replace(inventory_staging, inventory_target)
+        return inventory_target
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+
+
 def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
     """Write stable final reports from the current state, with or without Zotero data."""
 
@@ -1510,6 +1741,8 @@ def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
         f"input_count: {len(manifest_rows)}",
         f"success_count: {success_count}",
         f"failure_count: {failure_count}",
+        f"user_inventory: {paths.root / USER_INVENTORY_NAME}",
+        f"user_results_directory: {paths.root / USER_DELIVERY_DIR_NAME}",
         f"final_pdf_directory: {paths.pdfs}",
         f"duplicate_terminal_rows_excluded: {duplicate_count}",
         "failure_status_counts:",
@@ -1530,6 +1763,8 @@ def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
         "total_count": len(manifest_rows),
         "success_count": success_count,
         "failed_count": failure_count,
+        "user_inventory": str(paths.root / USER_INVENTORY_NAME),
+        "user_results_directory": str(paths.root / USER_DELIVERY_DIR_NAME),
     }
     try:
         paths.reports.mkdir(parents=True, exist_ok=True)
@@ -1554,6 +1789,8 @@ def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
                 _publish_report_set(paths, staging)
             finally:
                 _cleanup_report_transaction_dir(staging)
+            # User-facing package: one inventory + one results folder.
+            publish_user_delivery(paths, manifest_rows)
     except Exception as exc:
         raise RuntimeError(f"final_report_write_failed:{type(exc).__name__}:{exc}") from exc
 
@@ -1743,17 +1980,68 @@ class DefaultStageGateway:
             row for row in rows
             if _needs_manual_retry(row.get("status", ""), row.get("reason", ""))
         ]
-        science_direct, other = _split_institutional_rows(manual_rows)
+        return self._run_institutional_stages(
+            manual_rows,
+            paths,
+            options,
+            on_updates=on_updates,
+            sd_name="sciencedirect_retry_input.csv",
+            other_name="non_elsevier_retry_input.csv",
+        )
+
+    def run_institutional_only(
+        self,
+        rows: list[dict],
+        paths: BatchPaths,
+        options: Any,
+        *,
+        on_updates: Callable[[list[dict]], None] | None = None,
+    ) -> list[dict]:
+        """Institutional stages only (skip OA). Used by retry_failed_batch."""
+
+        runnable = [
+            dict(row)
+            for row in rows
+            if str(row.get("status", "")).lower() == "pending"
+        ]
+        if not runnable:
+            return []
+        return self._run_institutional_stages(
+            runnable,
+            paths,
+            options,
+            on_updates=on_updates,
+            sd_name="sciencedirect_retry_failed_input.csv",
+            other_name="non_elsevier_retry_failed_input.csv",
+        )
+
+    def _run_institutional_stages(
+        self,
+        rows: list[dict],
+        paths: BatchPaths,
+        options: Any,
+        *,
+        on_updates: Callable[[list[dict]], None] | None,
+        sd_name: str,
+        other_name: str,
+    ) -> list[dict]:
+        science_direct, other = _split_institutional_rows(rows)
         updates: list[dict] = []
         if science_direct:
-            stage_input = _stage_input_writer(science_direct, paths.working / "sciencedirect_retry_input.csv")
-            stage_updates = [_update_as_mapping(row) for row in run_sciencedirect_stage(stage_input, paths.reports, options)]
+            stage_input = _stage_input_writer(science_direct, paths.working / sd_name)
+            stage_updates = [
+                _update_as_mapping(row)
+                for row in run_sciencedirect_stage(stage_input, paths.reports, options)
+            ]
             if on_updates is not None:
                 on_updates(stage_updates)
             updates.extend(stage_updates)
         if other:
-            stage_input = _stage_input_writer(other, paths.working / "non_elsevier_retry_input.csv")
-            stage_updates = [_update_as_mapping(row) for row in run_non_elsevier_stage(stage_input, paths.reports, options)]
+            stage_input = _stage_input_writer(other, paths.working / other_name)
+            stage_updates = [
+                _update_as_mapping(row)
+                for row in run_non_elsevier_stage(stage_input, paths.reports, options)
+            ]
             if on_updates is not None:
                 on_updates(stage_updates)
             updates.extend(stage_updates)
@@ -1770,6 +2058,7 @@ def start_batch(
     gateway=None,
     normalizer=None,
     now: datetime | None = None,
+    doi_preflight: bool | None = None,
 ) -> BatchRunResult:
     if (input_text is None) == (input_path is None):
         raise ValueError("exactly_one_input_required")
@@ -1783,6 +2072,11 @@ def start_batch(
         paths=paths,
         options=selected_options,
     )]
+    # Default on for real DefaultStageGateway runs; off when tests inject a fake gateway.
+    if doi_preflight is None:
+        doi_preflight = gateway is None or type(gateway).__name__ == "DefaultStageGateway"
+    if doi_preflight:
+        rows = _apply_doi_preflight(rows, email=str(getattr(selected_options, "email", "") or ""), paths=paths)
     _validate_stage_updates(rows, [])
     _write_csv_rows(paths.normalized_input, rows)
     skip_manual = bool(serialized_options.get("skip_manual_retry", True))
@@ -1812,6 +2106,125 @@ def start_batch(
         pending_manual_retry_used=bool(state.get("manual_retry_used")),
     )
     return _result_from_state(paths, state)
+
+
+def retry_failed_batch(
+    run_dir: str | Path,
+    *,
+    gateway=None,
+    options: Any | None = None,
+    skip_oa: bool = True,
+) -> BatchRunResult:
+    """Re-run unresolved rows in an existing batch (same run-dir; optimization #5).
+
+    By default skips OA and only re-runs institutional stages for non-terminal rows.
+    """
+
+    paths = _paths_from_run_dir(run_dir)
+    with batch_state_lock(paths.root):
+        state = load_batch_state(paths.root)
+        _validate_state(state, expected_run_dir=paths.root)
+        selected_options = options or _options_from_state(state)
+        if options is not None:
+            state["options"] = _serialize_options(selected_options)
+        failed_rows = [
+            row for row in state["rows"]
+            if not _is_terminal_status(row.get("status", ""))
+        ]
+        if not failed_rows:
+            return _result_from_state(paths, state)
+        # Reset unresolved rows to pending so stages will process them.
+        for row in failed_rows:
+            row["status"] = "pending"
+            row["source"] = "retry_failed"
+            row["file"] = ""
+            if str(row.get("reason", "") or "").startswith("doi_"):
+                pass
+            else:
+                row["reason"] = "retry_failed_reset"
+        # Optional DOI preflight again for wrong/missing DOIs.
+        state["rows"] = _apply_doi_preflight(
+            state["rows"],
+            email=str(getattr(selected_options, "email", "") or ""),
+            paths=paths,
+        )
+        save_batch_state(paths, state)
+
+    runner = gateway or DefaultStageGateway()
+    method = "run_institutional_only" if skip_oa else "run_initial"
+    retry_ids = {
+        str(row.get("task_id", ""))
+        for row in state["rows"]
+        if str(row.get("status", "")).lower() == "pending"
+    }
+    if not retry_ids:
+        _write_latest_state_outputs(
+            paths,
+            state,
+            pending_manual_retry_used=bool(state.get("manual_retry_used")),
+        )
+        return _result_from_state(paths, state)
+    pending_rows = [row for row in state["rows"] if str(row.get("task_id", "")) in retry_ids]
+    _run_gateway_with_state(
+        runner=runner,
+        method_name=method,
+        rows=pending_rows if method == "run_institutional_only" else state["rows"],
+        paths=paths,
+        options=selected_options,
+        state=state,
+        required_ids=retry_ids,
+    )
+    _write_latest_state_outputs(
+        paths,
+        state,
+        pending_manual_retry_used=bool(state.get("manual_retry_used")),
+    )
+    return _result_from_state(paths, state)
+
+
+def _apply_doi_preflight(rows: list[dict], *, email: str, paths: BatchPaths) -> list[dict]:
+    try:
+        from .doi_preflight import preflight_rows
+    except Exception:
+        return rows
+    try:
+        updated, changes = preflight_rows(rows, email=email)
+    except Exception as exc:
+        print(f"[DOI预检] 跳过（{type(exc).__name__}）")
+        return rows
+    if changes:
+        print(f"[DOI预检] 校正/补全 {len(changes)} 条：")
+        for change in changes[:20]:
+            print(
+                f"  - {change.task_id}: {change.action} "
+                f"{change.old_doi or '(无)'} -> {change.new_doi or '(无)'} ({change.detail})"
+            )
+        if len(changes) > 20:
+            print(f"  ... 另有 {len(changes) - 20} 条")
+        try:
+            log_path = paths.working / "doi_preflight_changes.csv"
+            import csv as _csv
+            with log_path.open("w", newline="", encoding="utf-8-sig") as handle:
+                writer = _csv.DictWriter(
+                    handle,
+                    fieldnames=["task_id", "action", "old_doi", "new_doi", "detail"],
+                )
+                writer.writeheader()
+                for change in changes:
+                    writer.writerow(
+                        {
+                            "task_id": change.task_id,
+                            "action": change.action,
+                            "old_doi": change.old_doi,
+                            "new_doi": change.new_doi,
+                            "detail": change.detail,
+                        }
+                    )
+        except OSError:
+            pass
+    else:
+        print("[DOI预检] 无需校正")
+    return updated
 
 
 def resume_batch(

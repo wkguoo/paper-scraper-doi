@@ -178,7 +178,7 @@ Example title copied from a bibliography
 
 桥接队列固定在 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。多个分块仍是 one confirmation per batch。
 
-输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：最终 PDF 在 `pdfs\`，报告在 `reports\`。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。当前只完成源码和离线测试；先验收 Zotero test profile，do not install to the main profile yet。未经明确批准不生成 XPI。详细步骤见 [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)。
+输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：最终 PDF 在 `pdfs\`，报告在 `reports\`。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。Zotero 桥接跟随**当前打开的实例**（不固定测试配置）；请在要用的配置中安装插件。详细步骤见 [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)。
 
 ## 图形界面（推荐页：统一批次）
 

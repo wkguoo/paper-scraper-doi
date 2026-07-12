@@ -269,6 +269,215 @@ class IopAdapter(DirectDoiPdfAdapter):
         )
 
 
+class ApsAdapter(DirectDoiPdfAdapter):
+    """American Physical Society — PRL, PRB, PRMaterials, etc."""
+
+    name = "aps"
+    doi_prefixes = ("10.1103/",)
+    publisher_terms = ("american physical society", "aps")
+    hosts = ("journals.aps.org", "link.aps.org")
+
+    def _direct_pdf_candidates(
+        self,
+        paper: InstitutionalPaper,
+        landing: PageSnapshot,
+    ) -> tuple[PdfUrlCandidate, ...]:
+        doi = paper.doi
+        if not doi:
+            return ()
+        candidates: list[PdfUrlCandidate] = [
+            PdfUrlCandidate(
+                "aps_link_pdf",
+                f"https://link.aps.org/pdf/{doi}",
+                PDF_FETCH_PATTERNS + ("*link.aps.org*", "*journals.aps.org*"),
+            ),
+        ]
+        journal = _aps_journal_code(
+            paper.doi,
+            landing.final_url or landing.requested_url or paper.landing_url,
+        )
+        if journal:
+            candidates.append(
+                PdfUrlCandidate(
+                    "aps_journal_pdf",
+                    f"https://journals.aps.org/{journal}/pdf/{doi}",
+                    PDF_FETCH_PATTERNS + ("*journals.aps.org*",),
+                )
+            )
+        base_url = landing.final_url or landing.requested_url or paper.landing_url
+        abstract_pdf = _aps_pdf_from_abstract_url(base_url)
+        if abstract_pdf:
+            candidates.append(
+                PdfUrlCandidate(
+                    "aps_abstract_to_pdf",
+                    abstract_pdf,
+                    PDF_FETCH_PATTERNS + ("*journals.aps.org*",),
+                )
+            )
+        return tuple(candidates)
+
+
+class EcsAdapter(DirectDoiPdfAdapter):
+    """Electrochemical Society journals (hosted on IOPscience since 2020)."""
+
+    name = "ecs"
+    doi_prefixes = ("10.1149/",)
+    publisher_terms = (
+        "electrochemical society",
+        "the electrochemical society",
+        "ecs",
+    )
+    # Prefer DOI/publisher match; avoid bare iopscience host so IOP (10.1088) stays on IopAdapter.
+    hosts = ("ecsdl.org", "jes.ecsdl.org", "jss.ecsdl.org")
+
+    def _direct_pdf_candidates(
+        self,
+        paper: InstitutionalPaper,
+        landing: PageSnapshot,
+    ) -> tuple[PdfUrlCandidate, ...]:
+        doi = paper.doi
+        if not doi:
+            return ()
+        return (
+            PdfUrlCandidate(
+                "ecs_iopscience_pdf",
+                f"https://iopscience.iop.org/article/{doi}/pdf",
+                PDF_FETCH_PATTERNS,
+            ),
+            PdfUrlCandidate(
+                "ecs_iopscience_pdf_download",
+                f"https://iopscience.iop.org/article/{doi}/pdf?download=true",
+                PDF_FETCH_PATTERNS,
+            ),
+        )
+
+
+class MrsAdapter(DirectDoiPdfAdapter):
+    """MRS / Journal of Materials Research family (DOI 10.1557/).
+
+    Current content often resolves to Springer; older/legacy pages may still
+    live on Cambridge Core. Candidates cover both hosts plus landing extraction.
+    """
+
+    name = "mrs"
+    doi_prefixes = ("10.1557/",)
+    publisher_terms = (
+        "materials research society",
+        "mrs publications",
+        "journal of materials research",
+    )
+    hosts = ("mrs.org", "www.mrs.org")
+
+    def _direct_pdf_candidates(
+        self,
+        paper: InstitutionalPaper,
+        landing: PageSnapshot,
+    ) -> tuple[PdfUrlCandidate, ...]:
+        doi = paper.doi
+        if not doi:
+            return ()
+        candidates: list[PdfUrlCandidate] = [
+            PdfUrlCandidate(
+                "mrs_springer_content_pdf",
+                f"https://link.springer.com/content/pdf/{doi}.pdf",
+                PDF_FETCH_PATTERNS,
+            ),
+            PdfUrlCandidate(
+                "mrs_springer_content_pdf_nosuffix",
+                f"https://link.springer.com/content/pdf/{doi}",
+                PDF_FETCH_PATTERNS,
+            ),
+        ]
+        base_url = landing.final_url or landing.requested_url or paper.landing_url
+        host = (urlparse(base_url).hostname or "").lower()
+        if "cambridge.org" in host:
+            candidates.extend(_cambridge_pdf_candidates(base_url, doi))
+        return tuple(candidates)
+
+
+def _aps_journal_code(doi: str, url: str) -> str:
+    """Infer APS journal path segment from classic DOI or landing URL."""
+    path = (urlparse(url or "").path or "").strip("/").lower()
+    if path:
+        # journals.aps.org/{journal}/abstract|pdf|...
+        first = path.split("/", 1)[0]
+        if first and first not in {"doi", "pdf", "abstract"}:
+            return first
+
+    # Classic DOIs: 10.1103/PhysRevB.98.214203 or 10.1103/PhysRevLett.116.061102
+    suffix = (doi or "").split("/", 1)[-1]
+    token = suffix.split(".", 1)[0]
+    return _APS_DOI_JOURNAL_MAP.get(token.lower(), "")
+
+
+def _aps_pdf_from_abstract_url(url: str) -> str:
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    path = parsed.path or ""
+    if "/abstract/" not in path.lower():
+        return ""
+    # Preserve case of DOI segment after abstract/
+    lower = path.lower()
+    idx = lower.index("/abstract/")
+    pdf_path = path[:idx] + "/pdf/" + path[idx + len("/abstract/") :]
+    return f"{parsed.scheme or 'https'}://{parsed.netloc}{pdf_path}"
+
+
+def _cambridge_pdf_candidates(base_url: str, doi: str) -> tuple[PdfUrlCandidate, ...]:
+    """Best-effort Cambridge Core PDF routes when landing is already on CUP."""
+    parsed = urlparse(base_url)
+    path = (parsed.path or "").rstrip("/")
+    candidates: list[PdfUrlCandidate] = []
+    if path:
+        candidates.append(
+            PdfUrlCandidate(
+                "mrs_cambridge_path_pdf",
+                f"{parsed.scheme or 'https'}://{parsed.netloc}{path}/pdf",
+                PDF_FETCH_PATTERNS + ("*cambridge.org*",),
+            )
+        )
+    # Product-identifier style used by some CUP journal pages.
+    if doi:
+        candidates.append(
+            PdfUrlCandidate(
+                "mrs_cambridge_doi_product",
+                (
+                    "https://www.cambridge.org/core/product/identifier/"
+                    f"{doi}/type/JOURNAL_ARTICLE"
+                ),
+                PDF_FETCH_PATTERNS + ("*cambridge.org*",),
+            )
+        )
+    return tuple(candidates)
+
+
+# Classic APS journal codes embedded in DOI (case-insensitive lookup).
+_APS_DOI_JOURNAL_MAP = {
+    "physrevlett": "prl",
+    "physreva": "pra",
+    "physrevb": "prb",
+    "physrevc": "prc",
+    "physrevd": "prd",
+    "physreve": "pre",
+    "physrevx": "prx",
+    "physrevmaterials": "prmaterials",
+    "physrevapplied": "prapplied",
+    "physrevresearch": "prresearch",
+    "physrevfluids": "prfluids",
+    "physrevaccelbeams": "prab",
+    "physrevstab": "prstab",
+    "physrevstper": "prstper",
+    "physrevphyseducres": "prper",
+    "revmodphys": "rmp",
+    "physics": "physics",
+    "prxquantum": "prxquantum",
+    "prxenergy": "prxenergy",
+    "prxlife": "prxlife",
+    "physrev": "pr",
+}
+
+
 def _ieee_arnumber(url: str, html: str) -> str:
     for source in (url or "", html or ""):
         match = re.search(r"(?:arnumber=|/document/)(\d{5,})", source, flags=re.I)

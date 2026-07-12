@@ -1232,7 +1232,7 @@ class BatchStageTests(unittest.TestCase):
         self.assertEqual(results[1].reason, "auth_required")
         self.assertIn("--run-name", argv)
         self.assertEqual(argv[argv.index("--run-name") + 1], "sciencedirect")
-        self.assertIn("--no-download-supplements", argv)
+        self.assertNotIn("--no-download-supplements", argv)
         self.assertEqual(argv[argv.index("--cookies") + 1], "cookies.json")
         self.assertEqual(argv[argv.index("--browser-exe") + 1], "C:/Browser/browser.exe")
         self.assertEqual(argv[argv.index("--login-wait-seconds") + 1], "30")
@@ -3303,12 +3303,18 @@ class BatchFinalizeTests(unittest.TestCase):
 
         from openpyxl import load_workbook
 
-        from paper_automation.batch_workflow import write_final_reports
+        from paper_automation.batch_workflow import (
+            USER_DELIVERY_DIR_NAME,
+            USER_INVENTORY_NAME,
+            write_final_reports,
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            pdf = root / "ok.pdf"
+            pdf.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n")
             rows = [
-                self._row("paper-0001", "zotero_downloaded", title="=DANGEROUS", reason=""),
+                self._row("paper-0001", "zotero_downloaded", title="=DANGEROUS", reason="", file=str(pdf)),
                 self._row("paper-0002", "no_open_pdf", reason="=FORMULA"),
                 self._row("paper-0003", "duplicate", reason="duplicate_input"),
             ]
@@ -3321,16 +3327,31 @@ class BatchFinalizeTests(unittest.TestCase):
             formula_cell = values[1][5]
             workbook.close()
             summary = (paths.reports / "run_summary.txt").read_text(encoding="utf-8")
+            inventory_path = paths.root / USER_INVENTORY_NAME
+            delivery_dir = paths.root / USER_DELIVERY_DIR_NAME
+            with inventory_path.open("r", newline="", encoding="utf-8-sig") as handle:
+                inventory = list(csv.DictReader(handle))
+            by_task = {row["task_id"]: row for row in inventory}
+            delivery_pdf_count = len(list(delivery_dir.glob("*.pdf")))
 
-        self.assertEqual([row["task_id"] for row in failed_rows], ["paper-0002"])
-        self.assertEqual(formula_cell.value, "=DANGEROUS")
-        self.assertEqual(formula_cell.data_type, "s")
-        self.assertIn("input_count: 3", summary)
-        self.assertIn("success_count: 1", summary)
-        self.assertIn("failure_count: 1", summary)
-        self.assertIn("no_open_pdf: 1", summary)
-        self.assertIn("paper-0002\tno_open_pdf\t=FORMULA", summary)
-        self.assertIn("duplicate_terminal_rows_excluded: 1", summary)
+            self.assertEqual([row["task_id"] for row in failed_rows], ["paper-0002"])
+            self.assertEqual(formula_cell.value, "=DANGEROUS")
+            self.assertEqual(formula_cell.data_type, "s")
+            self.assertIn("input_count: 3", summary)
+            self.assertIn("success_count: 1", summary)
+            self.assertIn("failure_count: 1", summary)
+            self.assertIn("no_open_pdf: 1", summary)
+            self.assertIn("paper-0002\tno_open_pdf\t=FORMULA", summary)
+            self.assertIn("duplicate_terminal_rows_excluded: 1", summary)
+            self.assertTrue(inventory_path.is_file())
+            self.assertTrue(delivery_dir.is_dir())
+            self.assertEqual(len(inventory), 3)
+            self.assertEqual(by_task["paper-0001"]["状态"], "成功")
+            self.assertTrue(by_task["paper-0001"]["结果文件"].startswith(f"{USER_DELIVERY_DIR_NAME}/"))
+            self.assertEqual(by_task["paper-0002"]["状态"], "失败")
+            self.assertIn("FORMULA", by_task["paper-0002"]["失败原因"])
+            self.assertEqual(by_task["paper-0003"]["状态"], "重复")
+            self.assertGreater(delivery_pdf_count, 0)
 
     def test_finalize_rejects_symlink_attachment_and_empty_results_leave_state_pending(self) -> None:
         from paper_automation import batch_workflow as workflow
@@ -4715,7 +4736,7 @@ class BatchCliTests(unittest.TestCase):
                 main(["--help"])
         self.assertEqual(raised.exception.code, 0)
         output = stdout.getvalue()
-        for text in ("TXT/MD/CSV/XLSX/XLSM", "Zotero 回退", "非破坏复制", "start", "resume", "finalize", "zotero", "自动排队"):
+        for text in ("TXT/MD/CSV/XLSX/XLSM", "Zotero 回退", "start", "resume", "finalize", "zotero", "retry-failed", "auto-zotero"):
             self.assertIn(text, output)
 
 
@@ -4753,6 +4774,7 @@ class BatchCliTests(unittest.TestCase):
                     with redirect_stdout(stdout):
                         exit_code = main([
                             "start", "--text", "10.1000/example", "--out", str(root),
+                            "--auto-zotero",
                             "--library-id", "7", "--wait-seconds", "0",
                         ])
 
@@ -4762,7 +4784,7 @@ class BatchCliTests(unittest.TestCase):
         self.assertEqual(bridge.call_args.kwargs, {"library_id": 7, "wait_seconds": 0})
         self.assertIn("已自动将失败项排队", stdout.getvalue())
 
-    def test_start_no_auto_zotero_skips_bridge(self) -> None:
+    def test_start_default_skips_auto_zotero_bridge(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
 
@@ -4776,11 +4798,11 @@ class BatchCliTests(unittest.TestCase):
                     with redirect_stdout(stdout):
                         exit_code = main([
                             "start", "--text", "10.1000/example", "--out", str(root),
-                            "--no-auto-zotero",
                         ])
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(bridge.call_count, 0)
+        self.assertIn("retry-failed", stdout.getvalue())
         self.assertIn("'zotero'", stdout.getvalue())
 
     def test_start_without_fallback_does_not_call_bridge(self) -> None:

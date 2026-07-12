@@ -56,14 +56,14 @@
 | Zotero 找不到 PDF | 保留 `no_pdf`/`no_available_pdf`，在 `reports\` 中查看；不要反复导入同一 DOI。 |
 | 插件完全不可用 | 可按 Skill 的严格五列 CSV 规则生成 `zotero_unavailable` 恢复文件；这只更新未完成报告，不代表下载成功。 |
 
-## Zotero 测试配置门禁
+## 桥接目标：当前打开的 Zotero
 
-在真实使用前，只允许先验收 Zotero test profile（Zotero 测试配置）。当前约束是：
+桥接**不固定** `Zotero test`，也不看 `profiles.ini` 里谁是 Default。
 
-- do not install to the main profile yet；目前不要安装到主配置或主文库。
-- 未经明确批准，不生成 XPI，也不修改任何 Zotero 配置。
-- 获批后也只通过 `Zotero test` 配置的 Add-ons 界面安装，不直接复制 profile 文件。
-- 测试配置通过现有 PDF、缺失 PDF、取消、分块一次确认、重启恢复与重复运行后，
-  再单独征求主配置安装许可。
+- 插件在轮询时写入 `active-instance.json` 与 `consumer-lease.json`：**谁打开、谁持有租约，任务就进谁的数据目录**。
+- 打开主库（例如数据在 `D:\zeterofiles`）→ 进主库；打开测试配置（例如 `D:\Zotero-Test-Data`）→ 进测试库。
+- 请只保留你要用的那个 Zotero；两个都开且都装了插件时，后开的会提示另一实例正在消费队列。
+- 你实际用的配置里需要已安装「文献下载桥接」插件（主配置与测试配置可各装一份）。
+- 隔离验收仍可用 `Zotero test`；日常请打开正式文库对应的 Zotero。
 
 详细人工验收项见 [MANUAL_QA.md](../MANUAL_QA.md)。

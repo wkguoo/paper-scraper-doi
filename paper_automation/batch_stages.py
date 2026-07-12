@@ -134,7 +134,8 @@ def run_sciencedirect_stage(input_path: Path, output_dir: Path, options: BatchOp
         str(output_dir),
         "--run-name",
         "sciencedirect",
-        "--no-download-supplements",
+        # Download ScienceDirect supplements into stage supplements/ so the
+        # user-facing 结果/ folder can collect paper + supplements together.
     ]
     if options.email:
         argv.extend(["--email", options.email])

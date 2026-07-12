@@ -30,7 +30,17 @@ class DebugBrowserSession:
         self.log_path = chrome_debug_log(f"institutional_debug_{debug_port}.log")
 
     def ensure_ready(self) -> bool:
+        """Ensure debug browser is reachable.
+
+        Returns True if a new browser process was launched, False if an existing
+        session on this debug port was reused (optimization #6).
+        """
+
         if self.is_ready():
+            print(
+                f"[浏览器] 复用已有调试会话 port={self.debug_port} "
+                f"({self.browser_name})"
+            )
             return False
         self._launch()
         deadline = time.time() + 40
@@ -42,10 +52,12 @@ class DebugBrowserSession:
 
     def is_ready(self) -> bool:
         try:
-            urlopen(f"http://127.0.0.1:{self.debug_port}/json/version", timeout=2)
+            with urlopen(f"http://127.0.0.1:{self.debug_port}/json/version", timeout=2) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+            # Require a real CDP version payload so a random local port is not reused.
+            return "webSocketDebuggerUrl" in payload or "Browser" in payload or "Protocol-Version" in payload
         except OSError:
             return False
-        return True
 
     def open_login_page(self, url: str) -> None:
         self._open_tab(url)

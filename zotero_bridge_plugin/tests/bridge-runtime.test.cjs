@@ -366,6 +366,19 @@ async function makeHarness({
     removedMemberships: [],
     items,
     collections,
+    getInstanceIdentity() {
+      if (zoteroOptions.instanceIdentity) {
+        return { ...zoteroOptions.instanceIdentity };
+      }
+      return {
+        instance_id: "test-data-dir-fixture",
+        data_dir: "D:\\Zotero-Fixture-Data",
+        profile_dir: "C:\\Profiles\\fixture.default",
+        profile_name: "fixture.default",
+        zotero_version: "9.0.6-test",
+        plugin_version: "0.1.0-test",
+      };
+    },
     async getLibraryName(libraryID) {
       return libraryID === 1 ? "我的文库" : `文库 ${libraryID}`;
     },
@@ -639,6 +652,8 @@ test("groups every queued subjob with one run_id into one confirmation", async (
   assert.equal(harness.prompt.calls[0].itemCount, 2);
   assert.match(harness.prompt.calls[0].message, /我的文库.*ID: 1/s);
   assert.match(harness.prompt.calls[0].message, /现有附件不会被修改/);
+  assert.match(harness.prompt.calls[0].message, /当前打开的这个 Zotero/);
+  assert.match(harness.prompt.calls[0].message, /数据目录=/);
 });
 
 test("uses only the fixed LocalAppData bridge directories", async () => {
@@ -650,7 +665,53 @@ test("uses only the fixed LocalAppData bridge directories", async () => {
     outbox: "C:/LocalAppData/PaperScraperDOI/zotero-bridge/v1/outbox",
     archive: "C:/LocalAppData/PaperScraperDOI/zotero-bridge/v1/archive",
     state: "C:/LocalAppData/PaperScraperDOI/zotero-bridge/v1/plugin-state.json",
+    activeInstance: "C:/LocalAppData/PaperScraperDOI/zotero-bridge/v1/active-instance.json",
+    consumerLease: "C:/LocalAppData/PaperScraperDOI/zotero-bridge/v1/consumer-lease.json",
   });
+});
+
+test("publishes active-instance for the open Zotero and blocks a second instance", async () => {
+  const sharedFiles = new Map();
+  const first = await makeHarness({
+    sharedFiles,
+    zoteroOptions: {
+      instanceIdentity: {
+        instance_id: "main-zeterofiles",
+        data_dir: "D:\\zeterofiles",
+        profile_dir: "C:\\Profiles\\g39b695l.default",
+        profile_name: "g39b695l.default",
+        zotero_version: "9.0.6",
+        plugin_version: "0.1.9",
+      },
+    },
+  });
+  const firstScan = await first.runtime.scanNow();
+  assert.equal(firstScan.status, "scanned");
+  assert.ok(sharedFiles.has(first.paths.activeInstance));
+  const active = JSON.parse(sharedFiles.get(first.paths.activeInstance));
+  assert.equal(active.data_dir, "D:\\zeterofiles");
+  assert.equal(active.profile_name, "g39b695l.default");
+  assert.ok(sharedFiles.has(first.paths.consumerLease));
+
+  const second = await makeHarness({
+    sharedFiles,
+    zoteroOptions: {
+      instanceIdentity: {
+        instance_id: "test-zotero-test-data",
+        data_dir: "D:\\Zotero-Test-Data",
+        profile_dir: "C:\\Profiles\\elpj7iql.Zotero test",
+        profile_name: "elpj7iql.Zotero test",
+        zotero_version: "9.0.6",
+        plugin_version: "0.1.9",
+      },
+    },
+  });
+  const secondScan = await second.runtime.scanNow();
+  assert.equal(secondScan.status, "another_instance_active");
+  // Lease holder (main) remains the published active target.
+  const stillActive = JSON.parse(sharedFiles.get(first.paths.activeInstance));
+  assert.equal(stillActive.instance_id, "main-zeterofiles");
+  assert.equal(stillActive.data_dir, "D:\\zeterofiles");
 });
 
 test("idle polling never enumerates or rereads the historical archive", async () => {

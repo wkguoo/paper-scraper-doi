@@ -2283,12 +2283,19 @@ class ScienceDirectScraper:
     def _launch_chrome_with_debug(self):
         """
         自动以调试模式启动 Chrome：
-        1. 把默认 Profile 的关键浏览器状态复制到临时目录
-        2. 用 --user-data-dir + --remote-debugging-port 启动 Chrome
+        1. 若调试端口已可用则直接复用（同机多轮下载共享会话）
+        2. 否则复制最小 profile 状态并启动 Chrome
         3. 最多等待 40s，直到调试端口就绪
-        返回 Popen 对象，失败返回 None
+        返回 Popen 对象，失败返回 None；复用已有会话时返回 None 但端口可用
         """
         import subprocess, shutil
+
+        if self._is_chrome_debug_ready():
+            print(
+                f"  [浏览器] 复用已有调试会话 port={self.CHROME_DBG_PORT} "
+                f"({self.browser_name})"
+            )
+            return None
 
         default_profile = browser_default_profile(self.CHROME_BIN)
         tmp_default = os.path.join(self.CHROME_DBG_PROFILE, "Default")

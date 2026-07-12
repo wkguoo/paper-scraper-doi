@@ -4,9 +4,12 @@ from .adapters import (
     AaasAdapter,
     AcsAdapter,
     AipAdapter,
+    ApsAdapter,
+    EcsAdapter,
     IeeeAdapter,
     IopAdapter,
     IucrAdapter,
+    MrsAdapter,
     RscAdapter,
     SpringerNatureAdapter,
     TaylorFrancisAdapter,
@@ -19,6 +22,10 @@ UNSUPPORTED_PREFIXES = {
 }
 
 ADAPTERS = (
+    # Materials P0 platforms first so DOI-specific routes win over host-wide publishers.
+    ApsAdapter(),
+    EcsAdapter(),
+    MrsAdapter(),
     SpringerNatureAdapter(),
     IucrAdapter(),
     AaasAdapter(),

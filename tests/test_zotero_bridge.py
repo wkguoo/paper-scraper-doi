@@ -95,6 +95,51 @@ class ZoteroBridgeRequestTests(unittest.TestCase):
             Path(r"C:\Users\student\AppData\Local\PaperScraperDOI\zotero-bridge\v1"),
         )
 
+    def test_read_active_bridge_instance_follows_open_zotero_not_test_default(self) -> None:
+        from paper_automation.zotero_bridge import (
+            format_active_bridge_target,
+            read_active_bridge_instance,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "active-instance.json"
+            marker.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "instance_id": "main-zeterofiles",
+                        "data_dir": r"D:\zeterofiles",
+                        "profile_dir": r"C:\Profiles\g39b695l.default",
+                        "profile_name": "g39b695l.default",
+                        "zotero_version": "9.0.6",
+                        "plugin_version": "0.1.9",
+                        "updated_at": "2026-07-12T12:00:00Z",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            instance = read_active_bridge_instance(
+                root,
+                now=datetime(2026, 7, 12, 12, 0, 30, tzinfo=timezone.utc),
+            )
+            self.assertIsNotNone(instance)
+            assert instance is not None
+            self.assertEqual(instance["data_dir"], r"D:\zeterofiles")
+            self.assertEqual(instance["profile_name"], "g39b695l.default")
+            text = format_active_bridge_target(instance)
+            self.assertIn("当前打开的 Zotero", text)
+            self.assertIn(r"D:\zeterofiles", text)
+            self.assertNotIn("Zotero-Test-Data", text)
+
+            stale = read_active_bridge_instance(
+                root,
+                now=datetime(2026, 7, 12, 12, 5, 0, tzinfo=timezone.utc),
+            )
+            self.assertIsNone(stale)
+            self.assertIn("未检测到", format_active_bridge_target(None))
+
     def test_request_contains_only_current_fallback_metadata(self) -> None:
         from paper_automation.zotero_bridge import build_bridge_request
 

@@ -96,6 +96,10 @@ def default_bridge_root(environ: Mapping[str, str] | None = None) -> Path:
     return Path(local) / "PaperScraperDOI" / "zotero-bridge" / "v1"
 
 
+# Plugin heartbeat: refreshed by whichever open Zotero currently holds the lease.
+ACTIVE_INSTANCE_MAX_AGE_SECONDS = 90
+
+
 def get_bridge_paths(root: str | Path | None = None, *, create: bool = False) -> BridgePaths:
     base = Path(root) if root is not None else default_bridge_root()
     paths = BridgePaths(
@@ -106,6 +110,71 @@ def get_bridge_paths(root: str | Path | None = None, *, create: bool = False) ->
         for path in (paths.inbox, paths.processing, paths.outbox, paths.archive):
             path.mkdir(parents=True, exist_ok=True)
     return paths
+
+
+def _parse_bridge_utc(value: object) -> datetime | None:
+    if not isinstance(value, str) or not UTC_TIMESTAMP_RE.fullmatch(value):
+        return None
+    try:
+        return datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+
+
+def read_active_bridge_instance(
+    bridge_root: str | Path | None = None,
+    *,
+    max_age_seconds: int = ACTIVE_INSTANCE_MAX_AGE_SECONDS,
+    now: datetime | None = None,
+) -> dict[str, str] | None:
+    """Return the open Zotero instance currently advertising as the bridge target.
+
+    The plugin writes ``active-instance.json`` for the lease holder only. This is
+    whichever Zotero is open and consuming the queue — not a fixed test profile.
+    """
+
+    paths = get_bridge_paths(bridge_root)
+    marker = paths.root / "active-instance.json"
+    if not marker.is_file():
+        return None
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    updated = _parse_bridge_utc(payload.get("updated_at"))
+    if updated is None:
+        return None
+    clock = now if now is not None else datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+    age = (clock.astimezone(timezone.utc) - updated.astimezone(timezone.utc)).total_seconds()
+    if age < 0 or age > max_age_seconds:
+        return None
+    instance_id = str(payload.get("instance_id") or "").strip()
+    if not instance_id:
+        return None
+    return {
+        "instance_id": instance_id,
+        "data_dir": str(payload.get("data_dir") or "").strip(),
+        "profile_dir": str(payload.get("profile_dir") or "").strip(),
+        "profile_name": str(payload.get("profile_name") or "").strip(),
+        "zotero_version": str(payload.get("zotero_version") or "").strip(),
+        "plugin_version": str(payload.get("plugin_version") or "").strip(),
+        "updated_at": str(payload.get("updated_at") or "").strip(),
+    }
+
+
+def format_active_bridge_target(instance: Mapping[str, str] | None) -> str:
+    if not instance:
+        return (
+            "未检测到正在运行的桥接插件。"
+            "请打开任意已安装「文献下载桥接」的 Zotero（跟随当前打开的实例，不固定测试配置）。"
+        )
+    profile = instance.get("profile_name") or instance.get("profile_dir") or "未知配置"
+    data_dir = instance.get("data_dir") or "未知数据目录"
+    return f"桥接目标 = 当前打开的 Zotero — 配置={profile}；数据目录={data_dir}"
 
 
 def _iso(value: datetime) -> str:
@@ -891,6 +960,11 @@ def run_zotero_bridge(
         return BridgeRunResult("no_fallback", None, None, batch_result)
 
     bridge = queue_bridge_jobs(root, library_id=library_id, bridge_root=bridge_root)
+    try:
+        print(format_active_bridge_target(read_active_bridge_instance(bridge_root)))
+    except Exception:
+        # Target discovery is advisory only; never block queueing on it.
+        print(format_active_bridge_target(None))
     deadline = time.monotonic() + wait_seconds
     while any(not job.result_path.is_file() for job in bridge.jobs):
         if time.monotonic() >= deadline:
