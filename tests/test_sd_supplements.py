@@ -208,7 +208,9 @@ class ScienceDirectSupplementHelperTests(unittest.TestCase):
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
 
-        self.assertTrue(stem.startswith("2024_Zhang_A B C D gamma-TiAl alloy test_"))
+        # Opt9/10: 年份-作者-题名 stem
+        self.assertTrue(stem.startswith("2024-Zhang-"))
+        self.assertIn("gamma-TiAl", stem)
         self.assertNotIn(".pdf", stem)
         self.assertNotRegex(stem, r'[<>:"/\\|?*]')
         self.assertEqual(filename, "S01_Supplementary dataset raw.docx")

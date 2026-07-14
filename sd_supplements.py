@@ -149,25 +149,39 @@ def extract_supplement_candidates(html_text: str, article_url: str) -> list[Supp
 
 
 def make_article_stem(idx: int, article: dict) -> str:
+    """Build final delivery stem: 年份-作者-题名 (no trailing hash by default)."""
     authors = article.get("authors", "")
     if isinstance(authors, list):
         authors = "; ".join(str(author) for author in authors)
-    first_author = "no-author"
+    first_author = "Unknown"
     if authors:
         first = str(authors).split(";")[0].strip()
         if first:
-            first_author = first.split(",")[0].strip().split()[0]
+            # Prefer family before comma; else first token (Family Given).
+            if "," in first:
+                first_author = first.split(",", 1)[0].strip()
+            else:
+                parts = first.split()
+                first_author = parts[0] if parts else "Unknown"
 
     year_match = re.search(r"\b(19|20)\d{2}\b", str(article.get("year") or article.get("date") or ""))
-    year = year_match.group(0) if year_match else "undated"
+    year = year_match.group(0) if year_match else "0000"
     doi = str(article.get("doi") or "").lower().strip()
     pii = str(article.get("pii") or "").strip()
-    title = str(article.get("title") or (f"DOI {doi}" if doi else "") or (f"PII {pii}" if pii else "") or "paper")
+    title = str(
+        article.get("title")
+        or (f"DOI {doi}" if doi else "")
+        or (f"PII {pii}" if pii else "")
+        or "paper"
+    )
+    # Opt9/10: 年份-作者-题名
     safe_title = _sanitize_filename_part(title, max_length=80) or "paper"
-    first_author = re.sub(r'[\\/*?:"<>|\s]+', "_", first_author).strip("_") or "no-author"
-    hash_source = doi or pii or str(idx)
-    doi_hash = hashlib.sha1(hash_source.encode("utf-8", errors="ignore")).hexdigest()[:8]
-    return f"{year}_{first_author}_{safe_title}_{doi_hash}"
+    safe_title = re.sub(r"[_\s]+", "-", safe_title).strip("-._") or "paper"
+    first_author = re.sub(r'[\\/*?:"<>|\s]+', "-", str(first_author)).strip("-._") or "Unknown"
+    stem = f"{year}-{first_author}-{safe_title}"
+    if len(stem) > 150:
+        stem = stem[:150].rstrip("-._")
+    return stem
 
 
 def make_supplement_filename(index: int, candidate: SupplementCandidate, content_type: str = "") -> str:

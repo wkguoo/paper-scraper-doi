@@ -161,6 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "示例：paper_batch.py start --input papers.xlsx --out results --email you@example.com\n"
+            "默认固定目录：results/<输入文件名>/（重复 start 会续跑同一目录，不再新建时间戳夹）\n"
+            "强制新开一批：paper_batch.py start ... --fresh\n"
             "失败重试：paper_batch.py retry-failed --run-dir <run-dir>\n"
             "可选 Zotero：paper_batch.py zotero --run-dir <run-dir> 或 start --auto-zotero\n"
             "兼容入口（非默认）：sd_scraper.py、paper_skill.py、sd_institutional_skill.py、UI 其它页签。"
@@ -177,7 +179,26 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--input", help="文献清单：TXT/MD/CSV/XLSX/XLSM")
     source.add_argument("--text", help="直接粘贴的 DOI 或文献文本")
     start.add_argument("--out", default="results", help="批次输出根目录（默认：results）")
-    start.add_argument("--run-name", help="可选的批次名称")
+    start.add_argument(
+        "--run-name",
+        help="批次文件夹名（默认取输入文件名；固定目录模式下不再加时间戳）",
+    )
+    start.add_argument(
+        "--fixed-run",
+        action="store_true",
+        default=None,
+        help="使用固定批次目录 out/run-name（默认开启，避免多次运行产生多文件夹）",
+    )
+    start.add_argument(
+        "--no-fixed-run",
+        action="store_true",
+        help="每次新建带时间戳的批次目录（旧行为）",
+    )
+    start.add_argument(
+        "--fresh",
+        action="store_true",
+        help="忽略已有固定目录，新建带时间戳的批次（仍保留旧目录）",
+    )
     start.add_argument("--email", default="", help="用于合法 OA 查询的邮箱（可选）")
     start.add_argument("--cookies", default="", help="授权访问 Cookie 的 JSON 文件路径（可选）")
     start.add_argument(
@@ -204,9 +225,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="兼容旧开关：与默认相同（不自动 Zotero）",
     )
     start.add_argument(
+        "--doi-preflight",
+        action="store_true",
+        help="启用下载前 DOI 校验/题名重匹配（默认关闭，避免卡住）",
+    )
+    start.add_argument(
         "--no-doi-preflight",
         action="store_true",
-        help="跳过下载前 DOI 校验/题名重匹配（默认开启预检）",
+        help="兼容：与默认相同（跳过预检）",
+    )
+    start.add_argument(
+        "--download-supplements",
+        action="store_true",
+        default=None,
+        help="同时下载 ScienceDirect 补充材料（默认开启）",
+    )
+    start.add_argument(
+        "--no-download-supplements",
+        action="store_true",
+        help="不下载补充材料",
+    )
+    start.add_argument(
+        "--no-smart-route",
+        action="store_true",
+        help="关闭智能路由，恢复「全部先 OA 再机构」旧路径",
+    )
+    start.add_argument(
+        "--resolve-title-metadata",
+        action="store_true",
+        help="对无 DOI 题名做联网元数据增强（默认关闭）",
+    )
+    start.add_argument(
+        "--session-break-seconds",
+        type=float,
+        default=60.0,
+        help="ScienceDirect 每批成功下载后的固定歇息秒数（默认 60；旧版 150）",
+    )
+    start.add_argument(
+        "--session-break-every",
+        type=int,
+        default=8,
+        help="ScienceDirect 每成功下载 N 篇后歇息（默认 8，与旧版相同）",
     )
     start.add_argument("--library-id", type=int, default=1, help="自动 Zotero 时的文库 ID（默认：1）")
     start.add_argument(
@@ -440,6 +499,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "start":
+            # Opt1: preflight off by default; only enable with --doi-preflight.
+            do_preflight = bool(args.doi_preflight) and not bool(args.no_doi_preflight)
+            # Fixed run folder by default (one delivery dir; resume if exists).
+            use_fixed = not bool(args.no_fixed_run) and not bool(args.fresh)
+            if args.fixed_run is True:
+                use_fixed = True
             result = start_batch(
                 input_text=args.text,
                 input_path=args.input,
@@ -453,10 +518,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                     debug_port=args.debug_port,
                     throttle_seconds=args.throttle_seconds,
                     skip_manual_retry=not args.enable_manual_retry,
+                    download_supplements=(
+                        False
+                        if bool(getattr(args, "no_download_supplements", False))
+                        else True
+                        if args.download_supplements is None
+                        else bool(args.download_supplements)
+                    ),
+                    smart_route=not bool(args.no_smart_route),
+                    session_break_seconds=float(args.session_break_seconds),
+                    session_break_every=int(args.session_break_every),
+                    resolve_title_metadata=bool(args.resolve_title_metadata),
                 ),
-                doi_preflight=not args.no_doi_preflight,
+                doi_preflight=do_preflight,
+                fixed_run=use_fixed,
+                fresh=bool(args.fresh),
             )
             _print_summary(result)
+            print(f"交付目录：{result.paths.root}")
+            print(f"  清单：{result.paths.root / '下载清单.csv'}")
+            print(f"  PDF：{result.paths.root / '结果'}")
             # Default: do not auto-queue Zotero (optimization #4). Opt in with --auto-zotero.
             auto_zotero = bool(args.auto_zotero) and not bool(args.no_auto_zotero)
             if auto_zotero and result.zotero_fallback_count > 0:

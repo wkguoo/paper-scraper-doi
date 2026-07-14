@@ -347,9 +347,21 @@ class BatchFileTests(unittest.TestCase):
                 Path(tmp),
                 run_name="Ti alloy batch",
                 now=datetime(2026, 7, 10, 17, 0, 0),
+                fixed=False,
             )
 
             self.assertEqual(paths.root.name, "Ti_alloy_batch_20260710_170000")
+
+    def test_fixed_run_reuses_same_directory(self) -> None:
+        from paper_automation.batch_workflow import create_batch_paths
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first = create_batch_paths(root, run_name="My_Job", fixed=True)
+            second = create_batch_paths(root, run_name="My_Job", fixed=True)
+            self.assertEqual(first.root, second.root)
+            self.assertEqual(first.root.name, "My_Job")
+            self.assertTrue((first.root / "working").is_dir())
 
     def test_same_timestamp_creates_unique_run_directories(self) -> None:
         from paper_automation.batch_workflow import create_batch_paths
@@ -1232,6 +1244,8 @@ class BatchStageTests(unittest.TestCase):
         self.assertEqual(results[1].reason, "auth_required")
         self.assertIn("--run-name", argv)
         self.assertEqual(argv[argv.index("--run-name") + 1], "sciencedirect")
+        # Supplements on by default → CLI passes --download-supplements
+        self.assertIn("--download-supplements", argv)
         self.assertNotIn("--no-download-supplements", argv)
         self.assertEqual(argv[argv.index("--cookies") + 1], "cookies.json")
         self.assertEqual(argv[argv.index("--browser-exe") + 1], "C:/Browser/browser.exe")
@@ -2646,6 +2660,7 @@ class BatchRunTests(unittest.TestCase):
             ) as sciencedirect, patch("paper_automation.batch_workflow.run_non_elsevier_stage") as non_elsevier:
                 updates = DefaultStageGateway().run_initial(rows, paths, BatchOptions(skip_manual_retry=False))
 
+        # Smart route: Elsevier skips OA; only institutional updates are returned.
         self.assertEqual([update["task_id"] for update in updates], ["paper-0001"])
         sciencedirect.assert_called_once()
         non_elsevier.assert_not_called()
@@ -2911,6 +2926,10 @@ class BatchRunTests(unittest.TestCase):
                     input_path=None,
                     output_root=root,
                     gateway=DefaultStageGateway(),
+                    # Disable smart route so both rows still enter OA stage first (legacy behavior under test).
+                    options=__import__(
+                        "paper_automation.batch_stages", fromlist=["BatchOptions"]
+                    ).BatchOptions(smart_route=False),
                     normalizer=lambda **_kwargs: [
                         {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
                         {"task_id": "paper-0002", "doi": "10.1038/b", "title": "B", "status": "pending"},

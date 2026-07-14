@@ -273,7 +273,14 @@ def main(argv: list[str] | None = None) -> int:
     supplement_success = supplement_failed = supplement_skipped = supplement_not_found = 0
     supplement_records = []
     supplement_report_path = ""
-    download_supplements = download_pdfs and not args.no_download_supplements
+    # Supplements on by default; disable with --no-download-supplements.
+    download_supplements = download_pdfs and (
+        False
+        if bool(getattr(args, "no_download_supplements", False))
+        else True
+        if getattr(args, "download_supplements", None) is None
+        else bool(args.download_supplements)
+    )
     if download_pdfs and results:
         cache_devtools_cookies(scraper, cookie_cache_path)
         try:
@@ -283,6 +290,9 @@ def main(argv: list[str] | None = None) -> int:
                 login_wait_seconds=args.login_wait_seconds,
                 interactive_login=False,
                 download_supplements=download_supplements,
+                session_break_seconds=float(getattr(args, "session_break_seconds", 60.0) or 60.0),
+                session_break_every=int(getattr(args, "session_break_every", 8) or 8),
+                resume=True,
             )
         except Exception as exc:
             pdf_failed = len(results)
@@ -436,7 +446,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--choose-out", action="store_true", help="Open a Windows folder picker for the output root when available")
     parser.add_argument("--dry-run", action="store_true", help="Resolve DOI metadata but do not download PDFs")
     parser.add_argument("--no-download-pdfs", action="store_true", help="Skip PDF downloads after DOI resolution")
-    parser.add_argument("--no-download-supplements", action="store_true", help="When downloading PDFs, do not download ScienceDirect supplementary files")
+    parser.add_argument(
+        "--download-supplements",
+        action="store_true",
+        default=None,
+        help="Also download ScienceDirect supplementary files (default: on)",
+    )
+    parser.add_argument(
+        "--no-download-supplements",
+        action="store_true",
+        help="Do not download ScienceDirect supplementary files",
+    )
+    parser.add_argument(
+        "--session-break-seconds",
+        type=float,
+        default=60.0,
+        help="Fixed rest seconds after every N successful SD downloads (default 60; was 150)",
+    )
+    parser.add_argument(
+        "--session-break-every",
+        type=int,
+        default=8,
+        help="Rest after this many successful SD downloads (default 8)",
+    )
     parser.add_argument("--cookies", help="Explicit Cookie JSON file to use before cached/browser cookies")
     parser.add_argument(
         "--login-wait-seconds",

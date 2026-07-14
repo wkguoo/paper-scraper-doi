@@ -169,12 +169,54 @@ def _validate_path_component(value: str, *, error: str, clean_spaces: bool = Fal
     return cleaned
 
 
+def _batch_paths_for_root(root: Path) -> BatchPaths:
+    """Build BatchPaths for an existing or newly created run root."""
+    root = root.expanduser().resolve()
+    pdfs, reports, working = root / "pdfs", root / "reports", root / "working"
+    for path in (pdfs, reports, working):
+        path.mkdir(parents=True, exist_ok=True)
+    return BatchPaths(
+        root=root,
+        pdfs=pdfs,
+        reports=reports,
+        working=working,
+        state=working / "batch_state.json",
+        normalized_input=working / "normalized_input.csv",
+        manual_retry=working / "manual_retry.csv",
+        zotero_fallback=working / "zotero_fallback.csv",
+        zotero_results=working / "zotero_results.csv",
+    )
+
+
+def default_run_name_from_input(
+    input_path: str | Path | None,
+    input_text: str | None = None,
+) -> str:
+    """Stable folder name from input file stem (or generic fallback)."""
+    if input_path is not None:
+        stem = Path(input_path).expanduser().stem.strip() or "paper_batch"
+        try:
+            return _validate_path_component(stem, error="invalid_run_name", clean_spaces=True)
+        except ValueError:
+            return "paper_batch"
+    if input_text and str(input_text).strip():
+        return "paper_batch_text"
+    return "paper_batch"
+
+
 def create_batch_paths(
     output_root: str | Path,
     run_name: str | None = None,
     now: datetime | None = None,
+    *,
+    fixed: bool = False,
 ) -> BatchPaths:
-    stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    """Create batch paths under output_root.
+
+    - fixed=False (legacy): always ``{name}_{timestamp}`` unique folder.
+    - fixed=True: use ``{name}`` only (reuse same folder; no new timestamp).
+      Requires a run_name (or defaults to paper_batch).
+    """
     prefix = "paper_batch" if run_name is None else _validate_path_component(
         run_name,
         error="invalid_run_name",
@@ -182,6 +224,15 @@ def create_batch_paths(
     )
     output = Path(output_root).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
+
+    if fixed:
+        root = output / prefix
+        if root.exists() and not root.is_dir():
+            raise ValueError("fixed_run_path_not_directory")
+        root.mkdir(parents=True, exist_ok=True)
+        return _batch_paths_for_root(root)
+
+    stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     base_name = f"{prefix}_{stamp}"
     counter = 1
     while True:
@@ -194,20 +245,7 @@ def create_batch_paths(
         else:
             break
 
-    pdfs, reports, working = root / "pdfs", root / "reports", root / "working"
-    for path in (pdfs, reports, working):
-        path.mkdir()
-    return BatchPaths(
-        root=root,
-        pdfs=pdfs,
-        reports=reports,
-        working=working,
-        state=working / "batch_state.json",
-        normalized_input=working / "normalized_input.csv",
-        manual_retry=working / "manual_retry.csv",
-        zotero_fallback=working / "zotero_fallback.csv",
-        zotero_results=working / "zotero_results.csv",
-    )
+    return _batch_paths_for_root(root)
 
 
 def _state_path(run_dir: str | Path) -> Path:
@@ -792,13 +830,15 @@ def normalize_input(
 
     path_values = [] if input_path is None else [Path(input_path).expanduser().resolve()]
     tabular_doi_cells = None if not path_values else _tabular_doi_cells(path_values[0])
+    # Opt1: skip title-only networked metadata unless explicitly enabled.
+    resolve_title = bool(getattr(options, "resolve_title_metadata", False))
     intake = build_intake(
         texts=[] if input_text is None else [input_text],
         input_paths=path_values,
         folder_paths=[],
         output_dir=paths.working / "intake",
-        resolve_metadata=True,
-        resolve_title_only_files=True,
+        resolve_metadata=resolve_title,
+        resolve_title_only_files=resolve_title,
         min_confidence=0.92,
         email=str(getattr(options, "email", "") or ""),
     )
@@ -1125,21 +1165,55 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "debug_port",
         "throttle_seconds",
         "skip_manual_retry",
+        "download_supplements",
+        "smart_route",
+        "session_break_seconds",
+        "session_break_every",
+        "resolve_title_metadata",
     }
     if not isinstance(data, dict):
         raise ValueError("invalid_batch_options")
-    # Backward compatible with pre-skip_manual_retry batch_state snapshots.
+    # Backward compatible with older batch_state snapshots (missing optimization fields).
     payload = dict(data)
     if "skip_manual_retry" not in payload:
         payload["skip_manual_retry"] = True
+    payload.setdefault("download_supplements", True)
+    payload.setdefault("smart_route", True)
+    payload.setdefault("session_break_seconds", 60.0)
+    payload.setdefault("session_break_every", 8)
+    payload.setdefault("resolve_title_metadata", False)
     if set(payload) != expected_fields:
-        raise ValueError("invalid_batch_options")
+        # Ignore unknown keys from future versions; require all expected after defaults.
+        payload = {key: payload[key] for key in expected_fields if key in payload}
+        for key in expected_fields:
+            payload.setdefault(key, {
+                "email": "",
+                "cookies": "",
+                "browser_exe": "",
+                "login_wait_seconds": 0,
+                "debug_port": 9333,
+                "throttle_seconds": 1.0,
+                "skip_manual_retry": True,
+                "download_supplements": True,
+                "smart_route": True,
+                "session_break_seconds": 60.0,
+                "session_break_every": 8,
+                "resolve_title_metadata": False,
+            }[key])
+        if set(payload) != expected_fields:
+            raise ValueError("invalid_batch_options")
     if not isinstance(payload["email"], str) or not isinstance(payload["browser_exe"], str):
         raise ValueError("invalid_batch_options")
     if not isinstance(payload["cookies"], str):
         raise ValueError("cookies_must_be_path")
-    if type(payload["skip_manual_retry"]) is not bool:
-        raise ValueError("invalid_batch_options")
+    for flag in (
+        "skip_manual_retry",
+        "download_supplements",
+        "smart_route",
+        "resolve_title_metadata",
+    ):
+        if type(payload[flag]) is not bool:
+            raise ValueError("invalid_batch_options")
     cookie_path = payload["cookies"].strip()
     lowered_cookie = cookie_path.lower()
     if cookie_path and (
@@ -1165,6 +1239,17 @@ def _validate_options_data(data: object) -> dict[str, object]:
         or float(throttle_seconds) < 0
     ):
         raise ValueError("invalid_throttle_seconds")
+    session_break_seconds = payload["session_break_seconds"]
+    if (
+        isinstance(session_break_seconds, bool)
+        or not isinstance(session_break_seconds, (int, float))
+        or not math.isfinite(float(session_break_seconds))
+        or float(session_break_seconds) < 0
+    ):
+        raise ValueError("invalid_session_break_seconds")
+    session_break_every = payload["session_break_every"]
+    if type(session_break_every) is not int or session_break_every < 1:
+        raise ValueError("invalid_session_break_every")
     return {
         "email": payload["email"],
         "cookies": cookie_path,
@@ -1173,6 +1258,11 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "debug_port": debug_port,
         "throttle_seconds": float(throttle_seconds),
         "skip_manual_retry": payload["skip_manual_retry"],
+        "download_supplements": payload["download_supplements"],
+        "smart_route": payload["smart_route"],
+        "session_break_seconds": float(session_break_seconds),
+        "session_break_every": session_break_every,
+        "resolve_title_metadata": payload["resolve_title_metadata"],
     }
 
 
@@ -1946,34 +2036,99 @@ class DefaultStageGateway:
         runnable = [dict(row) for row in rows if str(row.get("status", "")).lower() == "pending"]
         if not runnable:
             return []
-        oa_updates = [_update_as_mapping(row) for row in run_oa_stage(runnable, paths.reports, options)]
-        if on_updates is not None:
-            on_updates(oa_updates)
-        after_oa = _merge_stage_rows(rows, oa_updates, paths)
+
+        from .batch_stages import is_elsevier_doi, is_gold_oa_doi, split_route_rows
+
+        # Download order: Elsevier first, then everything else.
+        gold_oa, elsevier_rows, other_rows = split_route_rows(runnable)
+        smart_route = bool(getattr(options, "smart_route", True))
+        print(
+            f"[download_order] 1) Elsevier={len(elsevier_rows)}  "
+            f"2) other={len(gold_oa) + len(other_rows)} "
+            f"(gold_oa={len(gold_oa)}, non_elsevier={len(other_rows)}; "
+            f"smart_route={'on' if smart_route else 'off'})",
+            flush=True,
+        )
+
+        updates: list[dict] = []
+        working = [dict(row) for row in rows]
         runnable_ids = {str(row.get("task_id", "")) for row in runnable}
-        unresolved = [
-            row for row in after_oa
-            if str(row.get("task_id", "")) in runnable_ids
-            and not _is_terminal_status(row.get("status", ""))
-        ]
-        science_direct, other = _split_institutional_rows(unresolved)
-        unresolved_ids = {str(row.get("task_id", "")) for row in unresolved}
-        updates = [
-            update for update in oa_updates
-            if update["task_id"] not in unresolved_ids
-        ]
-        if science_direct:
-            stage_input = _stage_input_writer(science_direct, paths.working / "sciencedirect_input.csv")
-            stage_updates = [_update_as_mapping(row) for row in run_sciencedirect_stage(stage_input, paths.reports, options)]
+
+        def _pending_from(pool: list[dict]) -> list[dict]:
+            pool_ids = {str(row.get("task_id", "")) for row in pool}
+            return [
+                row
+                for row in working
+                if str(row.get("task_id", "")) in pool_ids
+                and str(row.get("task_id", "")) in runnable_ids
+                and not _is_terminal_status(row.get("status", ""))
+            ]
+
+        def _apply_local(stage_updates: list[dict]) -> None:
+            nonlocal working, updates
+            if not stage_updates:
+                return
             if on_updates is not None:
                 on_updates(stage_updates)
             updates.extend(stage_updates)
-        if other:
-            stage_input = _stage_input_writer(other, paths.working / "non_elsevier_input.csv")
-            stage_updates = [_update_as_mapping(row) for row in run_non_elsevier_stage(stage_input, paths.reports, options)]
-            if on_updates is not None:
-                on_updates(stage_updates)
-            updates.extend(stage_updates)
+            working = _merge_stage_rows(working, stage_updates, paths)
+
+        # ---- Phase 1: Elsevier / ScienceDirect first ----
+        elsevier_pending = _pending_from(elsevier_rows)
+        if elsevier_pending:
+            print(f"[download_order] phase1 Elsevier start n={len(elsevier_pending)}", flush=True)
+            stage_input = _stage_input_writer(
+                elsevier_pending, paths.working / "sciencedirect_input.csv"
+            )
+            sd_updates = [
+                _update_as_mapping(row)
+                for row in run_sciencedirect_stage(stage_input, paths.reports, options)
+            ]
+            _apply_local(sd_updates)
+
+        # ---- Phase 2: non-Elsevier (OA for gold / all remaining, then adapters) ----
+        non_elsevier_pool = gold_oa + other_rows
+        non_elsevier_pending = _pending_from(non_elsevier_pool)
+        if non_elsevier_pending:
+            if smart_route:
+                oa_candidates = [
+                    row
+                    for row in non_elsevier_pending
+                    if is_gold_oa_doi(str(row.get("doi", "") or ""))
+                ]
+            else:
+                # Legacy: try OA for all remaining non-Elsevier rows.
+                oa_candidates = list(non_elsevier_pending)
+
+            if oa_candidates:
+                print(f"[download_order] phase2 OA start n={len(oa_candidates)}", flush=True)
+                oa_updates = [
+                    _update_as_mapping(row)
+                    for row in run_oa_stage(oa_candidates, paths.reports, options)
+                ]
+                _apply_local(oa_updates)
+
+            still_pending = _pending_from(non_elsevier_pool)
+            # Never send Elsevier leftovers here; only non-Elsevier.
+            still_pending = [
+                row
+                for row in still_pending
+                if not is_elsevier_doi(str(row.get("doi", "") or ""))
+            ]
+            if still_pending:
+                print(
+                    f"[download_order] phase2 non-Elsevier institutional start n={len(still_pending)}",
+                    flush=True,
+                )
+                stage_input = _stage_input_writer(
+                    still_pending, paths.working / "non_elsevier_input.csv"
+                )
+                other_updates = [
+                    _update_as_mapping(row)
+                    for row in run_non_elsevier_stage(stage_input, paths.reports, options)
+                ]
+                _apply_local(other_updates)
+
         return updates
 
     def run_retry(
@@ -2067,12 +2222,45 @@ def start_batch(
     normalizer=None,
     now: datetime | None = None,
     doi_preflight: bool | None = None,
+    fixed_run: bool = True,
+    fresh: bool = False,
 ) -> BatchRunResult:
+    """Start or continue a batch.
+
+    By default uses a **fixed** folder under ``output_root`` named by ``run_name``
+    (or the input file stem), reusing it on later starts so intermediate
+    timestamped folders are not created. Pass ``fresh=True`` or
+    ``fixed_run=False`` for the legacy unique ``name_timestamp`` folders.
+    """
     if (input_text is None) == (input_path is None):
         raise ValueError("exactly_one_input_required")
     selected_options = options or _batch_options_type()()
     serialized_options = _serialize_options(selected_options)
-    paths = create_batch_paths(output_root, run_name=run_name, now=now)
+    resolved_name = run_name or default_run_name_from_input(input_path, input_text)
+
+    # Fixed delivery folder (default): one stable path per job.
+    use_fixed = bool(fixed_run) and not bool(fresh)
+    if use_fixed:
+        paths = create_batch_paths(output_root, run_name=resolved_name, now=now, fixed=True)
+        print(f"[fixed_run] 批次目录（固定）: {paths.root}", flush=True)
+        if paths.state.is_file():
+            # Reuse existing batch: continue unresolved rows only (keep successes).
+            print("[fixed_run] 发现已有 batch_state，续跑未完成项（成功项保留）…", flush=True)
+            return retry_failed_batch(
+                paths.root,
+                gateway=gateway,
+                options=selected_options,
+                skip_oa=False,
+            )
+    else:
+        paths = create_batch_paths(
+            output_root,
+            run_name=resolved_name,
+            now=now,
+            fixed=False,
+        )
+        print(f"[run] 新建时间戳批次目录: {paths.root}", flush=True)
+
     normalize = normalizer or normalize_input
     rows = [_normalise_row_mapping(row) for row in normalize(
         input_text=input_text,
@@ -2080,9 +2268,9 @@ def start_batch(
         paths=paths,
         options=selected_options,
     )]
-    # Default on for real DefaultStageGateway runs; off when tests inject a fake gateway.
+    # Opt1: DOI preflight is OFF by default (avoids long hangs). Enable with doi_preflight=True.
     if doi_preflight is None:
-        doi_preflight = gateway is None or type(gateway).__name__ == "DefaultStageGateway"
+        doi_preflight = False
     if doi_preflight:
         rows = _apply_doi_preflight(rows, email=str(getattr(selected_options, "email", "") or ""), paths=paths)
     _validate_stage_updates(rows, [])
@@ -2113,7 +2301,14 @@ def start_batch(
         state,
         pending_manual_retry_used=bool(state.get("manual_retry_used")),
     )
-    return _result_from_state(paths, state)
+    result = _result_from_state(paths, state)
+    print(
+        f"[交付] 请查看: {paths.root}\n"
+        f"  - {paths.root / USER_INVENTORY_NAME}\n"
+        f"  - {paths.root / USER_DELIVERY_DIR_NAME}\\",
+        flush=True,
+    )
+    return result
 
 
 def retry_failed_batch(
@@ -2150,12 +2345,7 @@ def retry_failed_batch(
                 pass
             else:
                 row["reason"] = "retry_failed_reset"
-        # Optional DOI preflight again for wrong/missing DOIs.
-        state["rows"] = _apply_doi_preflight(
-            state["rows"],
-            email=str(getattr(selected_options, "email", "") or ""),
-            paths=paths,
-        )
+        # Opt1: do not re-run DOI preflight on retry by default (avoids hangs).
         save_batch_state(paths, state)
 
     runner = gateway or DefaultStageGateway()

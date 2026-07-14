@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import Path
 
@@ -24,14 +23,19 @@ def ensure_output_dirs(output_dir: str | Path) -> dict[str, Path]:
     return dirs
 
 
-def make_pdf_filename(metadata: MetadataResult, max_title_chars: int = 64) -> str:
-    year = _safe_component(metadata.year or "undated", "undated")
-    author = _safe_component(_first_author(metadata.authors), "unknown")
+def make_pdf_filename(metadata: MetadataResult, max_title_chars: int = 80) -> str:
+    """Final delivery name: 年份-作者-题名.pdf"""
+    year = _safe_component(metadata.year or "0000", "0000")
+    author = _safe_component(_first_author_surname(metadata.authors), "Unknown")
     title = _safe_component(metadata.title or metadata.query_title or "paper", "paper")
-    short_title = "_".join(title.split())[:max_title_chars].strip("._") or "paper"
-    digest_source = metadata.doi or metadata.title or metadata.query_title or str(metadata.source_index)
-    digest = hashlib.sha1(digest_source.encode("utf-8")).hexdigest()[:8]
-    return f"{year}_{author}_{short_title}_{digest}.pdf"
+    short_title = "-".join(title.split())[:max_title_chars].strip(".-_") or "paper"
+    year = year.replace(" ", "-")
+    author = author.replace(" ", "-")
+    name = f"{year}-{author}-{short_title}.pdf"
+    if len(name) > 180:
+        keep = max(20, 180 - len(f"{year}-{author}-.pdf"))
+        name = f"{year}-{author}-{short_title[:keep].rstrip('.-_')}.pdf"
+    return name
 
 
 def sanitize_filename(value: str) -> str:
@@ -56,4 +60,21 @@ def _first_author(authors: list[str]) -> str:
         return "unknown"
     first = authors[0].strip()
     return first.split()[0] if first else "unknown"
+
+
+def _first_author_surname(authors: list[str]) -> str:
+    """Prefer family/surname for 年份-作者-题名 filenames.
+
+    - ``Zhang, Wei`` → Zhang (comma form)
+    - ``Zhang Wei`` → Zhang (Family Given, common in this project)
+    """
+    if not authors:
+        return "Unknown"
+    first = str(authors[0] or "").strip()
+    if not first:
+        return "Unknown"
+    if "," in first:
+        return first.split(",", 1)[0].strip() or "Unknown"
+    parts = first.split()
+    return parts[0] if parts else "Unknown"
 

@@ -1481,7 +1481,9 @@ class InstitutionalSkillFilenameTests(unittest.TestCase):
             },
         )
 
-        self.assertTrue(filename.startswith("2024_Zhang_A B C D gamma-TiAl alloy test_"))
+        # Opt9/10: 年份-作者-题名（连字符）
+        self.assertTrue(filename.startswith("2024-Zhang-"))
+        self.assertIn("gamma-TiAl", filename.replace(" ", "-") if " " in filename else filename)
         self.assertTrue(filename.endswith(".pdf"))
         self.assertNotRegex(filename, r'[<>:"/\\|?*]')
 
@@ -1496,9 +1498,8 @@ class InstitutionalSkillFilenameTests(unittest.TestCase):
             },
         )
 
-        self.assertTrue(filename.startswith("undated_no-author_DOI 10.1016 j.actamat.2024.119999_"))
+        self.assertTrue(filename.startswith("0000-Unknown-"))
         self.assertNotIn("unknown-year", filename)
-        self.assertNotIn("Unknown", filename)
         self.assertTrue(filename.endswith(".pdf"))
 
 

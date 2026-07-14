@@ -26,6 +26,15 @@ class BatchOptions:
     throttle_seconds: float = 1.0
     # When True (default), auth/captcha failures go straight to zotero_fallback.
     skip_manual_retry: bool = True
+    # Supplements on by default; disable with --no-download-supplements.
+    download_supplements: bool = True
+    # Opt2: Elsevier→SD, gold OA→OA first, other→adapters (skip blanket OA-first).
+    smart_route: bool = True
+    # Opt3: ScienceDirect fixed session break (was 150s; now 60s).
+    session_break_seconds: float = 60.0
+    session_break_every: int = 8
+    # Opt1: do not auto-resolve title-only metadata during intake unless requested.
+    resolve_title_metadata: bool = False
 
 
 @dataclass(frozen=True)
@@ -45,11 +54,48 @@ class _PreparedRows:
     layout: list[int | None]
 
 
+def is_elsevier_doi(doi: str) -> bool:
+    return clean_doi(doi).lower().startswith("10.1016/")
+
+
+def is_gold_oa_doi(doi: str) -> bool:
+    """Heuristic gold-OA publishers worth trying open PDF first."""
+    d = clean_doi(doi).lower()
+    if not d:
+        return False
+    return (
+        d.startswith("10.3390/")  # MDPI
+        or d.startswith("10.3389/")  # Frontiers
+        or d.startswith("10.1371/")  # PLOS
+        or d.startswith("10.1186/")  # BMC
+        or d.startswith("10.1038/s41598")
+        or d.startswith("10.1038/srep")
+        or d.startswith("10.1038/s41467")
+        or d.startswith("10.1038/s41524")
+    )
+
+
+def split_route_rows(rows: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split into (gold_oa, elsevier, other) for smart routing."""
+    gold_oa: list[dict] = []
+    science_direct: list[dict] = []
+    other: list[dict] = []
+    for row in rows:
+        doi = str(row.get("doi", "") or "")
+        if is_gold_oa_doi(doi):
+            gold_oa.append(row)
+        elif is_elsevier_doi(doi):
+            science_direct.append(row)
+        else:
+            other.append(row)
+    return gold_oa, science_direct, other
+
+
 def split_institutional_rows(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     science_direct: list[dict] = []
     other: list[dict] = []
     for row in rows:
-        target = science_direct if str(row.get("doi", "")).strip().lower().startswith("10.1016/") else other
+        target = science_direct if is_elsevier_doi(str(row.get("doi", "") or "")) else other
         target.append(row)
     return science_direct, other
 
@@ -134,9 +180,17 @@ def run_sciencedirect_stage(input_path: Path, output_dir: Path, options: BatchOp
         str(output_dir),
         "--run-name",
         "sciencedirect",
-        # Download ScienceDirect supplements into stage supplements/ so the
-        # user-facing 结果/ folder can collect paper + supplements together.
     ]
+    # Supplements on by default.
+    if bool(getattr(options, "download_supplements", True)):
+        argv.append("--download-supplements")
+    else:
+        argv.append("--no-download-supplements")
+    # Opt3: fixed session break (default 60s / every 8 successes).
+    break_s = float(getattr(options, "session_break_seconds", 60.0) or 60.0)
+    break_n = int(getattr(options, "session_break_every", 8) or 8)
+    argv.extend(["--session-break-seconds", str(break_s)])
+    argv.extend(["--session-break-every", str(break_n)])
     if options.email:
         argv.extend(["--email", options.email])
     if options.cookies:

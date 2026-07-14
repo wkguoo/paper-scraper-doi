@@ -1291,8 +1291,55 @@ class ScienceDirectScraper:
 
     @staticmethod
     def _make_pdf_filename(idx, article):
-        """生成 PDF 文件名：年份_第一作者_短题名_doihash.pdf。"""
+        """生成 PDF 文件名：年份-作者-题名.pdf。"""
         return f"{make_article_stem(idx, article)}.pdf"
+
+    @staticmethod
+    def _load_pdf_checkpoint_dois(checkpoint_path) -> set:
+        """Opt5: load successfully downloaded DOIs from jsonl checkpoint."""
+        path = Path(checkpoint_path)
+        done: set[str] = set()
+        if not path.is_file():
+            return done
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if str(row.get("status") or "").lower() not in {"success", "skipped", "downloaded"}:
+                    continue
+                doi = str(row.get("doi") or "").strip().lower()
+                if doi:
+                    done.add(doi)
+        except OSError:
+            return set()
+        return done
+
+    @staticmethod
+    def _append_pdf_checkpoint(checkpoint_path, *, doi: str, status: str, file: str = "", reason: str = "") -> None:
+        """Opt5: append one per-paper result for resume."""
+        path = Path(checkpoint_path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "doi": str(doi or "").strip().lower(),
+                            "status": status,
+                            "file": file,
+                            "reason": reason,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except OSError:
+            pass
 
     # ── PDF 下载（直连，无 CDP）────────────────────────────────────────────────
 
@@ -1635,6 +1682,11 @@ class ScienceDirectScraper:
         interactive_login=True,
         event_path=None,
         download_supplements=True,
+        session_break_seconds=None,
+        session_break_every=None,
+        inter_delay_min=None,
+        inter_delay_max=None,
+        resume=True,
     ):
         """
         通过 Chrome DevTools Protocol 下载 PDF（纯 websocket-client，无需 Playwright）。
@@ -1646,12 +1698,40 @@ class ScienceDirectScraper:
         4. 直接写盘，无 Save 对话框、无 Playwright 依赖
 
         前提：Chrome 已通过机构账号（CARSI/深技大）登录 ScienceDirect。
+
+        Opt defaults:
+        - download_supplements=True (disable with --no-download-supplements)
+        - session break fixed 60s every 8 successes (was 150s / 8)
+        - resume=True skips DOIs already success in checkpoint / existing PDF
         """
         total = len(results)
         pdf_records = []
         supplement_records = []
         success = skip = fail = 0
         supplement_success = supplement_failed = supplement_skipped = supplement_not_found = 0
+        out_root = Path(output_dir)
+        pdf_dir = out_root / "pdfs"
+        pdf_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = out_root / "pdf_download_checkpoint.jsonl"
+        done_dois = set()
+        if resume:
+            done_dois = self._load_pdf_checkpoint_dois(checkpoint_path)
+            # Also treat existing valid PDFs as done when article maps to that name.
+            for article in results:
+                doi_key = str(article.get("doi") or "").strip().lower()
+                if not doi_key or doi_key in done_dois:
+                    continue
+                try:
+                    fname = self._make_pdf_filename(1, article)
+                    fpath = pdf_dir / fname
+                    if fpath.is_file() and fpath.stat().st_size > 1000:
+                        head = fpath.read_bytes()[:5]
+                        if head == b"%PDF-":
+                            done_dois.add(doi_key)
+                except Exception:
+                    pass
+            if done_dois:
+                print(f"  [resume] 跳过已完成 DOI {len(done_dois)} 个（checkpoint/已有 PDF）", flush=True)
 
         def _record(article, status, file="", reason=""):
             pdf_records.append(PdfDownloadRecord(
@@ -1896,12 +1976,19 @@ class ScienceDirectScraper:
 
         print()
 
-        INTER_MIN         = 12   # 常规篇间间隔（秒）
-        INTER_MAX         = 22
-        SESSION_BREAK_N   = 8    # 每 N 篇主动歇一次（预防封锁）
-        SESSION_BREAK_T   = 150  # 歇息时长（秒）
+        # Fixed throttle (not dynamic): same cadence as before, break 150s → 60s.
+        INTER_MIN         = 12 if inter_delay_min is None else float(inter_delay_min)
+        INTER_MAX         = 22 if inter_delay_max is None else float(inter_delay_max)
+        SESSION_BREAK_N   = 8 if session_break_every is None else int(session_break_every)
+        SESSION_BREAK_T   = 60 if session_break_seconds is None else float(session_break_seconds)
         BLOCK_WAIT_1      = 270  # 第一次被封：等 4.5 分钟
         BLOCK_WAIT_2      = 420  # 仍被封：再等 7 分钟
+        print(
+            f"  [throttle] inter={INTER_MIN:.0f}-{INTER_MAX:.0f}s  "
+            f"break_every={SESSION_BREAK_N}  break={SESSION_BREAK_T:.0f}s  "
+            f"supplements={'on' if download_supplements else 'off'}",
+            flush=True,
+        )
 
         # ── 持久标签页（整个下载会话共用一个 tab，减少 tab 开关频率）──────────
         try:
@@ -2103,6 +2190,14 @@ class ScienceDirectScraper:
             for idx, article in enumerate(results, 1):
                 pii = article.get("pii", "")
                 title_short = (article.get("title") or "")[:55]
+                doi_key = str(article.get("doi") or "").strip().lower()
+
+                if resume and doi_key and doi_key in done_dois:
+                    filename = self._make_pdf_filename(idx, article)
+                    print(f"  [{idx}/{total}] checkpoint 已完成，跳过: {doi_key or title_short}")
+                    skip += 1
+                    _record(article, "skipped", file=filename, reason="checkpoint_resume")
+                    continue
 
                 if not pii:
                     print(f"  [{idx}/{total}] 跳过（无 PII）: {title_short}")
@@ -2111,13 +2206,18 @@ class ScienceDirectScraper:
                     continue
 
                 filename = self._make_pdf_filename(idx, article)
-                filepath = os.path.join(pdf_dir, filename)
+                filepath = str(Path(pdf_dir) / filename)
 
                 if os.path.exists(filepath):
                     if is_valid_pdf(filepath):
                         print(f"  [{idx}/{total}] 已存在，跳过: {filename}")
                         skip += 1
                         _record(article, "skipped", file=filename, reason="文件已存在")
+                        if doi_key:
+                            done_dois.add(doi_key)
+                            self._append_pdf_checkpoint(
+                                checkpoint_path, doi=doi_key, status="skipped", file=filename, reason="文件已存在"
+                            )
                         _download_supplements(article, idx, filename)
                         continue
                     try:
@@ -2203,6 +2303,11 @@ class ScienceDirectScraper:
                     success += 1
                     downloads_since_break += 1
                     _record(article, "success", file=filename)
+                    if doi_key:
+                        done_dois.add(doi_key)
+                        self._append_pdf_checkpoint(
+                            checkpoint_path, doi=doi_key, status="success", file=filename
+                        )
                     _download_supplements(article, idx, filename, article_html)
                 else:
                     is_blocked = str(note).startswith("blocked:")
@@ -2213,6 +2318,10 @@ class ScienceDirectScraper:
                     print(f"  [{idx}/{total}] ✗ {tag}: {title_short[:40]}  ({str(note)[:80]})")
                     fail += 1
                     _record(article, "failed", file=filename, reason=reason)
+                    if doi_key:
+                        self._append_pdf_checkpoint(
+                            checkpoint_path, doi=doi_key, status="failed", file=filename, reason=reason
+                        )
                     _skip_supplements_for_pdf_failure(article, idx, filename)
 
                 if idx < total:
@@ -2891,8 +3000,29 @@ def build_parser():
     parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
                         help="在保存文献列表后，继续下载对应 PDF")
-    parser.add_argument("--no-download-supplements", action="store_true",
-                        help="下载 PDF 时不自动下载 ScienceDirect 补充材料")
+    parser.add_argument(
+        "--download-supplements",
+        action="store_true",
+        default=None,
+        help="同时下载补充材料（默认开启）",
+    )
+    parser.add_argument(
+        "--no-download-supplements",
+        action="store_true",
+        help="不下载补充材料",
+    )
+    parser.add_argument(
+        "--session-break-seconds",
+        type=float,
+        default=60.0,
+        help="每批成功下载后的固定歇息秒数（默认 60；旧版 150）",
+    )
+    parser.add_argument(
+        "--session-break-every",
+        type=int,
+        default=8,
+        help="每成功下载 N 篇后歇息（默认 8）",
+    )
     parser.add_argument("--output",        help="输出目录（默认 ./results/）")
     parser.add_argument("--filename",      help="自定义输出文件名（不含扩展名）")
     parser.add_argument("--input", dest="input_file",
@@ -3006,13 +3136,22 @@ def main():
         supplement_success = supplement_failed = supplement_skipped = supplement_not_found = 0
         supplement_records = []
         supplement_report_path = ""
-        download_supplements = args.download_pdfs and not args.no_download_supplements
+        download_supplements = args.download_pdfs and (
+            False
+            if bool(getattr(args, "no_download_supplements", False))
+            else True
+            if getattr(args, "download_supplements", None) is None
+            else bool(args.download_supplements)
+        )
         if args.download_pdfs and results:
             download_result = scraper.download_pdfs_devtools(
                 results,
                 output_dir,
                 event_path=event_path,
                 download_supplements=download_supplements,
+                session_break_seconds=float(getattr(args, "session_break_seconds", 60.0) or 60.0),
+                session_break_every=int(getattr(args, "session_break_every", 8) or 8),
+                resume=True,
             )
             if download_result:
                 pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
@@ -3182,16 +3321,26 @@ def main():
     if args.format in ("json", "all"):
         scraper.save_to_json(results, base + ".json", output_dir)
     if args.download_pdfs:
+        want_supplements = (
+            False
+            if bool(getattr(args, "no_download_supplements", False))
+            else True
+            if getattr(args, "download_supplements", None) is None
+            else bool(args.download_supplements)
+        )
         download_result = scraper.download_pdfs_devtools(
             results,
             output_dir,
-            download_supplements=not args.no_download_supplements,
+            download_supplements=want_supplements,
+            session_break_seconds=float(getattr(args, "session_break_seconds", 60.0) or 60.0),
+            session_break_every=int(getattr(args, "session_break_every", 8) or 8),
+            resume=True,
         )
         if download_result:
             pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
             pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
             print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")
-        if not args.no_download_supplements and isinstance(download_result, DownloadRunResult):
+        if want_supplements and isinstance(download_result, DownloadRunResult):
             report_path = write_supplement_download_report(download_result.supplement_records, output_dir)
             print(f"[报告] 补充材料下载明细已保存 -> {report_path}")
 

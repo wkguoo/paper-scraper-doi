@@ -704,7 +704,8 @@ class FileWorkflowTests(unittest.TestCase):
 
         self.assertTrue(filename.endswith(".pdf"))
         self.assertNotRegex(filename, r'[<>:"/\\|?*]')
-        self.assertTrue(filename.startswith("2024_Zhang_"))
+        # Opt9/10: 年份-作者-题名
+        self.assertTrue(filename.startswith("2024-Zhang-"))
 
     def test_workflow_dry_run_writes_manifest_and_failure_rows(self) -> None:
         from paper_automation.workflow import run_workflow
