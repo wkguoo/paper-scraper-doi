@@ -69,3 +69,15 @@ gen_outlines.js
 文献抓取/
 paperCrawler/
 informs result/
+
+# Local one-off agent/session helpers (not product code; keep on disk only)
+_agent_*.py
+_download_by_doi_resilient.py
+_download_oa_now.py
+_list_non_elsevier_journals.py
+_prep_download_only.py
+_prep_ti2448_input.py
+_rename_delivery_pdfs.py
+_rename_year_author_title.py
+_resolve_missing_dois.py
+_start_institutional_only.py

@@ -164,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
             "默认固定目录：results/<输入文件名>/（重复 start 会续跑同一目录，不再新建时间戳夹）\n"
             "强制新开一批：paper_batch.py start ... --fresh\n"
             "失败重试：paper_batch.py retry-failed --run-dir <run-dir>\n"
+            "有界 OA 补救（非深挖）：paper_batch.py recover-oa --run-dir <run-dir>\n"
             "可选 Zotero：paper_batch.py zotero --run-dir <run-dir> 或 start --auto-zotero\n"
             "兼容入口（非默认）：sd_scraper.py、paper_skill.py、sd_institutional_skill.py、UI 其它页签。"
         ),
@@ -217,22 +218,24 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--auto-zotero",
         action="store_true",
-        help="start 结束后若有 fallback 则自动排队 Zotero（默认关闭，避免阻塞）",
+        default=None,
+        help="start 结束后若有 fallback 则自动排队 Zotero（默认开启）",
     )
     start.add_argument(
         "--no-auto-zotero",
         action="store_true",
-        help="兼容旧开关：与默认相同（不自动 Zotero）",
+        help="关闭自动 Zotero（仅机构/OA，失败写入 fallback 清单）",
     )
     start.add_argument(
         "--doi-preflight",
         action="store_true",
-        help="启用下载前 DOI 校验/题名重匹配（默认关闭，避免卡住）",
+        default=None,
+        help="启用下载前 DOI 校验/题名重匹配（默认开启）",
     )
     start.add_argument(
         "--no-doi-preflight",
         action="store_true",
-        help="兼容：与默认相同（跳过预检）",
+        help="跳过 DOI 预检",
     )
     start.add_argument(
         "--download-supplements",
@@ -271,8 +274,13 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--wait-seconds",
         type=int,
-        default=0,
-        help="自动 Zotero 时等待结果的秒数（0=只排队；与 zotero 子命令相同）",
+        default=600,
+        help="自动 Zotero 时等待结果的秒数（默认 600；0=只排队）",
+    )
+    start.add_argument(
+        "--no-iucr-short-try",
+        action="store_true",
+        help="关闭 IUCr 短试策略（默认：机构失败 1 次后熔断 → OA → Zotero）",
     )
 
     resume = subparsers.add_parser("resume", help="兼容：仅重试一次登录/验证码失败条目（默认批次已跳过）")
@@ -280,19 +288,36 @@ def build_parser() -> argparse.ArgumentParser:
 
     retry = subparsers.add_parser(
         "retry-failed",
-        help="同批次再跑未成功项（默认跳过 OA，只跑机构/浏览器；可复用调试浏览器）",
+        help="同批次再跑未成功项；结束后自动 OA 补救并默认排队 Zotero",
     )
     retry.add_argument("--run-dir", required=True, help="已有批次目录")
     retry.add_argument(
         "--include-oa",
         action="store_true",
-        help="失败重试时也重跑 OA（默认只跑机构阶段）",
+        help="失败重试时也重跑 OA 阶段（默认只跑机构阶段；limited OA 补救仍会执行）",
     )
     retry.add_argument("--cookies", default="", help="覆盖 Cookie JSON 路径（可选）")
     retry.add_argument("--browser-exe", default="", help="覆盖浏览器路径（可选）")
     retry.add_argument("--email", default="", help="覆盖 OA 邮箱（可选）")
     retry.add_argument("--debug-port", type=int, default=0, help="覆盖调试端口（0=用批次原值）")
     retry.add_argument("--login-wait-seconds", type=int, default=-1, help="覆盖登录等待（-1=原值）")
+    retry.add_argument(
+        "--retry-all-failed",
+        action="store_true",
+        help="重试几乎所有非终态失败（默认仅网络/捕获类失败）",
+    )
+    retry.add_argument(
+        "--no-auto-zotero",
+        action="store_true",
+        help="关闭重试后的自动 Zotero（默认开启）",
+    )
+    retry.add_argument("--library-id", type=int, default=1, help="自动 Zotero 文库 ID")
+    retry.add_argument(
+        "--wait-seconds",
+        type=int,
+        default=600,
+        help="自动 Zotero 等待秒数（默认 600；0=只排队）",
+    )
 
     finalize = subparsers.add_parser("finalize", help="归并 Zotero 附件并生成最终报告")
     finalize.add_argument("--run-dir", required=True, help="已有批次目录")
@@ -300,14 +325,70 @@ def build_parser() -> argparse.ArgumentParser:
 
     delivery = subparsers.add_parser(
         "delivery",
-        help="仅生成用户交付物：下载清单.csv + 结果/（不重下）",
+        help="仅生成用户交付物：下载清单.csv + 结果/（不重下；merge-safe 保留外部补入）",
     )
     delivery.add_argument("--run-dir", required=True, help="已有批次目录")
+
+    refresh = subparsers.add_parser(
+        "refresh-delivery",
+        help="A3：扫描 结果/，重命名为 年份-作者-题名，映射失败 DOI，刷新 下载清单.csv",
+    )
+    refresh.add_argument("--run-dir", required=True, help="已有批次目录")
+    refresh.add_argument("--email", default="", help="Crossref 礼貌邮箱（可选）")
+    refresh.add_argument(
+        "--no-rename",
+        action="store_true",
+        help="只刷新清单/映射，不改文件名",
+    )
 
     zotero = subparsers.add_parser("zotero", help="把项目失败项交给 Zotero 9 本地桥接（可选）")
     zotero.add_argument("--run-dir", required=True, help="已有批次目录")
     zotero.add_argument("--library-id", type=int, default=1, help="目标 Zotero 文库 ID（默认：1）")
-    zotero.add_argument("--wait-seconds", type=int, default=0, help="等待 Zotero 结果的秒数（0-86400）")
+    zotero.add_argument(
+        "--wait-seconds",
+        type=int,
+        default=600,
+        help="等待 Zotero 结果的秒数（默认 600；0=只排队）",
+    )
+
+    recover = subparsers.add_parser(
+        "recover-oa",
+        help=(
+            "有界 OA/仓储补救（非默认深挖）：元数据 + 至多 1 个标注 PDF URL + 至多 1 个仓储 PDF；"
+            "每 DOI 默认 60s；不启浏览器。用于 unsupported_publisher 等失败项。"
+        ),
+    )
+    recover.add_argument("--run-dir", required=True, help="已有批次目录")
+    recover.add_argument("--email", default="", help="元数据 API 礼貌邮箱（可选）")
+    recover.add_argument(
+        "--budget-seconds",
+        type=float,
+        default=60.0,
+        help="每篇 DOI 最长秒数（默认 60）",
+    )
+    recover.add_argument(
+        "--max-workers",
+        type=int,
+        default=2,
+        help="并行 DOI 数（默认 2）",
+    )
+    recover.add_argument(
+        "--only-status",
+        default="",
+        help="仅处理这些 status（逗号分隔；默认 unsupported_publisher,pending_zotero 等）",
+    )
+    recover.add_argument(
+        "--no-auto-zotero",
+        action="store_true",
+        help="补救后不自动排队 Zotero（默认：仍有失败则排队）",
+    )
+    recover.add_argument("--library-id", type=int, default=1, help="自动 Zotero 文库 ID")
+    recover.add_argument(
+        "--wait-seconds",
+        type=int,
+        default=600,
+        help="自动 Zotero 等待秒数（默认 600；0=只排队）",
+    )
     return parser
 
 
@@ -479,7 +560,12 @@ def _handle_bridge_run(bridge_run, *, rerun_command: str = "zotero") -> tuple[Ba
         if bridge_run.bridge is None:
             raise RuntimeError("bridge_batch_result_missing")
         print(f"桥接任务：{len(bridge_run.bridge.jobs)} 个子作业")
-        print("请在 Zotero 中确认一次；确认后重新运行同一条命令即可继续。")
+        print(
+            "Zotero 插件应自动确认批次（0.2.0+）。"
+            "若仍在等待：请升级/启用「文献下载桥接」插件，或在 about:config 中确认"
+            " extensions.zoteroPaperDownloadBridge.autoConfirm 为 true；"
+            "然后重新运行同一条命令。"
+        )
         if bridge_run.bridge.jobs:
             run_dir = Path(bridge_run.bridge.jobs[0].run_dir).expanduser()
             print(f"批次目录：{run_dir}")
@@ -499,8 +585,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "start":
-            # Opt1: preflight off by default; only enable with --doi-preflight.
-            do_preflight = bool(args.doi_preflight) and not bool(args.no_doi_preflight)
+            # A4: preflight on by default; disable with --no-doi-preflight.
+            do_preflight = not bool(args.no_doi_preflight)
             # Fixed run folder by default (one delivery dir; resume if exists).
             use_fixed = not bool(args.no_fixed_run) and not bool(args.fresh)
             if args.fixed_run is True:
@@ -529,6 +615,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     session_break_seconds=float(args.session_break_seconds),
                     session_break_every=int(args.session_break_every),
                     resolve_title_metadata=bool(args.resolve_title_metadata),
+                    iucr_short_try=not bool(getattr(args, "no_iucr_short_try", False)),
                 ),
                 doi_preflight=do_preflight,
                 fixed_run=use_fixed,
@@ -538,8 +625,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"交付目录：{result.paths.root}")
             print(f"  清单：{result.paths.root / '下载清单.csv'}")
             print(f"  PDF：{result.paths.root / '结果'}")
-            # Default: do not auto-queue Zotero (optimization #4). Opt in with --auto-zotero.
-            auto_zotero = bool(args.auto_zotero) and not bool(args.no_auto_zotero)
+            # Default: auto-queue Zotero and wait for results (less manual).
+            auto_zotero = not bool(args.no_auto_zotero)
             if auto_zotero and result.zotero_fallback_count > 0:
                 print("机构/OA 失败项将自动排队 Zotero 桥接…")
                 bridge_run = run_zotero_bridge(
@@ -568,7 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "提示：有失败项可先同批次重试机构下载："
                     f" paper_batch.py retry-failed --run-dir \"{result.paths.root}\""
                 )
-                print("或显式排队 Zotero：paper_batch.py zotero --run-dir \"...\"（默认不自动排队）")
+                print("或显式排队 Zotero：paper_batch.py zotero --run-dir \"...\"")
             _print_next_step(result)
             return 0
         if args.command == "retry-failed":
@@ -590,14 +677,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 throttle_seconds=float(saved.get("throttle_seconds", 1.0) or 1.0),
                 skip_manual_retry=bool(saved.get("skip_manual_retry", True)),
+                download_supplements=bool(saved.get("download_supplements", True)),
+                smart_route=bool(saved.get("smart_route", True)),
+                session_break_seconds=float(saved.get("session_break_seconds", 60.0) or 60.0),
+                session_break_every=int(saved.get("session_break_every", 8) or 8),
+                resolve_title_metadata=bool(saved.get("resolve_title_metadata", False)),
+                circuit_breaker_threshold=int(saved.get("circuit_breaker_threshold", 3) or 3),
+                auto_oa_recovery=bool(saved.get("auto_oa_recovery", True)),
+                iucr_short_try=bool(saved.get("iucr_short_try", True)),
             )
             result = retry_failed_batch(
                 args.run_dir,
                 options=options,
                 skip_oa=not args.include_oa,
+                retry_all=bool(args.retry_all_failed),
             )
             _print_summary(result)
-            if result.zotero_fallback_count > 0:
+            auto_zotero = not bool(getattr(args, "no_auto_zotero", False))
+            if auto_zotero and result.zotero_fallback_count > 0:
+                print("重试后失败项将自动排队 Zotero 桥接…")
+                bridge_run = run_zotero_bridge(
+                    result.paths.root,
+                    library_id=int(getattr(args, "library_id", 1) or 1),
+                    wait_seconds=int(getattr(args, "wait_seconds", 600) or 0),
+                )
+                bridge_result, early = _handle_bridge_run(bridge_run, rerun_command="zotero")
+                if early is not None:
+                    _print_zotero_next_step(result, queued=True)
+                    return early
+                if bridge_result is not None:
+                    result = bridge_result
+                    _print_summary(result)
+            elif result.zotero_fallback_count > 0:
                 print(
                     "仍有失败项。可再跑 retry-failed，或："
                     f" paper_batch.py zotero --run-dir \"{result.paths.root}\""
@@ -618,6 +729,76 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = result_from_state(paths, state)
             _print_summary(result)
             return 0
+        elif args.command == "refresh-delivery":
+            from paper_automation.delivery_refresh import refresh_delivery
+
+            refresh_result = refresh_delivery(
+                args.run_dir,
+                email=str(getattr(args, "email", "") or ""),
+                apply_rename=not bool(getattr(args, "no_rename", False)),
+            )
+            print(f"[refresh-delivery] 重命名 {refresh_result.renamed} 个")
+            print(f"[refresh-delivery] 映射到失败 DOI {refresh_result.mapped_to_row} 条")
+            print(f"[refresh-delivery] 外部保留约 {refresh_result.external_kept} 个")
+            print(f"下载清单：{refresh_result.inventory_path}")
+            print(f"对照表：{refresh_result.rename_map_path}")
+            print(f"结果文件夹：{refresh_result.run_dir / USER_DELIVERY_DIR_NAME}")
+            return 0
+        elif args.command == "recover-oa":
+            from paper_automation.oa_recovery import (
+                DEFAULT_RECOVER_STATUSES,
+                run_limited_oa_recovery_on_batch,
+            )
+
+            only = None
+            if str(getattr(args, "only_status", "") or "").strip():
+                only = {
+                    part.strip().lower()
+                    for part in str(args.only_status).split(",")
+                    if part.strip()
+                }
+            recovered = run_limited_oa_recovery_on_batch(
+                args.run_dir,
+                email=str(args.email or ""),
+                budget_seconds=float(args.budget_seconds),
+                only_statuses=only or DEFAULT_RECOVER_STATUSES,
+                max_workers=int(args.max_workers),
+            )
+            ok = sum(1 for item in recovered if item.status == "oa_downloaded")
+            print(f"[recover-oa] 处理 {len(recovered)} 条；成功 {ok}；失败 {len(recovered) - ok}")
+            for item in recovered:
+                print(
+                    f"  - {item.doi}: {item.status}"
+                    + (f" -> {Path(item.file).name}" if item.file else f" ({item.reason})")
+                    + f" [{item.elapsed_s:.1f}s]"
+                )
+            run_dir = Path(args.run_dir).expanduser().resolve()
+            report = run_dir / "working" / "limited_oa_recovery_report.csv"
+            if report.is_file():
+                print(f"明细：{report}")
+            paths = paths_from_run_dir(run_dir)
+            result = result_from_state(paths, load_batch_state(run_dir))
+            _print_summary(result)
+            auto_zotero = not bool(getattr(args, "no_auto_zotero", False))
+            if auto_zotero and result.zotero_fallback_count > 0:
+                print("OA 补救后仍有失败项，自动排队 Zotero…")
+                bridge_run = run_zotero_bridge(
+                    result.paths.root,
+                    library_id=int(getattr(args, "library_id", 1) or 1),
+                    wait_seconds=int(getattr(args, "wait_seconds", 600) or 0),
+                )
+                bridge_result, early = _handle_bridge_run(bridge_run, rerun_command="zotero")
+                if early is not None:
+                    return early
+                if bridge_result is not None:
+                    result = bridge_result
+                    _print_summary(result)
+            elif result.zotero_fallback_count > 0:
+                print(
+                    "仍有失败项可排队 Zotero："
+                    f" paper_batch.py zotero --run-dir \"{result.paths.root}\""
+                )
+            return 0 if ok == len(recovered) or len(recovered) == 0 else 0
         else:
             bridge_run = run_zotero_bridge(
                 args.run_dir,

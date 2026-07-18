@@ -109,11 +109,15 @@ Check `doi_intake_preview.csv`, `merged_doi_input.csv`, and related reports, the
 .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
 ```
 
-Default path: OA → institutional access → **all remaining failures go to
-`zotero_fallback.csv`** (no `resume` gate). `start` **auto-queues** the Zotero
-bridge when fallback rows exist. Keep Zotero open with the bridge plugin
-enabled. Exit code 3 means the job is queued; accept one Zotero confirmation
-for the whole batch, then rerun only:
+Prefer a **DOI-only** list (TXT one DOI per line, or a table with a DOI column).
+Markdown is fine, but by default only explicit DOIs become tasks.
+
+Default path: DOI preflight → OA (gold / OA-signal only) → institutional access →
+bounded OA recovery for OA-signal failures → **DOI-bearing failures go to
+`zotero_fallback.csv`** (no `resume` gate). `start` **auto-queues** Zotero and
+waits (default `--wait-seconds 600`). Keep Zotero open with bridge plugin
+**0.2.0+** (auto-confirm by default; no modal). Exit code 3 means still waiting
+for the plugin; after it finishes, rerun only if needed:
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"

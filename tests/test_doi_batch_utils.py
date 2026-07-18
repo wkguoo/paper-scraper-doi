@@ -311,6 +311,21 @@ class DoiBatchUtilsTests(unittest.TestCase):
         self.assertEqual(preview.status_counts["duplicate"], 1)
         self.assertEqual(preview.rows[1].status, "duplicate")
 
+    def test_clean_doi_keeps_balanced_parentheses_and_strips_markdown(self) -> None:
+        from doi_batch_utils import clean_doi, extract_doi_from_text
+        from paper_automation.parser import extract_dois
+
+        paren = "10.1016/0956-716x(92)90275-j"
+        self.assertEqual(clean_doi(f"{paren}**"), paren)
+        self.assertEqual(clean_doi(f"https://doi.org/{paren}"), paren)
+        self.assertEqual(extract_doi_from_text(f"see DOI: `{paren}` end"), paren)
+        self.assertEqual(extract_doi_from_text(f"[{paren}](https://doi.org/{paren})"), paren)
+        self.assertEqual(clean_doi("10.1051/jp1:1992199"), "10.1051/jp1:1992199")
+        # truncated open paren rejected
+        self.assertEqual(clean_doi("10.1016/0956-716x(92"), "")
+        found = extract_dois(f"paper {paren}** and more")
+        self.assertIn(paren.lower(), found)
+
 
 class CookieCheckTests(unittest.TestCase):
     def test_check_cookie_json_accepts_cookie_editor_list(self) -> None:

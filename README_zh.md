@@ -18,6 +18,10 @@
 .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
 ```
 
+**推荐输入：** 每行一个 DOI 的 TXT，或带 DOI 列的 CSV/XLSX。Markdown 可用，但默认**只识别 DOI**（章节标题、备注行会被丢弃）。题名-only 需显式 `--resolve-title-metadata`。
+
+**默认行为（减少手动）：** DOI 预检开启；机构失败后有 OA 信号才做有界 OA 补救；失败 DOI 自动排队 Zotero 并等待结果（约 600s）；Zotero 桥接插件 **0.2.0+** 默认自动确认（无需点弹窗）。可用 `--no-doi-preflight` / `--no-auto-zotero` / pref `extensions.zoteroPaperDownloadBridge.autoConfirm=false` 关闭。
+
 **不要**把 `paper_skill.py`、`sd_institutional_skill.py`、`sd_scraper.py`、`sd_scraper_en.py` 当作新任务的首选入口；它们不走统一批次状态，失败项也进不了同一份 Zotero 回退清单。
 
 ## 兼容 / 高级入口（非默认）

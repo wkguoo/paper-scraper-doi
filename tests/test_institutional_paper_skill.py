@@ -197,16 +197,84 @@ class InstitutionalWorkflowTests(unittest.TestCase):
                 writer.writerow({"doi": "10.1107/s1600576715004306", "title": "IUCr paper"})
 
             with patch("paper_automation.institutional.workflow.MetadataResolver.resolve_one", fake_resolve_one):
+                # Disable OA so this test isolates adapter auth_required classification.
                 result = run_institutional_workflow(
                     input_path=input_path,
                     output_dir=root,
                     session_factory=lambda _exe, _port: FakeAuthRequiredBrowserSession(),
+                    try_oa_direct=False,
                 )
 
             self.assertEqual(result.status_counts["auth_required"], 1)
             with Path(result.report_path).open("r", encoding="utf-8-sig") as handle:
                 report_rows = list(csv.DictReader(handle))
             self.assertEqual(report_rows[0]["status"], "auth_required")
+
+    def test_unsupported_publisher_oa_direct_success(self) -> None:
+        """No adapter → OA HTTP path can still deliver a PDF (adapter=oa_direct)."""
+        from paper_automation.institutional.workflow import run_institutional_workflow
+        from paper_automation.models import MetadataResult
+        from paper_automation.oa_recovery import RecoveryResult
+
+        def fake_resolve_one(_self: object, candidate: object) -> MetadataResult:
+            doi = candidate.doi if hasattr(candidate, "doi") else ""
+            return MetadataResult(
+                source_index=1,
+                query_title="MDPI paper",
+                doi=doi,
+                title="MDPI OA Paper Title",
+                authors=["Alice Example"],
+                journal="Crystals",
+                year="2024",
+                publisher="MDPI AG",
+                url=f"https://doi.org/{doi}",
+                source="crossref",
+            )
+
+        def fake_recover(doi: str, **kwargs):
+            out = Path(kwargs["output_dir"])
+            out.mkdir(parents=True, exist_ok=True)
+            path = out / "2024-Example-MDPI-OA-Paper-Title.pdf"
+            path.write_bytes(b"%PDF-1.4\nok\n%%EOF\n")
+            return RecoveryResult(
+                doi=doi,
+                status="oa_downloaded",
+                file=str(path),
+                reason="oa_url:annotated",
+                title="MDPI OA Paper Title",
+                year="2024",
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_path = root / "papers.csv"
+            with input_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["doi", "title"])
+                writer.writeheader()
+                writer.writerow({"doi": "10.3390/cryst14030206", "title": "MDPI paper"})
+
+            with patch(
+                "paper_automation.institutional.workflow.MetadataResolver.resolve_one",
+                fake_resolve_one,
+            ), patch(
+                "paper_automation.oa_recovery.recover_oa_limited",
+                side_effect=fake_recover,
+            ):
+                result = run_institutional_workflow(
+                    input_path=input_path,
+                    output_dir=root,
+                    # No browser needed: unsupported → OA only.
+                    session_factory=lambda _exe, _port: FakeAuthRequiredBrowserSession(),
+                    try_oa_direct=True,
+                )
+
+            self.assertEqual(result.downloaded_count, 1)
+            self.assertEqual(result.status_counts.get("pdf_downloaded"), 1)
+            with Path(result.report_path).open("r", encoding="utf-8-sig") as handle:
+                report_rows = list(csv.DictReader(handle))
+            self.assertEqual(report_rows[0]["status"], "pdf_downloaded")
+            self.assertEqual(report_rows[0]["adapter"], "oa_direct")
+            self.assertIn("oa_direct:", report_rows[0]["reason"])
 
 
 if __name__ == "__main__":

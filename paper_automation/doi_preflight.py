@@ -52,19 +52,54 @@ def preflight_rows(
                 min_title_similarity=min_title_similarity,
             )
             if fixed is None:
-                continue
-            new_doi, detail, meta = fixed
-            if new_doi != old_doi or detail.startswith("enriched"):
-                _apply_metadata(row, meta, new_doi)
+                # Unresolvable DOI: keep for audit, do not download.
+                row["status"] = "metadata_uncertain"
+                row["reason"] = "doi_unresolvable_preflight"
                 changes.append(
                     PreflightChange(
                         task_id=task_id,
-                        action="rematch" if new_doi != old_doi else "enrich",
+                        action="reject",
                         old_doi=old_doi,
-                        new_doi=new_doi,
-                        detail=detail,
+                        new_doi="",
+                        detail="doi_unresolvable_preflight",
                     )
                 )
+                continue
+            new_doi, detail, meta = fixed
+            if title and getattr(meta, "title", None):
+                sim = title_similarity(title, str(meta.title or ""))
+                if sim < 0.45 and "rematch" not in detail and "title_rematch" not in detail:
+                    # Severe title/DOI mismatch without a confident rematch.
+                    row["status"] = "metadata_uncertain"
+                    row["reason"] = f"doi_title_mismatch_preflight:sim={sim:.2f}"
+                    changes.append(
+                        PreflightChange(
+                            task_id=task_id,
+                            action="reject",
+                            old_doi=old_doi,
+                            new_doi=new_doi,
+                            detail=row["reason"],
+                        )
+                    )
+                    continue
+            if new_doi != old_doi or detail.startswith("enriched") or detail.startswith("doi_ok"):
+                _apply_metadata(row, meta, new_doi)
+                if new_doi != old_doi or detail.startswith("enriched"):
+                    changes.append(
+                        PreflightChange(
+                            task_id=task_id,
+                            action="rematch" if new_doi != old_doi else "enrich",
+                            old_doi=old_doi,
+                            new_doi=new_doi,
+                            detail=detail,
+                        )
+                    )
+            # Stash OA signal for later bounded recovery (B3.3).
+            if _metadata_has_oa_signal(meta):
+                existing = str(row.get("reason", "") or "")
+                marker = "oa_signal=1"
+                if marker not in existing:
+                    row["reason"] = f"{existing};{marker}".strip(";") if existing else marker
             continue
 
         # No DOI: try title/year resolution
@@ -171,3 +206,19 @@ def _source_index(row: dict) -> int:
         return int(str(row.get("source_index", "") or "0"))
     except ValueError:
         return 0
+
+
+def _metadata_has_oa_signal(meta: object) -> bool:
+    openalex = getattr(meta, "openalex", None) or {}
+    if isinstance(openalex, dict):
+        open_access = openalex.get("open_access") or {}
+        if open_access.get("is_oa"):
+            return True
+        best = openalex.get("best_oa_location") or {}
+        if any(str(best.get(key) or "").strip() for key in ("pdf_url", "url_for_pdf")):
+            return True
+    unpaywall = getattr(meta, "unpaywall", None) or {}
+    if isinstance(unpaywall, dict) and unpaywall.get("is_oa"):
+        return True
+    pdf_candidates = getattr(meta, "pdf_candidates", None) or []
+    return bool(pdf_candidates)

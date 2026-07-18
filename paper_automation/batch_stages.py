@@ -35,6 +35,13 @@ class BatchOptions:
     session_break_every: int = 8
     # Opt1: do not auto-resolve title-only metadata during intake unless requested.
     resolve_title_metadata: bool = False
+    # B2.3: trip non-Elsevier adapter after N consecutive failures.
+    circuit_breaker_threshold: int = 3
+    # B3.3: after institutional failures, try bounded OA (unsupported/not_pdf always;
+    # other failures need OA signal). Disable with auto_oa_recovery=False.
+    auto_oa_recovery: bool = True
+    # C6: IUCr (10.1107) short institutional try — trip adapter after 1 fail → OA → Zotero.
+    iucr_short_try: bool = True
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,11 @@ class _PreparedRows:
 
 def is_elsevier_doi(doi: str) -> bool:
     return clean_doi(doi).lower().startswith("10.1016/")
+
+
+def is_iucr_doi(doi: str) -> bool:
+    """IUCr journals share the 10.1107/ prefix."""
+    return clean_doi(doi).lower().startswith("10.1107/")
 
 
 def is_gold_oa_doi(doi: str) -> bool:
@@ -248,6 +260,8 @@ def run_non_elsevier_stage(input_path: Path, output_dir: Path, options: BatchOpt
             debug_port=options.debug_port,
             login_wait_seconds=options.login_wait_seconds,
             throttle_seconds=options.throttle_seconds,
+            circuit_breaker_threshold=int(getattr(options, "circuit_breaker_threshold", 3) or 3),
+            iucr_short_try=bool(getattr(options, "iucr_short_try", True)),
         )
     except Exception as exc:
         owner_results = _stage_failure(prepared.owner_rows, "non_elsevier", _exception_reason(exc))

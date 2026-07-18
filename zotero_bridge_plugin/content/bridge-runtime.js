@@ -74,7 +74,7 @@
   };
 
   const zotero = {
-    pluginVersion: "0.1.9",
+    pluginVersion: "0.2.0",
     version: String(Zotero.version || "9.0"),
     getInstanceIdentity() {
       let dataDir = "";
@@ -109,8 +109,25 @@
         profile_dir: profileDir,
         profile_name: profileName,
         zotero_version: String(Zotero.version || "9.0"),
-        plugin_version: "0.1.9",
+        plugin_version: "0.2.0",
       };
+    },
+    /**
+     * When true (default), complete valid bridge batches are confirmed without a modal.
+     * Disable via about:config: extensions.zoteroPaperDownloadBridge.autoConfirm = false
+     */
+    autoConfirmEnabled() {
+      try {
+        if (Zotero.Prefs && typeof Zotero.Prefs.get === "function") {
+          const value = Zotero.Prefs.get("extensions.zoteroPaperDownloadBridge.autoConfirm");
+          if (typeof value === "boolean") return value;
+          if (value === "false" || value === 0 || value === "0") return false;
+          if (value === "true" || value === 1 || value === "1") return true;
+        }
+      } catch (_error) {
+        // fall through to default true
+      }
+      return true;
     },
     async getLibraryName(libraryID) {
       const library = Zotero.Libraries.get(libraryID);
@@ -658,7 +675,7 @@
           profile_name: String(identity.profile_name || "").slice(0, MAX_BRIDGE_TEXT_LENGTH),
           zotero_version: String(identity.zotero_version || zotero?.version || "9.0")
             .slice(0, MAX_BRIDGE_TEXT_LENGTH),
-          plugin_version: String(identity.plugin_version || zotero?.pluginVersion || "0.1.9")
+          plugin_version: String(identity.plugin_version || zotero?.pluginVersion || "0.2.0")
             .slice(0, MAX_BRIDGE_TEXT_LENGTH),
         };
       }
@@ -669,7 +686,7 @@
       profile_dir: "",
       profile_name: "",
       zotero_version: String(zotero?.version || "9.0").slice(0, MAX_BRIDGE_TEXT_LENGTH),
-      plugin_version: String(zotero?.pluginVersion || "0.1.9").slice(0, MAX_BRIDGE_TEXT_LENGTH),
+      plugin_version: String(zotero?.pluginVersion || "0.2.0").slice(0, MAX_BRIDGE_TEXT_LENGTH),
     };
   }
 
@@ -1639,7 +1656,7 @@
       schema_version: 1,
       job_id: request.job_id,
       payload_sha256: request.payload_sha256,
-      plugin_version: String(zotero?.pluginVersion || "0.1.9"),
+      plugin_version: String(zotero?.pluginVersion || "0.2.0"),
       zotero_version: String(zotero?.version || "9.0"),
       started_at: startedAt,
       finished_at: finishedAt,
@@ -1705,6 +1722,17 @@
     if (archive) await archiveEntries(paths, entries);
   }
 
+  function autoConfirmEnabled() {
+    if (typeof zotero?.autoConfirmEnabled === "function") {
+      try {
+        return Boolean(zotero.autoConfirmEnabled());
+      } catch (_error) {
+        return true;
+      }
+    }
+    return true;
+  }
+
   async function confirmRun(group) {
     const first = group.entries[0].request;
     const itemCount = group.entries.reduce((total, entry) => (
@@ -1714,6 +1742,19 @@
       ? await zotero.getLibraryName(first.library_id)
       : `文库 ${first.library_id}`;
     const identity = resolveInstanceIdentity();
+    // Auto-confirm complete valid batches by default (no manual modal).
+    if (autoConfirmEnabled()) {
+      try {
+        if (typeof zotero?.log === "function") {
+          zotero.log(
+            `[文献下载桥接] 自动确认批次 run_id=${group.runID} items=${itemCount} library=${first.library_id}`,
+          );
+        }
+      } catch (_error) {
+        // non-fatal
+      }
+      return true;
+    }
     const message = [
       "桥接目标 = 当前打开的这个 Zotero（不是固定测试配置）。",
       `当前实例：${instanceLabel(identity)}`,

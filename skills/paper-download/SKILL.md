@@ -12,8 +12,8 @@ Recommended entry / default product entry for agents and users: `paper_batch.py`
 
 | User intent | Use | Do not use as primary |
 | --- | --- | --- |
-| New literature list (any publisher mix) | `paper_batch.py start` (auto-queues Zotero on failures) | `paper_skill.py`, `sd_scraper.py`, `sd_scraper_en.py` |
-| Bridge confirmation / continue after start | `paper_batch.py zotero --run-dir` | direct Zotero MCP for normal runs |
+| New literature list (any publisher mix) | `paper_batch.py start` (DOI preflight + auto Zotero by default) | `paper_skill.py`, `sd_scraper.py`, `sd_scraper_en.py` |
+| Continue / collect Zotero results | `paper_batch.py zotero --run-dir` | direct Zotero MCP for normal runs |
 | Optional one-shot login/CAPTCHA retry (compat) | `paper_batch.py resume --run-dir` only with `--enable-manual-retry` batches | restart `start` unnecessarily |
 | GUI | UI tab **统一批次（推荐）** | UI “兼容” tabs unless user asks for legacy SD/OA-only |
 
@@ -42,9 +42,10 @@ is exactly:
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
 ```
 
-If it returns exit code `3`, ask the user only to keep Zotero open and approve
-the single batch confirmation. After the plugin finishes, rerun exactly that
-same command—no other downloader command and no direct Zotero write.
+If it returns exit code `3`, keep Zotero open with plugin **0.2.0+** (auto-confirm
+by default). After the plugin finishes, rerun exactly that same command—no other
+downloader command and no direct Zotero write. Do not ask the user to click a
+confirmation modal unless they disabled auto-confirm.
 
 ## Repository and prerequisites
 
@@ -97,27 +98,34 @@ task IDs, and non-exact headers. Stop on validation failure; do not guess.
 Keep the CLI's printed run directory as `<run-dir>`. Do not edit the original
 input or any project-generated pending CSV.
 
-1. Run the project workflow (default: no manual resume; failures go to Zotero
-   and `start` auto-queues the bridge):
+1. Prefer a **DOI-only** list (one DOI per line, or a CSV/XLSX with a DOI column).
+   Markdown is allowed, but by default only explicit DOIs become tasks; section
+   headers and notes are dropped. Use `--resolve-title-metadata` only when the
+   user explicitly wants title-only rows.
+
+2. Run the project workflow (default: DOI preflight on; no manual resume;
+   failures with DOI go to Zotero; `start` auto-queues the bridge and waits):
 
    ```powershell
    .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
    ```
 
-   Keep Zotero 9 open with the bridge plugin enabled before or during `start`.
-   Optional: `--wait-seconds N` to poll in the same process; `--no-auto-zotero`
-   only if the user asks to queue later; `--enable-manual-retry` only for the
-   old one-shot login/CAPTCHA path.
+   Keep Zotero 9 open with the bridge plugin **0.2.0+** enabled before or during
+   `start`. Defaults: auto-Zotero + `--wait-seconds 600`. Use `--no-auto-zotero`
+   only if the user asks to queue later; `--no-doi-preflight` to skip Crossref
+   checks; `--enable-manual-retry` only for the old one-shot login/CAPTCHA path.
 
-2. Default batches write empty `manual_retry.csv`. Skip `resume` unless the
+3. Default batches write empty `manual_retry.csv`. Skip `resume` unless the
    user explicitly started with `--enable-manual-retry` and that file has data
    rows. For that compat path only: pause once for the browser action, then
    run exactly one `resume`. Never run `resume` a second time.
 
-3. Only `zotero_fallback.csv` rows enter the bridge. Do not use direct Zotero
-   MCP writes for normal bridge execution.
+4. Only DOI-bearing bridge-eligible failures enter `zotero_fallback.csv`
+   (`unsupported_publisher`, network/capture errors, etc.). Rows that are
+   `metadata_uncertain` / no DOI stay in reports only and are **not** sent to
+   Zotero. Do not use direct Zotero MCP writes for normal bridge execution.
 
-4. If auto-queue was disabled (`--no-auto-zotero`) or bridge was not run yet,
+5. If auto-queue was disabled (`--no-auto-zotero`) or bridge was not run yet,
    run the local bridge command once after `start`:
 
    ```powershell
@@ -128,13 +136,14 @@ input or any project-generated pending CSV.
    `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`. It sends no cookies,
    credentials, arbitrary commands, URLs, or caller-selected output paths.
 
-5. Exit code `3` means the batch is queued and waiting. Tell the user once to
-   keep Zotero open and accept the one Zotero confirmation per batch. Several
-   subjobs/chunks still produce one confirmation. Do not rerun `start` or
-   `resume`, and do not import items manually while the batch is active.
+6. Exit code `3` means the batch is queued and waiting for the plugin to finish.
+   Plugin **0.2.0+** auto-confirms (one Zotero confirmation per batch is applied
+   automatically; no modal unless the user disabled auto-confirm). Keep Zotero
+   open. Do not rerun `start` or `resume`, and do not import items manually while
+   the batch is active.
 
-6. After the plugin writes every outbox result for the run, rerun only the same
-   command:
+7. After the plugin writes every outbox result for the run, rerun only the same
+   command (or rely on `start --wait-seconds` already polling):
 
    ```powershell
    .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
@@ -145,10 +154,22 @@ input or any project-generated pending CSV.
    automatically. Do not call `paper_batch.py finalize` on the normal bridge
    path and do not construct plugin results by hand.
 
-7. Report `<run-dir>\pdfs\` as the final PDF directory and `<run-dir>\reports\`
-   as the audit trail. Never report unresolved rows as complete. Local checks
-   do not certify an attachment path: finalize revalidates PDF content and reparse-point safety
+8. Report `<run-dir>\pdfs\` / user `结果\` as the final PDF directory and
+   `<run-dir>\reports\` as the audit trail. Never report unresolved rows as
+   complete. Local checks do not certify an attachment path: finalize revalidates PDF content and reparse-point safety
    before copying.
+
+## Failure routing (non-Elsevier)
+
+| Situation | Next hop |
+| --- | --- |
+| No DOI / `metadata_uncertain` | Reports only (not Zotero) |
+| `unsupported_publisher` | Zotero fallback (DOI required); no browser retry |
+| `not_pdf_response` / network `error` | `retry-failed` (default whitelist) then Zotero |
+| Gold OA / metadata OA signal | Bounded OA first / `recover-oa` (no deep multi-source) |
+
+`retry-failed` defaults to network-class failures only; use `--retry-all-failed`
+only when the user asks for the broader set.
 
 ## Bridge unavailable or plugin not installed
 
@@ -184,11 +205,50 @@ The bridge/plugin may return `existing_pdf`, `downloaded`, `no_pdf`,
 `job_expired`, `job_id_conflict`, or `plugin_error`. Preserve the precise
 reason and let project finalization decide the final batch state.
 
+## OA 直下 + limited recovery (unsupported / capture miss)
+
+**Default (do not skip):** after non-Elsevier institutional miss
+(`unsupported_publisher`, `not_pdf_response`, adapter error), the project
+**automatically tries bounded OA HTTP download** before Zotero:
+
+- Inside `run_institutional_workflow` (`adapter=oa_direct` on success).
+- Again in `paper_batch` post-stage OA recovery for
+  `unsupported_publisher` / `not_pdf_response` / `pending_zotero` **even without**
+  a pre-flagged OA signal.
+
+Do **not** manually probe with multi-URL browser sessions, Wayback, CORE ID fishing, OAI, or guessed bitstreams.
+
+Optional second chance after `start`:
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py recover-oa --run-dir "<run-dir>"
+```
+
+- Budget: **≤60s per DOI** (default; institutional inline ~45s); metadata + annotated OA URL(s) + **at most one** repo `pdf_url`.
+- Other failure classes (not unsupported/not_pdf) still need an OA signal unless `recover-oa` is used with broader flags.
+- Early stop on first valid `%PDF`; host unreachable is cached for the run.
+- Repository landing with no PDF URL → `repo_metadata_only`, stop.
+- On failure: keep prior reason, then Zotero; do not start a long multi-source chase.
+
+## PDF delivery naming (mandatory)
+
+Write every successful PDF into delivery `pdfs/` with the final name **at download/publish time**:
+
+```text
+年份-第一作者姓-题名.pdf
+```
+
+Example: `2001-Kim-Densification-behavior-of-titanium-alloy-powder.pdf`
+
+- Shared helper: `paper_automation.file_manager.make_pdf_filename()`.
+- If year/author/clean title are missing from the input, resolve by DOI (Crossref/OpenAlex/publisher metadata) **before** naming; do not leave `0000-Unknown-...` or `paper-000N.pdf` as the user-facing file when metadata can be resolved.
+- Do not rely on a separate post-download rename step for normal jobs. Report the year–author–title paths as the delivered PDFs.
+
 ## Output tree
 
 ```text
 results\paper_batch_YYYYMMDD_HHMMSS\
-├── pdfs\
+├── pdfs\          # year-author-title.pdf only for successful deliveries
 ├── reports\
 │   ├── final_manifest.csv
 │   ├── final_manifest.xlsx

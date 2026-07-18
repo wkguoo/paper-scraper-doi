@@ -7,7 +7,8 @@ from doi_batch_utils import clean_doi
 from .models import PaperCandidate
 
 
-DOI_PATTERN = re.compile(r"10\.\d{4,9}/[^\s\"'<>\]\}]+", re.I)
+# Allow balanced () inside DOI path; trailing junk stripped by clean_doi.
+DOI_PATTERN = re.compile(r"10\.\d{4,9}/[^\s\]`\"'<>]+", re.I)
 LEADING_MARKER_RE = re.compile(r"^\s*(?:\[\d+\]|\(?\d+[\).\]]|[•*#-])\s*")
 NOISE_RE = re.compile(
     r"^(download pdf|view article|abstract|full text|references?|related articles?|"
@@ -16,7 +17,10 @@ NOISE_RE = re.compile(
 )
 SECTION_OR_NOTE_RE = re.compile(
     r"^(?:#+\s*)?(?:可能相关|边界|排除参考|排除|高度相关|明确相关|需确认|待确认|"
-    r"推荐理由|备注|说明|注释|note|notes?|remark|remarks?|comment|comments?|unclear)\b|"
+    r"推荐理由|备注|说明|注释|题名检索|旧刊\s*doi|待补文献|"
+    r"note|notes?|remark|remarks?|comment|comments?|unclear)\b|"
+    r"^(?:#+\s*)?(?:[A-D]\s*[·•.\-]\s*.{0,30}(?:必补|建议|可选|理论|相关)|"
+    r"[A-D]\s*[·•]\s*\S.{0,40})$|"
     r"^(?:p\d+|[a-z]\d+)\s*[:：].*(?:是否|可能|需要|需|建议|确认|包含|相关|排除)|"
     r"(?:是否|可能相关|边界|排除参考|推荐理由|文献信息不足|without enough bibliographic information)",
     re.I,

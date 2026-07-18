@@ -1882,13 +1882,14 @@ class BatchRunTests(unittest.TestCase):
 
             # Default: skip manual retry — captcha goes to zotero_fallback with other failures.
             default_result = start_batch(
-                options=BatchOptions(),
+                options=BatchOptions(auto_oa_recovery=False),
                 input_text="fixture",
                 input_path=None,
                 output_root=root,
                 gateway=FakeBatchGateway(initial_updates=initial),
                 normalizer=lambda **_kwargs: self._normalized_rows(valid_pdf),
                 now=datetime(2026, 7, 10, 17, 0, 0),
+                fresh=True,
             )
             with default_result.paths.manual_retry.open("r", encoding="utf-8-sig") as handle:
                 default_retry = list(csv.DictReader(handle))
@@ -1907,10 +1908,11 @@ class BatchRunTests(unittest.TestCase):
                 input_text="fixture",
                 input_path=None,
                 output_root=root,
-                options=BatchOptions(skip_manual_retry=False),
+                options=BatchOptions(skip_manual_retry=False, auto_oa_recovery=False),
                 gateway=FakeBatchGateway(initial_updates=initial),
                 normalizer=lambda **_kwargs: self._normalized_rows(valid_pdf),
                 now=datetime(2026, 7, 10, 17, 1, 0),
+                fresh=True,
             )
             with compat_result.paths.manual_retry.open("r", encoding="utf-8-sig") as handle:
                 retry_rows = list(csv.DictReader(handle))
@@ -2602,18 +2604,45 @@ class BatchRunTests(unittest.TestCase):
         self.assertEqual(rows[1]["reason"], "invalid_input")
         self.assertEqual(rows[2]["doi"], "10.1000/resolved")
 
-    def test_real_low_confidence_title_is_metadata_uncertain_and_never_sent_to_gateway_stages(self) -> None:
+    def test_real_low_confidence_title_is_dropped_without_title_resolve_mode(self) -> None:
         from paper_automation.batch_stages import BatchOptions
-        from paper_automation.batch_workflow import DefaultStageGateway, create_batch_paths, normalize_input
+        from paper_automation.batch_workflow import create_batch_paths, normalize_input
 
         with tempfile.TemporaryDirectory() as tmp:
             paths = create_batch_paths(Path(tmp))
-            rows = normalize_input(
-                input_text="Titanium",
-                input_path=None,
-                paths=paths,
-                options=BatchOptions(skip_manual_retry=False),
-            )
+            with self.assertRaises(ValueError) as ctx:
+                normalize_input(
+                    input_text="Titanium",
+                    input_path=None,
+                    paths=paths,
+                    options=BatchOptions(skip_manual_retry=False),
+                )
+        self.assertEqual(str(ctx.exception), "empty_input")
+
+    def test_metadata_uncertain_title_mode_rows_are_never_sent_to_gateway_stages(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
+        from paper_automation.batch_workflow import DefaultStageGateway, create_batch_paths
+
+        rows = [
+            {
+                "task_id": "paper-0001",
+                "source_index": "1",
+                "input_doi": "",
+                "input_title": "Titanium",
+                "doi": "",
+                "title": "Titanium",
+                "authors": "",
+                "journal": "",
+                "year": "",
+                "publisher": "",
+                "status": "metadata_uncertain",
+                "source": "input",
+                "file": "",
+                "reason": "not_probable_title",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = create_batch_paths(Path(tmp))
             with patch("paper_automation.batch_workflow.run_oa_stage") as oa_stage, patch(
                 "paper_automation.batch_workflow.run_sciencedirect_stage"
             ) as sd_stage, patch("paper_automation.batch_workflow.run_non_elsevier_stage") as other_stage:
@@ -2804,6 +2833,7 @@ class BatchRunTests(unittest.TestCase):
     def test_empty_gateway_updates_mark_only_required_rows_missing(self) -> None:
         import csv
 
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import load_batch_state, start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2811,6 +2841,7 @@ class BatchRunTests(unittest.TestCase):
                 input_text="fixture",
                 input_path=None,
                 output_root=Path(tmp),
+                options=BatchOptions(auto_oa_recovery=False),
                 gateway=FakeBatchGateway(initial_updates=lambda rows: []),
                 normalizer=lambda **_kwargs: [
                     {"task_id": "paper-0001", "doi": "10.1000/a", "title": "A", "status": "pending"},
@@ -2826,8 +2857,9 @@ class BatchRunTests(unittest.TestCase):
             [row["status"] for row in state["rows"]],
             ["missing_stage_update", "metadata_uncertain", "duplicate"],
         )
-        self.assertEqual([row["task_id"] for row in fallback], ["paper-0001", "paper-0002"])
-        self.assertEqual(result.zotero_fallback_count, 2)
+        # metadata_uncertain without DOI is audit-only and no longer enters Zotero fallback.
+        self.assertEqual([row["task_id"] for row in fallback], ["paper-0001"])
+        self.assertEqual(result.zotero_fallback_count, 1)
 
     def test_partial_gateway_updates_mark_each_omitted_required_row_missing(self) -> None:
         from paper_automation.batch_workflow import load_batch_state, start_batch
@@ -3011,23 +3043,27 @@ class BatchRunTests(unittest.TestCase):
         )
 
     def test_unknown_or_duplicate_gateway_task_ids_are_rejected(self) -> None:
+        from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import start_batch
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for updates in (
+            for index, updates in enumerate((
                 lambda rows: [{**rows[0], "task_id": "unknown", "status": "failed", "source": "oa", "file": "", "reason": "x"}],
                 lambda rows: [{**rows[0], "status": "failed", "source": "oa", "file": "", "reason": "x"}] * 2,
-            ):
+            )):
                 with self.subTest(updates=updates):
                     with self.assertRaisesRegex(ValueError, "gateway_task_id"):
                         start_batch(
                             input_text="fixture",
                             input_path=None,
                             output_root=root,
+                            options=BatchOptions(auto_oa_recovery=False),
                             gateway=FakeBatchGateway(initial_updates=updates),
-                        normalizer=lambda **_kwargs: [{"task_id": "paper-0001", "doi": "10.1000/a", "title": "A"}],
-                    )
+                            normalizer=lambda **_kwargs: [{"task_id": "paper-0001", "doi": "10.1000/a", "title": "A"}],
+                            fresh=True,
+                            run_name=f"reject-{index}",
+                        )
 
     def test_start_writes_fixed_normalized_schema_for_injected_normalizer(self) -> None:
         import csv
@@ -4811,7 +4847,39 @@ class BatchCliTests(unittest.TestCase):
         self.assertEqual(bridge.call_args.kwargs, {"library_id": 7, "wait_seconds": 0})
         self.assertIn("已自动将失败项排队", stdout.getvalue())
 
-    def test_start_default_skips_auto_zotero_bridge(self) -> None:
+    def test_start_default_auto_queues_zotero_bridge(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        from paper_batch import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "auto zotero"
+            stdout = StringIO()
+            with patch("paper_batch.start_batch", return_value=self._result(root, fallback=1)):
+                with patch(
+                    "paper_batch.run_zotero_bridge",
+                    return_value=type(
+                        "R",
+                        (),
+                        {
+                            "status": "no_fallback",
+                            "batch_result": None,
+                            "bridge": None,
+                            "zotero_results": None,
+                        },
+                    )(),
+                ) as bridge:
+                    with redirect_stdout(stdout):
+                        exit_code = main([
+                            "start", "--text", "10.1000/example", "--out", str(root),
+                            "--wait-seconds", "0",
+                        ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(bridge.call_count, 1)
+
+    def test_start_no_auto_zotero_skips_bridge(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
 
@@ -4825,6 +4893,7 @@ class BatchCliTests(unittest.TestCase):
                     with redirect_stdout(stdout):
                         exit_code = main([
                             "start", "--text", "10.1000/example", "--out", str(root),
+                            "--no-auto-zotero",
                         ])
 
         self.assertEqual(exit_code, 0)
@@ -4887,7 +4956,8 @@ class BatchCliTests(unittest.TestCase):
         self.assertEqual(exit_code, 3)
         self.assertEqual(run.call_args.args, (str(root),))
         self.assertEqual(run.call_args.kwargs, {"library_id": 1, "wait_seconds": 0})
-        self.assertIn("请在 Zotero 中确认一次", stdout.getvalue())
+        self.assertIn("自动确认", stdout.getvalue())
+        self.assertIn("重新运行同一条命令", stdout.getvalue())
         self.assertNotIn("'resume'", stdout.getvalue())
 
     def test_zotero_wait_seconds_outside_range_returns_two(self) -> None:

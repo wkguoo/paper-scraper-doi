@@ -1,6 +1,9 @@
 # Zotero 9 文献下载桥接插件
 
-这个插件是 `paper-scraper-doi` 的本地回退端：项目先处理合法开放获取或用户已有机构权限可访问的 PDF，只有失败项才进入 Zotero。插件会在完整批次到齐后弹出一次确认，随后查重、按 DOI 导入缺失条目、建立批次集合，并调用 Zotero 自带的“可用 PDF”能力。项目最后复核附件并汇总最终 PDF。
+这个插件是 `paper-scraper-doi` 的本地回退端：项目先处理合法开放获取或用户已有机构权限可访问的 PDF，只有失败项才进入 Zotero。插件会在完整批次到齐后**默认自动确认**（0.2.0+，无需弹窗），随后查重、按 DOI 导入缺失条目、建立批次集合，并调用 Zotero 自带的“可用 PDF”能力。项目最后复核附件并汇总最终 PDF。
+
+若需恢复弹窗确认：在 Zotero `about:config` 中设置
+`extensions.zoteroPaperDownloadBridge.autoConfirm = false`。
 
 ## 兼容范围
 
@@ -29,7 +32,7 @@ powershell -ExecutionPolicy Bypass -File .\build_zotero_bridge_xpi.ps1 -OutputDi
 
 输入：`manifest.json`、`bootstrap.js`、`content/`、`locale/` 四项白名单源码。
 
-输出：按清单版本命名的 XPI，例如 `dist\zotero-paper-download-bridge-0.1.9.xpi`。脚本不会包含 `tests/`、`package.json`、日志、桥接队列、Cookie 或环境文件；拒绝输出路径链或插件源码树中的 junction/symlink；不会调用现有 Windows UI 打包脚本；不会自动安装到 Zotero。目标已存在时默认停止，只有显式添加 `-Force` 才允许替换。
+输出：按清单版本命名的 XPI，例如 `dist\zotero-paper-download-bridge-0.2.0.xpi`。脚本不会包含 `tests/`、`package.json`、日志、桥接队列、Cookie 或环境文件；拒绝输出路径链或插件源码树中的 junction/symlink；不会调用现有 Windows UI 打包脚本；不会自动安装到 Zotero。目标已存在时默认停止，只有显式添加 `-Force` 才允许替换。
 
 桥接目标 = 当前打开且持有消费租约的 Zotero 实例（`active-instance.json`），不固定 `Zotero test`。
 
@@ -37,10 +40,10 @@ powershell -ExecutionPolicy Bypass -File .\build_zotero_bridge_xpi.ps1 -OutputDi
 
 ## 最终批处理流程
 
-1. 项目侧先运行 `paper_batch.py start`，必要时只运行一次 `resume`。
-2. 对剩余失败项运行 `paper_batch.py zotero --run-dir "<批次目录>"`，项目把严格 JSON 作业放入本地队列。
-3. Zotero 只在全部分块到齐后确认一次。取消时不写 Zotero；确认后在每次可能写入前保存意图，并在写入后逐项保存所有权检查点。
-4. 插件完成后，再运行同一条 `paper_batch.py zotero` 命令。项目复核 PDF 文件并更新最终清单与 `pdfs\`。
+1. 项目侧先运行 `paper_batch.py start`（默认会自动排队 Zotero 并等待），必要时只运行一次 `resume`。
+2. 若未自动排队，对剩余失败项运行 `paper_batch.py zotero --run-dir "<批次目录>"`，项目把严格 JSON 作业放入本地队列。
+3. Zotero 在全部分块到齐后**默认自动确认**（可关 pref）。取消路径仍不写 Zotero；确认后在每次可能写入前保存意图，并在写入后逐项保存所有权检查点。
+4. 插件完成后，`start --wait-seconds` 会自动收结果；否则再运行同一条 `paper_batch.py zotero` 命令。项目复核 PDF 文件并更新最终清单与 `pdfs\`。
 
 插件不会修改已有附件。菜单“查看最近状态”显示等待、运行、完成或撤销状态；“撤销最近批次新增”需要第二次确认，并且只处理账本记录且身份仍匹配的新条目、新附件和集合成员关系。撤销动作也使用写前检查点；若崩溃使某个动作结果无法确认，重启只会将该对象记为跳过，不会重放删除。
 

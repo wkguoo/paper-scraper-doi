@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 2026-07-18 — A1/A2/A3 + B4/B5 + C6 delivery ladder
+
+- **A1** Merge-safe `结果/` publish: manual/external PDFs survive republish (content-hash dedupe); listed as `外部补入`.
+- **A2** Shared `run_post_download_ladder` on `start` and `retry-failed` (limited OA → zotero_fallback → delivery). Auto Zotero also on `retry-failed` / `recover-oa` (disable with `--no-auto-zotero`).
+- **A3** New CLI `paper_batch.py refresh-delivery --run-dir …` renames `结果/` PDFs, maps failed DOIs, rewrites `下载清单.csv` + `重命名对照表.csv`.
+- **B4** DOI extract keeps balanced `()` and strips markdown `**` (`doi_batch_utils.clean_doi` / `extract_doi_from_text`).
+- **B5** Delivery filename sanitize strips HTML/MathML and tag residues (`iin-situ-i`, `subN-sub`).
+- **C6** IUCr (`10.1107`) short try: circuit trip after 1 browser fail → OA → Zotero (`--no-iucr-short-try` to disable).
+- Tests: `tests/test_batch_optimizations.py` (A1/A3/B5/C6), `tests/test_doi_batch_utils.py` (B4).
+
+## 2026-07-16 — Less-manual batch optimizations (Elsevier unchanged)
+
+- Prefer DOI-only intake: drop Markdown section/note rows by default; optional title inheritance for following DOI lines.
+- DOI preflight **on by default** (`--no-doi-preflight` to skip); fail-open on network errors; severe title/DOI mismatch → `metadata_uncertain`.
+- Failure routing: only DOI-bearing bridge-eligible failures enter `zotero_fallback.csv` (not `metadata_uncertain` / no-DOI noise).
+- Non-Elsevier institutional: skip browser when no adapters match; per-adapter circuit breaker (default 3 consecutive failures); reuse debug browser session.
+- `retry-failed` defaults to network/capture failures only (`--retry-all-failed` for broad mode).
+- Bounded OA recovery only for OA-signal rows; `start` can auto-run recovery before Zotero.
+- Zotero bridge plugin **0.2.0**: auto-confirm by default (`extensions.zoteroPaperDownloadBridge.autoConfirm=false` to restore modal).
+- CLI defaults: auto-Zotero on, `--wait-seconds 600` (use `--no-auto-zotero` / `0` to opt out).
+- ScienceDirect/Elsevier download path intentionally **not** modified.
+- Tests: `Ran 408 ... OK (skipped=2)`; Node bridge runtime 52 pass.
+
 ## v0.2.0 — Zotero 9 bridge and unified batch workflow
 
 Release date: 2026-07-12
@@ -1571,3 +1594,26 @@ Release date: 2026-07-12
 - 如何运行：`\.venv\Scripts\python.exe paper_batch.py start --help`；需要显式浏览器时传入 `--browser-exe "C:\\Path\\to\\chrome.exe"`，或设置 `$env:PAPER_SCRAPER_BROWSER_EXE`。未指定时由 `windows_paths.py` 按上述顺序解析。
 - 如何检查是否成功：`py_compile windows_paths.py paper_automation\\institutional\\browser_session.py sd_institutional_skill.py` 通过；定向测试 `tests.test_windows_paths tests.test_institutional_browser tests.test_batch_workflow` 共 156 项通过、2 项因 Windows 符号链接权限跳过；`git diff --check` 通过；统一入口和两个 ScienceDirect CLI 的帮助文本均显示 Edge→Chrome。完整测试集共 367 项，其中 362 项通过、2 项跳过、3 项因既有 `dist/zotero-test/*.xpi` 违反现有“仓库不应有 XPI”测试约束而失败，非本次 Edge 改动引起。
 - 注意事项或潜在风险：显式浏览器参数始终覆盖自动选择；外部浏览器 profile 和机构会话属于本机凭据状态，不应提交或分享。若要使完整测试集恢复全绿，需要先由用户确认后清理/隔离上述旧 XPI 产物；本次未执行删除操作。
+
+## 2026-07-16 — 减少手动操作的批次优化（Elsevier 不动）
+
+### 变更摘要
+- **A1/B1.1 输入**：默认只保留 DOI 任务；过滤 Markdown 章节/备注；可选题名+DOI 行合并题名。
+- **A4 DOI 预检**：默认开启（`--no-doi-preflight` 关闭）；失败 fail-open；严重题名/DOI 不匹配标 `metadata_uncertain`。
+- **A2/B3.1 失败路由**：仅有 DOI 且可桥接的失败进 Zotero；`metadata_uncertain` 不进桥接。
+- **B2.1**：无适配器条目不启动机构浏览器。
+- **B2.3**：同 adapter 连续失败熔断（默认 3 次）。
+- **B2.4**：仅有 supported 时启动/复用调试浏览器。
+- **A5**：`retry-failed` 默认仅网络/捕获类；`--retry-all-failed` 恢复宽集。
+- **B3.3**：有界 OA 仅对 OA 信号行；`start` 可自动补救。
+- **Zotero**：插件 0.2.0 默认自动确认；CLI 默认 `--auto-zotero` + `--wait-seconds 600`。
+
+### 关键文件
+- `paper_automation/failure_routing.py`（新）
+- `paper_automation/batch_workflow.py` / `batch_stages.py` / `doi_preflight.py` / `oa_recovery.py`
+- `paper_automation/institutional/workflow.py`
+- `paper_batch.py`
+- `zotero_bridge_plugin/*` 0.2.0
+- `skills/paper-download/SKILL.md`, `README.md`, `README_zh.md`
+- `tests/test_failure_routing_and_intake_filters.py`
+

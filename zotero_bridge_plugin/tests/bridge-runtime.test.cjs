@@ -194,6 +194,7 @@ async function makeHarness({
   requests = [],
   confirm = true,
   undoConfirm = true,
+  autoConfirmEnabled = false,
   zoteroOptions = {},
   sharedFiles = null,
   sharedZotero = null,
@@ -351,6 +352,10 @@ async function makeHarness({
   const collections = (zoteroOptions.collections || []).map(value => ({ ...value }));
   let nextItemID = Math.max(1000, ...items.map(item => Number(item.id) || 0)) + 1;
   let nextCollectionID = Math.max(700, ...collections.map(value => Number(value.id) || 0)) + 1;
+  const resolvedZoteroOptions = {
+    autoConfirmEnabled,
+    ...zoteroOptions,
+  };
   const createdZotero = {
     pluginVersion: "0.1.0-test",
     version: "9.0.6-test",
@@ -366,6 +371,16 @@ async function makeHarness({
     removedMemberships: [],
     items,
     collections,
+    // Tests keep the modal path unless explicitly opting into auto-confirm.
+    autoConfirmEnabled() {
+      if (typeof resolvedZoteroOptions.autoConfirmEnabled === "boolean") {
+        return resolvedZoteroOptions.autoConfirmEnabled;
+      }
+      if (typeof resolvedZoteroOptions.autoConfirmEnabled === "function") {
+        return Boolean(resolvedZoteroOptions.autoConfirmEnabled());
+      }
+      return false;
+    },
     getInstanceIdentity() {
       if (zoteroOptions.instanceIdentity) {
         return { ...zoteroOptions.instanceIdentity };
@@ -381,6 +396,9 @@ async function makeHarness({
     },
     async getLibraryName(libraryID) {
       return libraryID === 1 ? "我的文库" : `文库 ${libraryID}`;
+    },
+    log() {
+      // no-op in tests
     },
     reportError(error) {
       errors.push(error);
@@ -654,6 +672,23 @@ test("groups every queued subjob with one run_id into one confirmation", async (
   assert.match(harness.prompt.calls[0].message, /现有附件不会被修改/);
   assert.match(harness.prompt.calls[0].message, /当前打开的这个 Zotero/);
   assert.match(harness.prompt.calls[0].message, /数据目录=/);
+});
+
+test("auto-confirms complete batches without prompting when enabled", async () => {
+  const request = await job({ number: 1 });
+  const harness = await makeHarness({
+    requests: [request],
+    autoConfirmEnabled: true,
+  });
+
+  await harness.runtime.scanNow();
+
+  assert.equal(harness.prompt.calls.length, 0);
+  const resultName = `${request.job_id}.result.json`;
+  const resultPath = [...harness.files.keys()].find(path => path.endsWith(resultName));
+  assert.ok(resultPath, "expected auto-confirmed result file");
+  const result = JSON.parse(harness.files.get(resultPath));
+  assert.equal(result.rows.length, 1);
 });
 
 test("uses only the fixed LocalAppData bridge directories", async () => {

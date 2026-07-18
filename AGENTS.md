@@ -68,6 +68,89 @@ If the available clues match multiple publications and cannot support a unique i
 
 For browser-assisted institutional login, literature retrieval, and paper downloads, use the Chrome browser built into Codex by default. Do not automatically launch Google Chrome, Microsoft Edge, or any other browser in a separate desktop window, and do not automatically read cookies from those desktop browsers. An external desktop browser may be used only after the user explicitly requests or approves it. Preserve `--browser-exe` and `PAPER_SCRAPER_BROWSER_EXE` only as explicit user-controlled overrides for workflows that genuinely require an external browser.
 
+## Batch failure ladder (A1/A2) + IUCr short try (C6)
+
+**Default one-batch ladder** (do not invent extra agent run dirs):
+
+1. Institutional / ScienceDirect stages
+2. Limited OA recovery (`run_post_download_ladder` on `start` **and** `retry-failed`)
+3. `zotero_fallback.csv` + CLI auto Zotero (`--no-auto-zotero` to skip)
+4. Merge-safe publish to `结果/` + `下载清单.csv` (manual drops preserved)
+
+**Fixed run (A1):** prefer `paper_batch.py start --out <parent> --run-name <job>`;
+same input reuses the folder. Use `--fresh` only for a deliberate new batch.
+
+**IUCr (C6):** DOIs `10.1107/*` use **short institutional try** (adapter circuit
+threshold **1** + fewer PDF candidates). After miss → OA once → Zotero. Disable
+with `--no-iucr-short-try`.
+
+**Manual PDF drop (A3):** after placing a file into `结果/`, run:
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py refresh-delivery --run-dir "<run-dir>"
+```
+
+## OA 直下 + Limited OA recovery (unsupported publishers / capture miss)
+
+**Default product rule (do not skip):** when a non-Elsevier item is
+`unsupported_publisher` (no adapter: MDPI/AGU/MSA/SAGE/…) or the adapter returns
+`not_pdf_response` / network capture miss, **try bounded OA HTTP download before
+Zotero**. This is wired into:
+
+1. `paper_automation.institutional.workflow` — after adapter miss/fail, call
+   `recover_oa_limited` (no browser); success → `status=pdf_downloaded`,
+   `adapter=oa_direct`.
+2. `paper_batch` / `run_post_download_ladder` auto OA recovery after download
+   stages — for `unsupported_publisher` / `not_pdf_response` / `pending_zotero`,
+   **always attempt** even without a pre-flagged OA signal; other failure classes
+   still require an OA signal unless the user runs `recover-oa` manually.
+
+**Do not** run multi-source deep search by default (no multi-URL browser CDP,
+no Wayback/CORE/OAI enumeration).
+
+Manual re-run on an existing batch:
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py recover-oa --run-dir "<run-dir>"
+```
+
+Rules for agents and scripts:
+
+1. Prefer project OA (`recover_oa_limited` / `paper_batch.py recover-oa`) over ad-hoc probes.
+2. Per DOI budget defaults to **60 seconds** (institutional inline OA uses ~45s); early-stop on first valid PDF.
+3. Steps only: (0) Crossref/OpenAlex metadata → (1) annotated OA PDF URLs only → (2) **at most one** repository location that already has a `pdf_url`.
+4. **No browser CDP** on the OA path. Do not open SAGE/DOI/repo pages to scrape links.
+5. If OpenAlex points at a repository **landing page without a PDF URL** (metadata-only), record `repo_metadata_only` and stop — do not render JS or guess bitstreams.
+6. Host negative cache: if a host is `CONNECTION_CLOSED` / SSL failure for one DOI, skip that host for sibling DOIs in the same run.
+7. After limited OA fails, keep the prior institutional reason, then use Zotero fallback / institutional VPN — do not invent more sources.
+8. Agents must not treat `unsupported_publisher` as terminal without the OA-direct attempt having run (unless user set `try_oa_direct=False` / disabled auto OA).
+
+## PDF Delivery Naming Rule (mandatory)
+
+Every successfully downloaded PDF must be **named correctly at download/publish time** when it is written into the user-facing delivery `pdfs/` folder. Do not leave intermediate or placeholder names as the delivered file, and do not treat a separate post-batch rename as the normal workflow.
+
+**Required delivery pattern:**
+
+```text
+年份-第一作者姓-题名.pdf
+```
+
+Examples: `2001-Kim-Densification-behavior-of-titanium-alloy-powder.pdf`, `2024-Abedini-Finite-element-modelling-of-ultrasonic-assisted-hot-pressing.pdf`
+
+**Filename sanitize (B5):** strip HTML/MathML tags and residues (`iin-situ-i`,
+`subN-sub`) in `clean_title_for_filename` before writing delivery names.
+
+**DOI intake (B4):** `clean_doi` keeps balanced parentheses in paths
+(e.g. `10.1016/0956-716x(92)90275-j`) and peels trailing markdown (`**`).
+
+Rules:
+
+- Use the shared helper `paper_automation.file_manager.make_pdf_filename()` (and ScienceDirect `make_article_stem` / `_make_pdf_filename`, which follow the same pattern).
+- If the input list lacks year, first author, or a clean title, **resolve metadata by DOI** (Crossref / OpenAlex / publisher page metadata) **before** choosing the delivery filename, then write the PDF under that final name.
+- Forbidden as the final delivery name for successful downloads: `0000-Unknown-...`, `paper-0001.pdf`, raw task IDs, or other placeholders when year/author/title can be resolved.
+- Stage/cache paths may keep temporary names; the copy into delivery `pdfs/` must use the year–author–title name on first successful publish.
+- Agents downloading literature for a user must follow this rule without asking the user to rename files afterward.
+
 ## Security & Configuration Tips
 
 Never commit `cookies.json`, browser cookie exports, downloaded PDFs, or generated result tables. Treat institutional cookies as credentials. Keep sample commands generic and avoid hard-coded local user paths in committed documentation or code.

@@ -215,22 +215,57 @@ def row_value(row: dict[str, object], field: str) -> str:
     return "" if value is None else str(value).strip()
 
 
+# DOI path may include balanced parentheses (old Elsevier). Stop at whitespace /
+# markdown closers; peel trailing junk after match in clean_doi.
+DOI_MATCH_RE = re.compile(r"10\.\d{4,9}/[^\s\]`\"'<>]+", re.I)
+# Trailing markdown/punct that must not remain on a DOI (e.g. ** from **doi**).
+_DOI_TRAILING_JUNK_RE = re.compile(r"[.,;:`\"'\]>*_]+$")
+
+
 def clean_doi(doi: object) -> str:
+    """Normalize a DOI string; keep balanced internal parentheses.
+
+    Strips doi.org prefixes, trailing markdown (``**``, backticks), and extra
+    closing parentheses from surrounding text while preserving real path parens
+    such as ``10.1016/0956-716x(92)90275-j``.
+    """
     value = str(doi or "").strip()
     value = re.sub(r"^(https?://)?(dx\.)?doi\.org/", "", value, flags=re.I)
     value = re.sub(r"^doi\s*:\s*", "", value, flags=re.I)
+    # Cut at hard delimiters that never belong inside a DOI path.
     value = re.split(r"[\]\}\s<>\"']+", value, maxsplit=1)[0]
-    value = value.strip().strip(".,;，。；、")
-    while value.endswith(")") and value.count(")") > value.count("("):
-        value = value[:-1].rstrip().strip(".,;，。；、")
+    # Peel trailing markdown/punct repeatedly; re-balance parentheses each pass.
+    for _ in range(8):
+        nxt = _DOI_TRAILING_JUNK_RE.sub("", value)
+        nxt = nxt.strip().strip(".,;，。；、")
+        while nxt.endswith(")") and nxt.count(")") > nxt.count("("):
+            nxt = nxt[:-1].rstrip().strip(".,;，。；、")
+        while nxt.endswith("(") and nxt.count("(") > nxt.count(")"):
+            nxt = nxt[:-1].rstrip().strip(".,;，。；、")
+        if nxt == value:
+            break
+        value = nxt
+    # Reject obviously truncated open-paren DOI fragments.
+    if re.search(r"\(\d{0,3}$", value) and value.count("(") > value.count(")"):
+        return ""
     return value
 
 
 def extract_doi_from_text(text: object) -> str:
-    match = re.search(r"10\.\d{4,9}/[^\s\"'<>\]\}]+", str(text or ""), flags=re.I)
-    if not match:
-        return ""
-    return clean_doi(match.group(0))
+    raw = str(text or "")
+    # Prefer explicit doi.org / DOI: forms, then bare DOI.
+    for pattern in (
+        re.compile(r"https?://(?:dx\.)?doi\.org/(10\.\d{4,9}/[^\s\]`\"'<>]+)", re.I),
+        re.compile(r"DOI:\s*`?(10\.\d{4,9}/[^`\s]+)`?", re.I),
+        DOI_MATCH_RE,
+    ):
+        match = pattern.search(raw)
+        if match:
+            group = match.group(1) if match.lastindex else match.group(0)
+            cleaned = clean_doi(group)
+            if cleaned:
+                return cleaned
+    return ""
 
 
 def load_doi_records(

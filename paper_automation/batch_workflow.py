@@ -78,6 +78,7 @@ SUCCESS_STATUSES = {
     "institutional_downloaded",
     "zotero_existing_pdf",
     "zotero_downloaded",
+    "manual_imported",
 }
 ZOTERO_RESULT_FIELDS = [
     "task_id",
@@ -843,14 +844,26 @@ def normalize_input(
         email=str(getattr(options, "email", "") or ""),
     )
 
+    from .failure_routing import is_noise_title_line
+    from paper_automation.parser import is_probable_paper_title
+
     rows: list[dict] = []
     seen_dois: set[str] = set()
     seen_titles: set[str] = set()
+    pending_title_for_doi: str = ""
     for intake_row in intake.all_rows:
         raw = asdict(intake_row)
         title = str(raw.get("title", "") or "").strip()
+        raw_value = str(raw.get("raw_value", "") or "").strip()
         intake_status = str(raw.get("status", "") or "").strip().lower()
+        intake_reason = str(raw.get("reason", "") or "").strip()
         if intake_status == "duplicate":
+            continue
+        # B1.1: drop markdown section headers / notes early.
+        display_text = title or raw_value
+        if is_noise_title_line(display_text, intake_reason) and not extract_dois(
+            f"{raw_value} {raw.get('input_doi', '')} {raw.get('doi', '')}"
+        ):
             continue
         extracted_dois: list[str] = []
         source_index = str(raw.get("row_number", "") or "")
@@ -875,24 +888,46 @@ def normalize_input(
                     extracted_dois.append(normalized_doi)
 
         if not extracted_dois:
-            title_key = " ".join(title.lower().split())
-            if title_key and title_key in seen_titles:
+            # A1: default DOI-only intake — drop title-only noise unless title metadata mode.
+            if doi_not_from_column:
+                # Safety audit: DOI appeared outside the DOI column.
+                extracted_dois = [""]
+            elif not resolve_title:
+                # Remember a plausible title so a following DOI-only line can inherit it.
+                if (
+                    title
+                    and is_probable_paper_title(title)
+                    and not is_noise_title_line(title, intake_reason)
+                ):
+                    pending_title_for_doi = title
                 continue
-            if title_key:
-                seen_titles.add(title_key)
-            extracted_dois = [""]
+            else:
+                if not title or is_noise_title_line(title, intake_reason):
+                    continue
+                if intake_reason in {"not_probable_title"} and not is_probable_paper_title(title):
+                    continue
+                title_key = " ".join(title.lower().split())
+                if title_key and title_key in seen_titles:
+                    continue
+                if title_key:
+                    seen_titles.add(title_key)
+                extracted_dois = [""]
+                pending_title_for_doi = ""
 
         for doi in extracted_dois:
             if doi:
                 if doi in seen_dois:
                     continue
                 seen_dois.add(doi)
+                if not title and pending_title_for_doi:
+                    title = pending_title_for_doi
+                    pending_title_for_doi = ""
             is_pending = intake_status == "valid" and bool(doi)
             row = _empty_normalized_row()
             row.update({
                 "source_index": source_index,
                 "input_doi": explicit_doi_cell if explicit_doi_cell else str(raw.get("input_doi", "") or ""),
-                "input_title": str(raw.get("input_title", "") or ""),
+                "input_title": str(raw.get("input_title", "") or "") or title,
                 "doi": doi,
                 "title": title,
                 "authors": str(raw.get("authors", "") or ""),
@@ -953,7 +988,7 @@ def _validate_stage_updates(rows: list[dict], updates: object) -> list[dict]:
     return normalized_updates
 
 
-def _copy_successful_pdf(row: dict, paths: BatchPaths) -> dict:
+def _copy_successful_pdf(row: dict, paths: BatchPaths, *, email: str = "") -> dict:
     status = str(row.get("status", "") or "").strip().lower()
     if status not in _STAGE_SUCCESS_STATUSES:
         return row
@@ -987,8 +1022,11 @@ def _copy_successful_pdf(row: dict, paths: BatchPaths) -> dict:
         result.update(status="not_pdf_response", file="", reason="not_pdf_response")
         return result
     try:
-        # Prefer year_author_title_hash naming at first write (optimization #8).
-        preferred_name = _filename_for_batch_row(row)
+        # Mandatory delivery naming: 年份-作者-题名 at first publish (not a later rename).
+        from .file_manager import enrich_row_metadata_for_delivery
+
+        result = enrich_row_metadata_for_delivery(result, email=email)
+        preferred_name = _filename_for_batch_row(result)
         copied = copy_pdf_safely(source_path, paths.pdfs, preferred_name)
     except (OSError, ValueError) as exc:
         result.update(
@@ -1003,7 +1041,13 @@ def _copy_successful_pdf(row: dict, paths: BatchPaths) -> dict:
     return result
 
 
-def _merge_stage_rows(rows: list[dict], updates: object, paths: BatchPaths) -> list[dict]:
+def _merge_stage_rows(
+    rows: list[dict],
+    updates: object,
+    paths: BatchPaths,
+    *,
+    email: str = "",
+) -> list[dict]:
     normalized_updates = _validate_stage_updates(rows, updates)
     updates_by_id = {update["task_id"]: update for update in normalized_updates}
     merged_rows: list[dict] = []
@@ -1016,7 +1060,7 @@ def _merge_stage_rows(rows: list[dict], updates: object, paths: BatchPaths) -> l
         merged = dict(existing)
         merged.update(update)
         merged["task_id"] = task_id
-        merged_rows.append(_copy_successful_pdf(merged, paths))
+        merged_rows.append(_copy_successful_pdf(merged, paths, email=email))
     return merged_rows
 
 
@@ -1038,8 +1082,9 @@ def _apply_stage_updates(
 
     _validate_state(state, expected_run_dir=paths.root)
     normalized_updates = _validate_stage_updates(state["rows"], updates)
+    email = str((state.get("options") or {}).get("email", "") or "")
     for update in normalized_updates:
-        state["rows"] = _merge_stage_rows(state["rows"], [update], paths)
+        state["rows"] = _merge_stage_rows(state["rows"], [update], paths, email=email)
         save_batch_state(paths, state)
 
 
@@ -1132,6 +1177,8 @@ def _run_gateway_with_state(
 
 
 def _pending_rows(rows: list[dict], *, manual_retry_used: bool) -> tuple[list[dict], list[dict]]:
+    from .failure_routing import is_zotero_eligible
+
     manual_rows: list[dict] = []
     fallback_rows: list[dict] = []
     for row in rows:
@@ -1139,7 +1186,13 @@ def _pending_rows(rows: list[dict], *, manual_retry_used: bool) -> tuple[list[di
             continue
         if not manual_retry_used and _needs_manual_retry(row.get("status", ""), row.get("reason", "")):
             manual_rows.append(row)
-        else:
+            continue
+        # A2/B3.1: only DOI-bearing, bridge-eligible failures enter Zotero fallback.
+        if is_zotero_eligible(
+            row.get("status", ""),
+            row.get("reason", ""),
+            doi=row.get("doi") or row.get("input_doi") or "",
+        ):
             fallback_rows.append(row)
     return manual_rows, fallback_rows
 
@@ -1170,6 +1223,9 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "session_break_seconds",
         "session_break_every",
         "resolve_title_metadata",
+        "circuit_breaker_threshold",
+        "auto_oa_recovery",
+        "iucr_short_try",
     }
     if not isinstance(data, dict):
         raise ValueError("invalid_batch_options")
@@ -1182,6 +1238,9 @@ def _validate_options_data(data: object) -> dict[str, object]:
     payload.setdefault("session_break_seconds", 60.0)
     payload.setdefault("session_break_every", 8)
     payload.setdefault("resolve_title_metadata", False)
+    payload.setdefault("circuit_breaker_threshold", 3)
+    payload.setdefault("auto_oa_recovery", True)
+    payload.setdefault("iucr_short_try", True)
     if set(payload) != expected_fields:
         # Ignore unknown keys from future versions; require all expected after defaults.
         payload = {key: payload[key] for key in expected_fields if key in payload}
@@ -1199,6 +1258,9 @@ def _validate_options_data(data: object) -> dict[str, object]:
                 "session_break_seconds": 60.0,
                 "session_break_every": 8,
                 "resolve_title_metadata": False,
+                "circuit_breaker_threshold": 3,
+                "auto_oa_recovery": True,
+                "iucr_short_try": True,
             }[key])
         if set(payload) != expected_fields:
             raise ValueError("invalid_batch_options")
@@ -1211,6 +1273,8 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "download_supplements",
         "smart_route",
         "resolve_title_metadata",
+        "auto_oa_recovery",
+        "iucr_short_try",
     ):
         if type(payload[flag]) is not bool:
             raise ValueError("invalid_batch_options")
@@ -1250,6 +1314,9 @@ def _validate_options_data(data: object) -> dict[str, object]:
     session_break_every = payload["session_break_every"]
     if type(session_break_every) is not int or session_break_every < 1:
         raise ValueError("invalid_session_break_every")
+    circuit_breaker_threshold = payload["circuit_breaker_threshold"]
+    if type(circuit_breaker_threshold) is not int or circuit_breaker_threshold < 1:
+        raise ValueError("invalid_circuit_breaker_threshold")
     return {
         "email": payload["email"],
         "cookies": cookie_path,
@@ -1263,6 +1330,9 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "session_break_seconds": float(session_break_seconds),
         "session_break_every": session_break_every,
         "resolve_title_metadata": payload["resolve_title_metadata"],
+        "circuit_breaker_threshold": circuit_breaker_threshold,
+        "auto_oa_recovery": payload["auto_oa_recovery"],
+        "iucr_short_try": payload["iucr_short_try"],
     }
 
 
@@ -1525,15 +1595,24 @@ def _filename_for_batch_row(row: dict) -> str:
     return make_pdf_filename(metadata)
 
 
-def _copy_zotero_attachment(row: dict, attachment_path: str, paths: BatchPaths) -> Path:
+def _copy_zotero_attachment(
+    row: dict,
+    attachment_path: str,
+    paths: BatchPaths,
+    *,
+    email: str = "",
+) -> Path:
     source = _local_zotero_attachment(attachment_path)
     source_hash = _sha256(source)
     verified_source = _local_zotero_attachment(attachment_path)
     verified_hash = _sha256(verified_source)
     if source != verified_source or source_hash != verified_hash:
         raise ValueError("zotero_attachment_changed")
+    from .file_manager import enrich_row_metadata_for_delivery
+
+    enriched = enrich_row_metadata_for_delivery(row, email=email)
     safe_filename = _validate_path_component(
-        _filename_for_batch_row(row),
+        _filename_for_batch_row(enriched),
         error="invalid_filename",
     )
     destination = paths.pdfs.expanduser().resolve()
@@ -1620,6 +1699,8 @@ def _source_label_zh(source: object) -> str:
         "non_elsevier": "机构（非Elsevier）",
         "institutional": "机构",
         "zotero": "Zotero",
+        "manual_import": "外部补入",
+        "oa_direct": "开放获取",
     }
     return labels.get(value, str(source or "").strip() or "")
 
@@ -1721,11 +1802,26 @@ def _replace_user_directory(target: Path, staging: Path) -> None:
             backup.unlink(missing_ok=True)
 
 
+def _file_sha256(path: Path, *, chunk: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            block = handle.read(chunk)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
     """Publish the only user-facing deliverables: 下载清单.csv + 结果/.
 
     Internal reports/ and working/ remain for the pipeline; daily use only needs
     these two paths at the run root.
+
+    **A1 merge-safe:** existing PDFs in ``结果/`` that are not produced from
+    current success rows (manual drops / external imports) are preserved by
+    content hash and listed as ``外部补入``.
     """
 
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -1736,6 +1832,17 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
     staging_results.mkdir(parents=True, exist_ok=True)
     inventory_rows: list[dict[str, str]] = []
     used_names: set[str] = set()
+    staged_hashes: set[str] = set()
+
+    delivery_target = paths.root / USER_DELIVERY_DIR_NAME
+    # Snapshot orphans before replace so manual drops survive republish.
+    prior_orphans: list[Path] = []
+    if delivery_target.is_dir():
+        prior_orphans = [
+            p
+            for p in delivery_target.iterdir()
+            if p.is_file() and not p.is_symlink() and p.suffix.lower() == ".pdf"
+        ]
 
     try:
         for index, row in enumerate(rows, start=1):
@@ -1767,6 +1874,10 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
                     used_names.add(preferred.lower())
                     target_pdf = staging_results / preferred
                     shutil.copy2(source_path, target_pdf)
+                    try:
+                        staged_hashes.add(_file_sha256(target_pdf))
+                    except OSError:
+                        pass
                     result_rel = f"{USER_DELIVERY_DIR_NAME}/{preferred}"
 
                     supplement_dirs = _collect_supplement_dirs(row, paths)
@@ -1802,10 +1913,47 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
                 }
             )
 
+        # A1: re-attach orphan PDFs not already staged by content hash.
+        orphan_index = 0
+        for orphan in sorted(prior_orphans, key=lambda p: p.name.lower()):
+            try:
+                digest = _file_sha256(orphan)
+            except OSError:
+                continue
+            if digest in staged_hashes:
+                continue
+            preferred = _safe_delivery_name(orphan.name, fallback=f"external_{orphan_index + 1:04d}.pdf")
+            if not preferred.lower().endswith(".pdf"):
+                preferred = f"{preferred}.pdf"
+            base = preferred
+            counter = 2
+            while preferred.lower() in used_names:
+                preferred = f"{Path(base).stem}_{counter}.pdf"
+                counter += 1
+            used_names.add(preferred.lower())
+            shutil.copy2(orphan, staging_results / preferred)
+            staged_hashes.add(digest)
+            orphan_index += 1
+            inventory_rows.append(
+                {
+                    "序号": str(len(inventory_rows) + 1),
+                    "状态": "外部补入",
+                    "DOI": "",
+                    "题名": Path(preferred).stem,
+                    "作者": "",
+                    "年份": "",
+                    "期刊": "",
+                    "下载来源": "外部补入",
+                    "结果文件": f"{USER_DELIVERY_DIR_NAME}/{preferred}",
+                    "补充材料": "",
+                    "失败原因": "",
+                    "task_id": "",
+                }
+            )
+
         inventory_staging = staging_root / USER_INVENTORY_NAME
         _write_report_csv(inventory_staging, USER_INVENTORY_FIELDS, inventory_rows)
 
-        delivery_target = paths.root / USER_DELIVERY_DIR_NAME
         inventory_target = paths.root / USER_INVENTORY_NAME
         _replace_user_directory(delivery_target, staging_results)
         os.replace(inventory_staging, inventory_target)
@@ -1959,7 +2107,13 @@ def finalize_batch(
                     )
                 else:
                     try:
-                        target = _copy_zotero_attachment(updated, result["attachment_path"], paths)
+                        email = str((state.get("options") or {}).get("email", "") or "")
+                        target = _copy_zotero_attachment(
+                            updated,
+                            result["attachment_path"],
+                            paths,
+                            email=email,
+                        )
                     except (OSError, ValueError) as exc:
                         updated.update(
                             status="not_pdf_response",
@@ -2071,7 +2225,8 @@ class DefaultStageGateway:
             if on_updates is not None:
                 on_updates(stage_updates)
             updates.extend(stage_updates)
-            working = _merge_stage_rows(working, stage_updates, paths)
+            email = str(getattr(options, "email", "") or "")
+            working = _merge_stage_rows(working, stage_updates, paths, email=email)
 
         # ---- Phase 1: Elsevier / ScienceDirect first ----
         elsevier_pending = _pending_from(elsevier_rows)
@@ -2211,6 +2366,68 @@ class DefaultStageGateway:
         return updates
 
 
+def run_post_download_ladder(
+    paths: BatchPaths,
+    state: dict,
+    *,
+    options: Any | None = None,
+    pending_manual_retry_used: bool | None = None,
+) -> BatchRunResult:
+    """A2: after download stages — limited OA recovery → zotero_fallback → delivery.
+
+    Called from ``start_batch`` and ``retry_failed_batch`` so fixed-run continues
+    get the same failure ladder as a fresh start.
+    """
+    selected_options = options or _options_from_state(state)
+    if bool(getattr(selected_options, "auto_oa_recovery", True)):
+        try:
+            from .oa_recovery import run_limited_oa_recovery_on_batch
+
+            recovered = run_limited_oa_recovery_on_batch(
+                paths.root,
+                email=str(getattr(selected_options, "email", "") or ""),
+                require_oa_signal=True,
+            )
+            if recovered:
+                tried = sum(1 for item in recovered if item.status != "skipped")
+                ok = sum(1 for item in recovered if item.status == "oa_downloaded")
+                print(
+                    f"[OA补救/直下] 尝试 {tried} 条（unsupported/not_pdf 必试，其余需 OA 信号）；"
+                    f"成功 {ok}",
+                    flush=True,
+                )
+                with batch_state_lock(paths.root):
+                    state.clear()
+                    state.update(load_batch_state(paths.root))
+        except Exception as exc:
+            print(f"[OA补救] 跳过（{type(exc).__name__}: {exc})", flush=True)
+
+    manual_flag = (
+        bool(state.get("manual_retry_used"))
+        if pending_manual_retry_used is None
+        else pending_manual_retry_used
+    )
+    _write_latest_state_outputs(
+        paths,
+        state,
+        pending_manual_retry_used=manual_flag,
+    )
+    result = _result_from_state(paths, state)
+    print(
+        f"[交付] 请查看: {paths.root}\n"
+        f"  - {paths.root / USER_INVENTORY_NAME}\n"
+        f"  - {paths.root / USER_DELIVERY_DIR_NAME}\\",
+        flush=True,
+    )
+    if result.zotero_fallback_count > 0:
+        print(
+            f"[阶梯] 仍有 {result.zotero_fallback_count} 条可走 Zotero "
+            f"(paper_batch.py zotero --run-dir \"{paths.root}\")",
+            flush=True,
+        )
+    return result
+
+
 def start_batch(
     *,
     input_text: str | None,
@@ -2268,9 +2485,9 @@ def start_batch(
         paths=paths,
         options=selected_options,
     )]
-    # Opt1: DOI preflight is OFF by default (avoids long hangs). Enable with doi_preflight=True.
+    # A4: DOI preflight ON by default (fail-open on network errors).
     if doi_preflight is None:
-        doi_preflight = False
+        doi_preflight = True
     if doi_preflight:
         rows = _apply_doi_preflight(rows, email=str(getattr(selected_options, "email", "") or ""), paths=paths)
     _validate_stage_updates(rows, [])
@@ -2296,19 +2513,13 @@ def start_batch(
         state=state,
         required_ids=set(_required_task_ids(rows)),
     )
-    _write_latest_state_outputs(
+    # A2: institutional → OA recovery → zotero_fallback + delivery.
+    return run_post_download_ladder(
         paths,
         state,
+        options=selected_options,
         pending_manual_retry_used=bool(state.get("manual_retry_used")),
     )
-    result = _result_from_state(paths, state)
-    print(
-        f"[交付] 请查看: {paths.root}\n"
-        f"  - {paths.root / USER_INVENTORY_NAME}\n"
-        f"  - {paths.root / USER_DELIVERY_DIR_NAME}\\",
-        flush=True,
-    )
-    return result
 
 
 def retry_failed_batch(
@@ -2317,11 +2528,15 @@ def retry_failed_batch(
     gateway=None,
     options: Any | None = None,
     skip_oa: bool = True,
+    retry_all: bool = False,
 ) -> BatchRunResult:
     """Re-run unresolved rows in an existing batch (same run-dir; optimization #5).
 
-    By default skips OA and only re-runs institutional stages for non-terminal rows.
+    By default skips OA and only re-runs institutional stages for network-class
+    failures (A5). Use retry_all=True to restore the previous broader set.
     """
+
+    from .failure_routing import is_retry_eligible
 
     paths = _paths_from_run_dir(run_dir)
     with batch_state_lock(paths.root):
@@ -2331,8 +2546,14 @@ def retry_failed_batch(
         if options is not None:
             state["options"] = _serialize_options(selected_options)
         failed_rows = [
-            row for row in state["rows"]
+            row
+            for row in state["rows"]
             if not _is_terminal_status(row.get("status", ""))
+            and is_retry_eligible(
+                row.get("status", ""),
+                row.get("reason", ""),
+                retry_all=retry_all,
+            )
         ]
         if not failed_rows:
             return _result_from_state(paths, state)
@@ -2372,12 +2593,14 @@ def retry_failed_batch(
         state=state,
         required_ids=retry_ids,
     )
-    _write_latest_state_outputs(
+    # A2: even institutional-only retries still run limited OA (unsupported/not_pdf)
+    # then rebuild zotero_fallback + delivery package.
+    return run_post_download_ladder(
         paths,
         state,
+        options=selected_options,
         pending_manual_retry_used=bool(state.get("manual_retry_used")),
     )
-    return _result_from_state(paths, state)
 
 
 def _apply_doi_preflight(rows: list[dict], *, email: str, paths: BatchPaths) -> list[dict]:
