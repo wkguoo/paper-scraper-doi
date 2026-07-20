@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-07-21 — MDPI gold-OA download (Akamai interstitial)
+
+- **OA downloader**: for MDPI (`mdpi.com` / `10.3390/`), use `curl_cffi` Chrome TLS impersonation, browser-like `Referer`, URL variants (strip `version=`, article `/pdf` paths), and solve Akamai interstitial (`bm-verify` + trivial JS `pow`) before re-fetching the PDF.
+- **Institutional**: add `MdpiAdapter` so MDPI is no longer `unsupported_publisher`; browser capture candidates include `/doi/pdf/{doi}` and journal-path `/pdf`.
+- Live check: three previously 403/no_pdf DOIs (`ma15051696`, `met12071089`, `met14090991`) now download as valid PDFs via OA client.
+- Tests: `MetadataAndPdfTests.test_mdpi_url_variants_and_referer`, `test_mdpi_adapter_matches_and_candidates`.
+
 ## 2026-07-18 — A1/A2/A3 + B4/B5 + C6 delivery ladder
 
 - **A1** Merge-safe `结果/` publish: manual/external PDFs survive republish (content-hash dedupe); listed as `外部补入`.

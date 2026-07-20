@@ -9,6 +9,7 @@ from .adapters import (
     IeeeAdapter,
     IopAdapter,
     IucrAdapter,
+    MdpiAdapter,
     MrsAdapter,
     RscAdapter,
     SpringerNatureAdapter,
@@ -36,6 +37,8 @@ ADAPTERS = (
     IeeeAdapter(),
     RscAdapter(),
     IopAdapter(),
+    # Gold-OA MDPI: often 403 on plain HTTP; adapter enables browser capture candidates.
+    MdpiAdapter(),
 )
 
 

@@ -187,6 +187,67 @@ class WileyAdapter(DirectDoiPdfAdapter):
         )
 
 
+class MdpiAdapter(DirectDoiPdfAdapter):
+    """MDPI gold-OA journals (Materials, Metals, ...).
+
+    Direct PDF URLs are public but often return HTTP 403 to plain clients.
+    Prefer browser capture via institutional session; candidates include
+    /doi/pdf/{doi} and journal path /pdf forms.
+    """
+
+    name = "mdpi"
+    doi_prefixes = ("10.3390/",)
+    publisher_terms = ("mdpi", "multidisciplinary digital publishing institute")
+    hosts = ("mdpi.com", "www.mdpi.com")
+
+    def _direct_pdf_candidates(
+        self,
+        paper: InstitutionalPaper,
+        landing: PageSnapshot,
+    ) -> tuple[PdfUrlCandidate, ...]:
+        doi = (paper.doi or "").strip()
+        if not doi:
+            return ()
+        doi = doi if doi.lower().startswith("10.") else doi
+        candidates: list[PdfUrlCandidate] = [
+            PdfUrlCandidate(
+                "mdpi_doi_pdf",
+                f"https://www.mdpi.com/doi/pdf/{doi}",
+                PDF_FETCH_PATTERNS + ("*doi/pdf*", "*mdpi.com*"),
+            ),
+            PdfUrlCandidate(
+                "mdpi_doi_pdf_download",
+                f"https://www.mdpi.com/doi/pdf/{doi}?download=1",
+                PDF_FETCH_PATTERNS + ("*doi/pdf*", "*mdpi.com*"),
+            ),
+        ]
+        base = landing.final_url or landing.requested_url or paper.landing_url or ""
+        # https://www.mdpi.com/1996-1944/15/5/1696  ->  .../pdf
+        m = re.search(
+            r"https?://(?:www\.)?mdpi\.com/(\d{4}-\d{4})/(\d+)/(\d+)/(\d+)",
+            base,
+            flags=re.I,
+        )
+        if m:
+            issn, vol, issue, art = m.groups()
+            path_pdf = f"https://www.mdpi.com/{issn}/{vol}/{issue}/{art}/pdf"
+            candidates.append(
+                PdfUrlCandidate(
+                    "mdpi_article_pdf",
+                    path_pdf,
+                    PDF_FETCH_PATTERNS + ("*mdpi.com*", "*pdf*"),
+                )
+            )
+            candidates.append(
+                PdfUrlCandidate(
+                    "mdpi_article_pdf_download",
+                    path_pdf + "?download=1",
+                    PDF_FETCH_PATTERNS + ("*mdpi.com*", "*pdf*"),
+                )
+            )
+        return tuple(candidates)
+
+
 class IeeeAdapter(DirectDoiPdfAdapter):
     name = "ieee"
     doi_prefixes = ("10.1109/",)

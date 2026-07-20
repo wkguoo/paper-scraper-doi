@@ -672,6 +672,103 @@ class MetadataAndPdfTests(unittest.TestCase):
         self.assertEqual(result.status, "downloaded")
         self.assertIn("Mozilla/5.0", captured_headers.get("User-Agent", ""))
 
+    def test_mdpi_url_variants_and_referer(self) -> None:
+        from paper_automation.downloader import (
+            expand_download_urls,
+            headers_for_url,
+            mdpi_url_variants,
+            download_pdf,
+            _looks_like_mdpi_interstitial,
+            _solve_mdpi_interstitial,
+        )
+        from paper_automation.models import DownloadResponse, PdfCandidate
+
+        versioned = "https://www.mdpi.com/1996-1944/15/5/1696/pdf?version=1645701257"
+        variants = mdpi_url_variants(versioned)
+        self.assertTrue(any(v.endswith("/pdf") and "version=" not in v for v in variants))
+        expanded = expand_download_urls(versioned)
+        self.assertEqual(expanded[0], versioned)
+        self.assertTrue(any("version=" not in u for u in expanded[1:]))
+
+        hdrs = headers_for_url("https://www.mdpi.com/doi/pdf/10.3390/ma15051696")
+        self.assertIn("mdpi.com", hdrs.get("Referer", ""))
+        self.assertIn("10.3390/ma15051696", hdrs.get("Referer", ""))
+
+        calls: list[str] = []
+
+        def fake_getter(url: str, headers: dict[str, str] | None = None, timeout: int = 30) -> DownloadResponse:
+            calls.append(url)
+            if "version=" in url:
+                raise RuntimeError("HTTP Error 403: Forbidden")
+            return DownloadResponse(b"%PDF-1.7\nok\n%%EOF\n", "application/pdf", url)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = download_pdf(
+                PdfCandidate(url=versioned, source="openalex"),
+                Path(tmp) / "paper.pdf",
+                http_bytes=fake_getter,
+                retries=0,
+                delay_seconds=0,
+            )
+        self.assertEqual(result.status, "downloaded")
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertTrue(any("version=" not in u for u in calls[1:]))
+
+        interstitial = (
+            '<html><script> var i = 10; var j = i + Number("1" + "2"); </script>'
+            '<iframe src="/akamai/interstitial.html"></iframe>'
+            '<script>xhr.send(JSON.stringify({"bm-verify": "TOKEN", "pow": j}));</script></html>'
+        )
+        self.assertTrue(_looks_like_mdpi_interstitial(interstitial))
+
+        class _FakeSession:
+            def __init__(self) -> None:
+                self.posted = None
+
+            def post(self, url: str, headers=None, data=None, timeout=30):  # type: ignore[no-untyped-def]
+                self.posted = json.loads(data)
+                return type("R", (), {"status_code": 200, "text": '{"reload": true}'})()
+
+        sess = _FakeSession()
+        self.assertTrue(
+            _solve_mdpi_interstitial(
+                sess,
+                "https://www.mdpi.com/1996-1944/15/5/1696/pdf",
+                {},
+                interstitial,
+                30,
+            )
+        )
+        self.assertEqual(sess.posted["bm-verify"], "TOKEN")
+        self.assertEqual(sess.posted["pow"], 10 + 12)
+
+    def test_mdpi_adapter_matches_and_candidates(self) -> None:
+        from paper_automation.institutional.adapters import MdpiAdapter
+        from paper_automation.institutional.models import InstitutionalPaper, PageSnapshot
+        from paper_automation.institutional.registry import select_adapter
+
+        paper = InstitutionalPaper(
+            row_number=1,
+            input_doi="10.3390/ma15051696",
+            doi="10.3390/ma15051696",
+            title="test",
+            publisher="MDPI AG",
+            landing_url="https://www.mdpi.com/1996-1944/15/5/1696",
+        )
+        adapter = select_adapter(paper)
+        self.assertIsNotNone(adapter)
+        self.assertEqual(adapter.name, "mdpi")
+        landing = PageSnapshot(
+            requested_url=paper.landing_url,
+            final_url=paper.landing_url,
+            html="<html></html>",
+            text="",
+        )
+        cands = MdpiAdapter().build_pdf_candidates(paper, landing)
+        urls = [c.url for c in cands]
+        self.assertTrue(any("/doi/pdf/10.3390/ma15051696" in u for u in urls))
+        self.assertTrue(any("/1996-1944/15/5/1696/pdf" in u for u in urls))
+
     def test_pdf_validation_requires_header_and_eof(self) -> None:
         from paper_automation.pdf_validation import is_pdf_bytes, is_valid_pdf, minimal_pdf_bytes
 
