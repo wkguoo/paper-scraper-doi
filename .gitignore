@@ -43,8 +43,24 @@ informs_result/
 pdfs/
 *.csv
 *.xlsx
-*.json
 repomix-output.*
+
+# Runtime state and caches (keep source/package JSON trackable)
+**/working/batch_state.json
+**/working/metadata_cache.jsonl
+**/working/metadata_cache.jsonl.lock
+**/working/delivery_owned.json
+**/working/delivery_pdf_validation_failures.jsonl
+**/plugin-state.json
+**/*.progress.json
+**/*.collection.json
+**/*.cancelled.json
+**/*.result.json
+
+# Plugin manifests/package metadata are source files, never runtime output.
+!zotero_bridge_plugin/manifest.json
+!zotero_bridge_plugin/package.json
+!zotero_bridge_plugin/package-lock.json
 
 # Local build / debug artifacts (XPI builds, Zotero test logs, share zips)
 output/

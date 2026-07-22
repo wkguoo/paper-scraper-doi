@@ -115,9 +115,9 @@ Markdown is fine, but by default only explicit DOIs become tasks.
 Default path: DOI preflight → OA (gold / OA-signal only) → institutional access →
 bounded OA recovery for OA-signal failures → **DOI-bearing failures go to
 `zotero_fallback.csv`** (no `resume` gate). `start` **auto-queues** Zotero and
-waits (default `--wait-seconds 600`). Keep Zotero open with bridge plugin
-**0.2.0+** (auto-confirm by default; no modal). Exit code 3 means still waiting
-for the plugin; after it finishes, rerun only if needed:
+returns immediately (default `--wait-seconds 0`). Keep Zotero open with bridge
+plugin **0.2.0+**. Exit code 3 means the job is queued; after the plugin
+finishes, rerun only the same command:
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
@@ -126,6 +126,17 @@ for the plugin; after it finishes, rerun only if needed:
 Optional: `--wait-seconds N` on `start` to poll in-process; `--no-auto-zotero`
 to queue later; `--enable-manual-retry` for the legacy one-shot login/CAPTCHA
 path (then `resume` once if `manual_retry.csv` has rows).
+
+Read batch progress without changing state:
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py status --run-dir "<run-dir>"
+.\.venv\Scripts\python.exe paper_batch.py status --run-dir "<run-dir>" --json
+```
+
+New batches use a dynamic debugging port and a controlled shared institutional
+browser profile. Reuse requires matching PID, executable, profile, port, and
+DevTools browser ID; an unknown process on an explicit port is never attached.
 
 Final PDFs are in `pdfs\`, reports are in `reports\`, and handoff files remain
 in `working\`. See the
@@ -157,6 +168,24 @@ Legacy ScienceDirect-only runs may still create folders with reports such as:
 - `pdfs\`
 - `supplements\`
 
+## Recovery and trusted delivery
+
+Unified batches keep optional attempt leases in `working\batch_state.json`.
+Each active attempt has a five-minute lease with periodic renewal. A second
+process receives `batch_attempt_in_progress`; expired attempts are reclaimed,
+and late writes from an old attempt are rejected as `attempt_lease_lost`.
+
+Crossref, OpenAlex, Unpaywall, and Semantic Scholar lookups share
+`working\metadata_cache.jsonl`. Successful and not-found lookups live for 30
+days; transient failures live for five minutes. DOI-only input is cleaned
+locally without a preflight network requirement.
+
+PDFs and supplements use bounded streaming publication: 256 MB for article
+PDFs, 2 GB for supplements, and 8 MB for metadata JSON. Same-name different
+content is never overwritten. At final delivery, program-owned PDFs must also
+open with `pypdf` and contain at least one page; failures become
+`not_pdf_response`. Manually added PDFs are preserved.
+
 ## Security Notes
 
 Treat institutional cookies and browser session state as credentials.
@@ -178,9 +207,15 @@ git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist
 Run the offline checks before committing Python or workflow changes:
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
+.\.venv\Scripts\python.exe -m compileall paper_batch.py paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
+$env:PYTHONPATH = (Resolve-Path -LiteralPath ".\tests").Path
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+node --test .\zotero_bridge_plugin\tests\*.test.cjs
 ```
+
+Offline tests block unmocked public sockets while allowing loopback. Windows CI
+uses Node 24 for all 65 plugin tests and validates an XPI only in a temporary CI
+directory; local validation does not replace anything under `dist\`.
 
 Manual checks that require real institutional login, CAPTCHA, or PDF access are documented in [MANUAL_QA.md](MANUAL_QA.md).
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import sys
 import tempfile
@@ -13,6 +14,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _one_page_pdf(label: str) -> bytes:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_metadata({"/Subject": label})
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 class OfflineBatchGateway:
@@ -102,10 +114,10 @@ class ZoteroBridgeIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project_pdf = root / "project-source.pdf"
-            project_payload = b"%PDF-1.7\nproject integration fixture\n%%EOF\n"
+            project_payload = _one_page_pdf("project integration fixture")
             project_pdf.write_bytes(project_payload)
             zotero_pdf = root / "zotero-source.pdf"
-            zotero_payload = b"%PDF-1.7\nzotero integration fixture\n%%EOF\n"
+            zotero_payload = _one_page_pdf("zotero integration fixture")
             zotero_pdf.write_bytes(zotero_payload)
             source_bytes = {
                 project_pdf: project_pdf.read_bytes(),

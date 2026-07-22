@@ -4,13 +4,19 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, urljoin
 from urllib.request import Request, urlopen
 
 from .models import DownloadResponse, DownloadResult, PdfCandidate
 from .pdf_validation import is_pdf_bytes, is_valid_pdf
+from .artifact_store import (
+    DEFAULT_PDF_MAX_BYTES,
+    STREAM_CHUNK_SIZE,
+    publish_pdf_bytes_atomic,
+    publish_pdf_stream_atomic,
+)
 
 
 BytesGetter = Callable[[str, dict[str, str] | None, int], DownloadResponse]
@@ -42,18 +48,13 @@ def download_pdf(
     retries: int = 2,
     timeout: int = 30,
     delay_seconds: float = 1.0,
+    max_bytes: int = DEFAULT_PDF_MAX_BYTES,
 ) -> DownloadResult:
     target = Path(path)
     if target.exists() and not overwrite:
         if is_valid_pdf(target):
             return DownloadResult("skipped", str(target), "file_exists")
-        # Corrupt / HTML leftovers must not block a real download.
-        try:
-            target.unlink()
-        except OSError:
-            return DownloadResult("failed", "", "invalid_existing_pdf")
 
-    getter = http_bytes or get_bytes
     urls = expand_download_urls(candidate.url)
     last_error = ""
     for url in urls:
@@ -62,7 +63,16 @@ def download_pdf(
             if attempt:
                 time.sleep(delay_seconds)
             try:
-                response = getter(url, headers, timeout)
+                if http_bytes is None:
+                    published = _download_pdf_stream(
+                        url,
+                        headers,
+                        timeout,
+                        target,
+                        max_bytes=max_bytes,
+                    )
+                    return DownloadResult("downloaded", str(published), "")
+                response = http_bytes(url, headers, timeout)
             except Exception as exc:
                 last_error = str(exc)
                 # Try next URL form on hard client/server blocks.
@@ -70,15 +80,154 @@ def download_pdf(
                     break
                 continue
             if _is_pdf_response(response):
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(response.content)
-                return DownloadResult("downloaded", str(target), "")
+                try:
+                    published = publish_pdf_bytes_atomic(
+                        response.content,
+                        target.parent,
+                        target.name,
+                        max_bytes=max_bytes,
+                    )
+                except (OSError, ValueError) as exc:
+                    last_error = str(exc) or type(exc).__name__
+                    continue
+                return DownloadResult("downloaded", str(published), "")
             last_error = "response_not_pdf"
             # Non-PDF body on MDPI often means bot HTML; try next variant.
             if is_mdpi_url(url):
                 break
 
     return DownloadResult("failed", "", last_error or "download_failed")
+
+
+def _download_pdf_stream(
+    url: str,
+    headers: dict[str, str],
+    timeout: int,
+    target: Path,
+    *,
+    max_bytes: int,
+) -> Path:
+    if is_mdpi_url(url) or _doi_from_url(url).startswith(_DOI_PREFIX_MDPI):
+        try:
+            return _download_pdf_stream_mdpi(
+                url,
+                headers,
+                timeout,
+                target,
+                max_bytes=max_bytes,
+            )
+        except (ImportError, ModuleNotFoundError):
+            pass
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=timeout) as response:
+        content_length = _content_length(response.headers)
+        return publish_pdf_stream_atomic(
+            _iter_reader(response),
+            target.parent,
+            target.name,
+            content_length=content_length,
+            max_bytes=max_bytes,
+        )
+
+
+def _download_pdf_stream_mdpi(
+    url: str,
+    headers: dict[str, str],
+    timeout: int,
+    target: Path,
+    *,
+    max_bytes: int,
+) -> Path:
+    from curl_cffi import requests as cf_requests  # type: ignore
+
+    session = cf_requests.Session(impersonate="chrome124")
+    response = session.get(
+        url,
+        headers=headers,
+        timeout=timeout,
+        allow_redirects=True,
+        stream=True,
+    )
+    try:
+        if response.status_code >= 400:
+            raise URLError(f"HTTP Error {response.status_code}")
+        iterator = iter(response.iter_content(chunk_size=STREAM_CHUNK_SIZE))
+        first = next(iterator, b"") or b""
+        if bytes(first).lstrip().startswith(b"%PDF-"):
+            return publish_pdf_stream_atomic(
+                _prepend_chunk(bytes(first), iterator),
+                target.parent,
+                target.name,
+                content_length=_content_length(response.headers),
+                max_bytes=max_bytes,
+            )
+
+        # MDPI's Akamai challenge is small HTML.  Keep only this non-PDF body
+        # bounded; successful PDFs never become one in-memory bytes object.
+        html_limit = min(max_bytes, 2 * 1024 * 1024)
+        body = bytearray(first)
+        for chunk in iterator:
+            body.extend(chunk or b"")
+            if len(body) > html_limit:
+                raise ValueError("not_pdf_response")
+        text = bytes(body).decode("utf-8", errors="replace")
+        if not _looks_like_mdpi_interstitial(text) or not _solve_mdpi_interstitial(
+            session, url, headers, text, timeout
+        ):
+            raise ValueError("not_pdf_response")
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
+    retry = session.get(
+        url,
+        headers=headers,
+        timeout=timeout,
+        allow_redirects=True,
+        stream=True,
+    )
+    try:
+        if retry.status_code >= 400:
+            raise URLError(f"HTTP Error {retry.status_code}")
+        return publish_pdf_stream_atomic(
+            retry.iter_content(chunk_size=STREAM_CHUNK_SIZE),
+            target.parent,
+            target.name,
+            content_length=_content_length(retry.headers),
+            max_bytes=max_bytes,
+        )
+    finally:
+        close = getattr(retry, "close", None)
+        if callable(close):
+            close()
+
+
+def _iter_reader(response) -> Iterator[bytes]:
+    while True:
+        chunk = response.read(STREAM_CHUNK_SIZE)
+        if not chunk:
+            return
+        yield chunk
+
+
+def _prepend_chunk(first: bytes, remainder) -> Iterator[bytes]:
+    if first:
+        yield first
+    yield from remainder
+
+
+def _content_length(headers: object) -> int | None:
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return None
+    value = getter("Content-Length") or getter("content-length")
+    if value in {None, ""}:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def expand_download_urls(url: str) -> list[str]:
@@ -200,9 +349,14 @@ def get_bytes(url: str, headers: dict[str, str] | None = None, timeout: int = 30
 def _get_bytes_urllib(url: str, headers: dict[str, str], timeout: int) -> DownloadResponse:
     request = Request(url, headers=headers)
     with urlopen(request, timeout=timeout) as response:
-        content = response.read()
+        declared = _content_length(response.headers)
+        if declared is not None and declared > DEFAULT_PDF_MAX_BYTES:
+            raise ValueError("response_too_large")
+        content = response.read(DEFAULT_PDF_MAX_BYTES + 1)
         content_type = response.headers.get("Content-Type", "")
         final_url = response.geturl()
+    if len(content) > DEFAULT_PDF_MAX_BYTES:
+        raise ValueError("response_too_large")
     return DownloadResponse(content, content_type, final_url)
 
 
@@ -215,6 +369,8 @@ def _get_bytes_mdpi_session(url: str, headers: dict[str, str], timeout: int) -> 
     if response.status_code >= 400:
         raise URLError(f"HTTP Error {response.status_code}")
     content = response.content or b""
+    if len(content) > DEFAULT_PDF_MAX_BYTES:
+        raise ValueError("response_too_large")
     content_type = str(response.headers.get("Content-Type") or "")
     final_url = str(getattr(response, "url", "") or url)
 
@@ -233,6 +389,8 @@ def _get_bytes_mdpi_session(url: str, headers: dict[str, str], timeout: int) -> 
             if response2.status_code >= 400:
                 raise URLError(f"HTTP Error {response2.status_code}")
             content2 = response2.content or b""
+            if len(content2) > DEFAULT_PDF_MAX_BYTES:
+                raise ValueError("response_too_large")
             ctype2 = str(response2.headers.get("Content-Type") or "")
             final2 = str(getattr(response2, "url", "") or url)
             return DownloadResponse(content2, ctype2, final2)

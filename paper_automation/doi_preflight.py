@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from doi_batch_utils import clean_doi
 
@@ -25,13 +26,18 @@ def preflight_rows(
     email: str = "",
     min_title_similarity: float = 0.72,
     resolver: MetadataResolver | None = None,
+    cache_path: str | Path | None = None,
 ) -> tuple[list[dict], list[PreflightChange]]:
     """Validate/correct DOIs in-place for pending rows.
 
     Returns (rows, changes). Non-pending rows are left untouched.
     """
 
-    metadata_resolver = resolver or MetadataResolver(email=email, timeout=8)
+    metadata_resolver = resolver or MetadataResolver(
+        email=email,
+        timeout=8,
+        cache_path=cache_path,
+    )
     changes: list[PreflightChange] = []
     for row in rows:
         if str(row.get("status", "")).strip().lower() != "pending":
@@ -43,6 +49,11 @@ def preflight_rows(
         journal = str(row.get("journal", "") or "").strip()
 
         if old_doi:
+            row["doi"] = old_doi
+            if not _has_independent_title(title, old_doi):
+                # A DOI-only input is already a bounded identifier.  Do not turn
+                # an optional metadata enrichment into a network precondition.
+                continue
             fixed = _validate_or_rematch(
                 metadata_resolver,
                 doi=old_doi,
@@ -66,6 +77,11 @@ def preflight_rows(
                 )
                 continue
             new_doi, detail, meta = fixed
+            if detail.startswith("lookup_deferred_"):
+                existing = str(row.get("reason", "") or "")
+                marker = f"doi_preflight_{detail}"
+                row["reason"] = f"{existing};{marker}".strip(";")
+                continue
             if title and getattr(meta, "title", None):
                 sim = title_similarity(title, str(meta.title or ""))
                 if sim < 0.45 and "rematch" not in detail and "title_rematch" not in detail:
@@ -149,7 +165,15 @@ def _validate_or_rematch(
         doi=doi,
     )
     by_doi = resolver.resolve_one(candidate)
-    resolved_doi = clean_doi(by_doi.doi or "").lower()
+    doi_metadata_found = bool(
+        getattr(by_doi, "crossref", None)
+        or getattr(by_doi, "openalex", None)
+        or getattr(by_doi, "unpaywall", None)
+    )
+    deferred = _transient_lookup_status(by_doi)
+    if deferred and not doi_metadata_found:
+        return doi, f"lookup_deferred_{deferred}", by_doi
+    resolved_doi = clean_doi(by_doi.doi or "").lower() if doi_metadata_found else ""
     if resolved_doi and (not title or not by_doi.title):
         return resolved_doi, "enriched_from_doi", by_doi
     if resolved_doi and title and by_doi.title:
@@ -169,6 +193,12 @@ def _validate_or_rematch(
         doi="",
     )
     by_title = resolver.resolve_one(title_candidate)
+    title_metadata_found = bool(
+        getattr(by_title, "crossref", None) or getattr(by_title, "openalex", None)
+    )
+    title_deferred = _transient_lookup_status(by_title)
+    if title_deferred and not title_metadata_found and not resolved_doi:
+        return doi, f"lookup_deferred_{title_deferred}", by_doi
     new_doi = clean_doi(by_title.doi or "").lower()
     if not new_doi:
         return (resolved_doi, "doi_keep_unverified", by_doi) if resolved_doi else None
@@ -178,6 +208,30 @@ def _validate_or_rematch(
     if new_doi != doi:
         return new_doi, f"title_rematch sim={sim:.2f} conf={by_title.confidence:.2f}", by_title
     return new_doi, f"doi_confirmed sim={sim:.2f}", by_title
+
+
+def _has_independent_title(title: str, doi: str) -> bool:
+    value = str(title or "").strip()
+    if not value:
+        return False
+    lowered = value.lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi:", "doi "):
+        if lowered.startswith(prefix):
+            lowered = lowered[len(prefix):].strip()
+            break
+    return lowered.rstrip(".,; ") != doi.lower()
+
+
+def _transient_lookup_status(meta: object) -> str:
+    outcomes = getattr(meta, "lookup_outcomes", None) or {}
+    statuses = [
+        str(getattr(outcome, "status", "") or "")
+        for outcome in outcomes.values()
+    ]
+    for status in ("timeout", "rate_limited", "network_error", "invalid_response"):
+        if status in statuses:
+            return status
+    return ""
 
 
 def _apply_metadata(row: dict, meta: object, doi: str) -> None:

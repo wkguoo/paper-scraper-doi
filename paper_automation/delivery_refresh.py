@@ -18,6 +18,7 @@ from .batch_workflow import (
     paths_from_run_dir,
     publish_user_delivery,
     save_batch_state,
+    _revalidate_success_rows,
 )
 from .file_manager import clean_title_for_filename, make_pdf_filename, sanitize_filename
 from .models import MetadataResult
@@ -100,7 +101,12 @@ def _guess_meta_from_stem(stem: str) -> tuple[str, str, str]:
     return year, parts[0], parts[1].replace("-", " ")
 
 
-def _lookup_crossref(doi: str, *, email: str = "") -> dict[str, str]:
+def _lookup_crossref(
+    doi: str,
+    *,
+    email: str = "",
+    metadata_cache_path: str | Path | None = None,
+) -> dict[str, str]:
     doi = clean_doi(doi)
     if not doi:
         return {}
@@ -108,7 +114,7 @@ def _lookup_crossref(doi: str, *, email: str = "") -> dict[str, str]:
         from .metadata_resolver import MetadataResolver
         from .models import PaperCandidate
 
-        meta = MetadataResolver(email=email).resolve_one(
+        meta = MetadataResolver(email=email, cache_path=metadata_cache_path).resolve_one(
             PaperCandidate(source_index=0, raw_text=doi, doi=doi, title="")
         )
     except Exception:
@@ -214,7 +220,11 @@ def refresh_delivery(
                     pdf.read_bytes()[: 512 * 1024]
                 )
                 if doi:
-                    meta = _lookup_crossref(doi, email=email)
+                    meta = _lookup_crossref(
+                        doi,
+                        email=email,
+                        metadata_cache_path=paths.working / "metadata_cache.jsonl",
+                    )
                     if meta:
                         doi = meta.get("doi") or doi
                         year = meta.get("year") or ""
@@ -320,7 +330,9 @@ def refresh_delivery(
     # Rebuild delivery from state (merge-safe: preserves remaining orphans).
     with batch_state_lock(paths.root):
         state = load_batch_state(paths.root)
+        _revalidate_success_rows(paths, state["rows"])
         inventory_path = publish_user_delivery(paths, state["rows"])
+        save_batch_state(paths, state)
 
     map_path = paths.root / RENAME_MAP_NAME
     _write_csv(map_path, RENAME_MAP_FIELDS, rename_log)

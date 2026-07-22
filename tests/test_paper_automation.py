@@ -610,6 +610,8 @@ class MetadataAndPdfTests(unittest.TestCase):
         self.assertEqual(result.reason, "response_not_pdf")
 
     def test_downloader_redownloads_when_existing_file_is_invalid(self) -> None:
+        import hashlib
+
         from paper_automation.downloader import download_pdf
         from paper_automation.models import DownloadResponse, PdfCandidate
 
@@ -632,7 +634,11 @@ class MetadataAndPdfTests(unittest.TestCase):
                 delay_seconds=0,
             )
             self.assertEqual(result.status, "downloaded")
-            self.assertEqual(target.read_bytes(), valid)
+            published = Path(result.file)
+            self.assertEqual(target.read_bytes(), b"NOT_A_PDF_JUST_GARBAGE")
+            self.assertNotEqual(published, target)
+            self.assertEqual(published.read_bytes(), valid)
+            self.assertIn(hashlib.sha256(valid).hexdigest()[:8], published.stem)
             self.assertEqual(calls["n"], 1)
 
     def test_downloader_skips_valid_existing_pdf(self) -> None:

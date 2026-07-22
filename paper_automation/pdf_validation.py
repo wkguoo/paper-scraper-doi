@@ -50,6 +50,31 @@ def is_valid_pdf(path: str | Path, minimum_size: int = DEFAULT_MINIMUM_SIZE) -> 
         return False
 
 
+def validate_pdf_with_parser(path: str | Path) -> tuple[bool, str]:
+    """Open an immutable PDF snapshot with pypdf and require at least one page."""
+
+    target = Path(path)
+    if not is_valid_pdf(target):
+        return False, "structural_validation_failed"
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(target), strict=False)
+        if reader.is_encrypted:
+            try:
+                unlocked = reader.decrypt("")
+            except Exception as exc:
+                return False, f"encrypted_pdf_{type(exc).__name__}"
+            if not unlocked:
+                return False, "encrypted_pdf_password_required"
+        page_count = len(reader.pages)
+    except Exception as exc:
+        return False, f"parser_{type(exc).__name__}:{str(exc)[:240]}"
+    if page_count <= 0:
+        return False, "pdf_has_no_pages"
+    return True, ""
+
+
 def minimal_pdf_bytes(payload: bytes = b"fixture") -> bytes:
     """Build a tiny byte string accepted by :func:`is_pdf_bytes` (for tests/fixtures)."""
     body = bytes(payload or b"fixture")

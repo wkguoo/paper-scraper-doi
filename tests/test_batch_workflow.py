@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import json
 import multiprocessing
 import os
@@ -17,6 +18,17 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _real_pdf_bytes(label: str = "fixture") -> bytes:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_metadata({"/Subject": label})
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
 
 
 def _hold_batch_state_lock_worker(run_dir, acquired, release, result_queue) -> None:
@@ -1205,7 +1217,7 @@ class BatchStageTests(unittest.TestCase):
             root = Path(tmp)
             valid_pdf = root / "sciencedirect" / "pdfs" / "download.pdf"
             valid_pdf.parent.mkdir(parents=True)
-            valid_pdf.write_bytes(b"%PDF-1.7\nfixture\n%%EOF\n")
+            valid_pdf.write_bytes(_real_pdf_bytes("batch start fixture"))
             input_path = write_stage_input(
                 [
                     {"task_id": "paper-0001", "doi": "10.1016/a", "title": "A"},
@@ -1871,7 +1883,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             valid_pdf = root / "fixture.pdf"
-            valid_pdf.write_bytes(b"%PDF-1.7\nfixture\n%%EOF\n")
+            valid_pdf.write_bytes(_real_pdf_bytes("batch routing fixture"))
 
             def initial(rows):
                 return [
@@ -2255,7 +2267,6 @@ class BatchRunTests(unittest.TestCase):
             BatchOptions(login_wait_seconds=float("inf")),
             BatchOptions(debug_port=False, skip_manual_retry=False),
             BatchOptions(debug_port=-1, skip_manual_retry=False),
-            BatchOptions(debug_port=0, skip_manual_retry=False),
             BatchOptions(debug_port=65536, skip_manual_retry=False),
             BatchOptions(debug_port=float("nan")),
             BatchOptions(debug_port=float("inf")),
@@ -2741,8 +2752,8 @@ class BatchRunTests(unittest.TestCase):
             root = Path(tmp)
             oa_pdf = root / "oa.pdf"
             institutional_pdf = root / "institutional.pdf"
-            oa_pdf.write_bytes(b"%PDF-1.7\noa fixture\n%%EOF\n")
-            institutional_pdf.write_bytes(b"%PDF-1.7\ninstitutional fixture\n%%EOF\n")
+            oa_pdf.write_bytes(_real_pdf_bytes("oa fixture"))
+            institutional_pdf.write_bytes(_real_pdf_bytes("institutional fixture"))
             gateway = FakeBatchGateway(initial_updates=lambda rows: [
                 {**rows[0], "status": "downloaded", "source": "oa", "file": str(oa_pdf), "reason": ""},
                 {**rows[1], "status": "downloaded", "source": "sciencedirect", "file": str(institutional_pdf), "reason": ""},
@@ -2944,7 +2955,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             oa_pdf = root / "oa.pdf"
-            oa_pdf.write_bytes(b"%PDF-1.7\noa callback fixture\n%%EOF\n")
+            oa_pdf.write_bytes(_real_pdf_bytes("oa callback fixture"))
             oa_results = [
                 StageResult("paper-0001", "10.1000/a", "A", "downloaded", str(oa_pdf), "", "oa"),
                 StageResult("paper-0002", "10.1038/b", "B", "no_open_pdf", "", "no_open_pdf", "oa"),
@@ -2987,7 +2998,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source = root / "oa.pdf"
-            source.write_bytes(b"%PDF-1.7\nidempotent callback fixture\n%%EOF\n")
+            source.write_bytes(_real_pdf_bytes("idempotent callback fixture"))
             result = start_batch(
                 input_text="fixture",
                 input_path=None,
@@ -3023,7 +3034,7 @@ class BatchRunTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pdf = root / "institutional.pdf"
-            pdf.write_bytes(b"%PDF-1.7\ncallback-only fixture\n%%EOF\n")
+            pdf.write_bytes(_real_pdf_bytes("callback-only fixture"))
             result = start_batch(
                 input_text="fixture",
                 input_path=None,
@@ -3123,7 +3134,15 @@ class BatchRunTests(unittest.TestCase):
                 gateway=gateway,
                 normalizer=lambda **_kwargs: [{"task_id": "paper-0001", "doi": "10.1000/a", "title": "A"}],
             )
-            workers = [threading.Thread(target=resume_batch, args=(started.paths.root,), kwargs={"gateway": gateway}) for _ in range(2)]
+            worker_errors: list[str] = []
+
+            def run_resume() -> None:
+                try:
+                    resume_batch(started.paths.root, gateway=gateway)
+                except ValueError as exc:
+                    worker_errors.append(str(exc))
+
+            workers = [threading.Thread(target=run_resume) for _ in range(2)]
             workers[0].start()
             self.assertTrue(entered.wait(5.0))
             workers[1].start()
@@ -3133,6 +3152,7 @@ class BatchRunTests(unittest.TestCase):
 
         self.assertEqual(len(gateway.retry_rows), 1)
         self.assertEqual(len(gateway.retry_rows[0]), 1)
+        self.assertEqual(worker_errors, ["batch_attempt_in_progress"])
 
 
 class BatchFinalizeTests(unittest.TestCase):
@@ -3206,7 +3226,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             attachment = root / "zotero.pdf"
-            attachment.write_bytes(b"%PDF-1.7\nZotero fixture\n%%EOF\n")
+            attachment.write_bytes(_real_pdf_bytes("zotero finalization fixture"))
             attachment_hash = hashlib.sha256(attachment.read_bytes()).hexdigest()
             html = root / "login.html"
             html.write_text("<html>login</html>", encoding="utf-8")
@@ -3240,14 +3260,19 @@ class BatchFinalizeTests(unittest.TestCase):
                 and hashlib.sha256(attachment.read_bytes()).hexdigest() == attachment_hash
             )
 
-        self.assertEqual(rows_by_id["paper-0001"], original)
+        self.assertEqual(rows_by_id["paper-0001"]["status"], "not_pdf_response")
+        self.assertEqual(rows_by_id["paper-0001"]["file"], "")
+        self.assertEqual(
+            rows_by_id["paper-0001"]["reason"],
+            "delivery_pdf_revalidation_failed",
+        )
         self.assertEqual(rows_by_id["paper-0002"]["status"], "zotero_existing_pdf")
         self.assertEqual(rows_by_id["paper-0002"]["zotero_item_id"], "42")
         self.assertEqual(rows_by_id["paper-0003"]["status"], "not_pdf_response")
         self.assertEqual(rows_by_id["paper-0003"]["source"], "zotero")
         self.assertTrue(attachment_intact)
-        self.assertEqual(result.success_count, 2)
-        self.assertEqual(result.failed_count, 1)
+        self.assertEqual(result.success_count, 1)
+        self.assertEqual(result.failed_count, 2)
         self.assertEqual(csv_reader.fieldnames, FINAL_MANIFEST_FIELDS)
         self.assertEqual(xlsx_rows[0], tuple(FINAL_MANIFEST_FIELDS))
         self.assertEqual(
@@ -3277,13 +3302,13 @@ class BatchFinalizeTests(unittest.TestCase):
                         finalize_batch(paths.root, zotero_csv)
                     self.assertEqual(paths.state.read_bytes(), before)
 
-    def test_finalize_rejects_unsafe_attachments_and_deduplicates_repeated_pdf(self) -> None:
+    def test_finalize_rejects_unsafe_attachments_and_separates_paper_identities(self) -> None:
         from paper_automation.batch_workflow import finalize_batch, load_batch_state
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             valid_pdf = root / "attachment.pdf"
-            valid_pdf.write_bytes(b"%PDF-1.7\nshared attachment\n%%EOF\n")
+            valid_pdf.write_bytes(_real_pdf_bytes("shared attachment fixture"))
             missing = root / "missing.pdf"
             directory = root / "attachment-directory"
             directory.mkdir()
@@ -3310,8 +3335,8 @@ class BatchFinalizeTests(unittest.TestCase):
             pdf_count = len(list(paths.pdfs.glob("*.pdf")))
 
         rows_by_id = {row["task_id"]: row for row in state["rows"]}
-        self.assertEqual(rows_by_id["paper-0001"]["file"], rows_by_id["paper-0002"]["file"])
-        self.assertEqual(pdf_count, 1)
+        self.assertNotEqual(rows_by_id["paper-0001"]["file"], rows_by_id["paper-0002"]["file"])
+        self.assertEqual(pdf_count, 2)
         for task_id in ("paper-0003", "paper-0004", "paper-0005", "paper-0006"):
             self.assertEqual(rows_by_id[task_id]["status"], "not_pdf_response")
             self.assertEqual(rows_by_id[task_id]["file"], "")
@@ -3322,7 +3347,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             attachment = root / "uncertain.pdf"
-            attachment.write_bytes(b"%PDF-1.7\nuncertain\n%%EOF\n")
+            attachment.write_bytes(_real_pdf_bytes("metadata uncertain fixture"))
             paths = self._paths_with_state(
                 root,
                 [
@@ -3696,9 +3721,9 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project_pdf = root / "project.pdf"
-            project_pdf.write_bytes(b"%PDF-1.7\nproject success fixture\n%%EOF\n")
+            project_pdf.write_bytes(_real_pdf_bytes("concurrent project fixture"))
             zotero_pdf = root / "zotero.pdf"
-            zotero_pdf.write_bytes(b"%PDF-1.7\nzotero stale fixture\n%%EOF\n")
+            zotero_pdf.write_bytes(_real_pdf_bytes("stale zotero fixture"))
             paths = self._paths_with_state(root, [self._row("paper-0001")])
             zotero_csv = paths.working / "zotero_results.csv"
             self._write_zotero_csv(
@@ -3765,7 +3790,7 @@ class BatchFinalizeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project_pdf = root / "project-latest.pdf"
-            project_pdf.write_bytes(b"%PDF-1.7\nlatest project success\n%%EOF\n")
+            project_pdf.write_bytes(_real_pdf_bytes("latest project fixture"))
             paths = self._paths_with_state(root / "run", [self._row("paper-0001")])
             zotero_csv = paths.working / "zotero_results.csv"
             self._write_zotero_csv(
@@ -4119,10 +4144,10 @@ class BatchEndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             project_pdf = root / "project.pdf"
-            project_payload = b"%PDF-1.7\nproject fixture\n%%EOF\n"
+            project_payload = _real_pdf_bytes("end-to-end project fixture")
             project_pdf.write_bytes(project_payload)
             zotero_pdf = root / "zotero.pdf"
-            zotero_payload = b"%PDF-1.7\nzotero fixture\n%%EOF\n"
+            zotero_payload = _real_pdf_bytes("end-to-end zotero fixture")
             zotero_pdf.write_bytes(zotero_payload)
             source_hashes = {
                 project_pdf: hashlib.sha256(project_payload).hexdigest(),
@@ -4873,11 +4898,11 @@ class BatchCliTests(unittest.TestCase):
                     with redirect_stdout(stdout):
                         exit_code = main([
                             "start", "--text", "10.1000/example", "--out", str(root),
-                            "--wait-seconds", "0",
                         ])
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(bridge.call_count, 1)
+        self.assertEqual(bridge.call_args.kwargs["wait_seconds"], 0)
 
     def test_start_no_auto_zotero_skips_bridge(self) -> None:
         from contextlib import redirect_stdout

@@ -1624,3 +1624,39 @@ Release date: 2026-07-12
 - `skills/paper-download/SKILL.md`, `README.md`, `README_zh.md`
 - `tests/test_failure_routing_and_intake_filters.py`
 
+## 2026-07-22 17:23:46 +08:00 — 第一阶段论文与文件数据完整性修复
+
+- 修改日期和时间：2026-07-22 17:23:46 +08:00。
+- 本次任务目标：以 `df912c0` 为基线，修复固定批次忽略新输入、不同论文串用 PDF、PDF 非原子写入、最终交付缺少复验，以及重新发布误删用户文件的问题；保持统一批次界面和“年份-作者-题名.pdf”交付命名不变。
+- 新增、修改或删除的文件：新增 `paper_automation/artifact_store.py`、`tests/test_integrity_phase1.py`；修改 `paper_automation/batch_stages.py`、`paper_automation/batch_workflow.py`、`paper_automation/delivery_refresh.py`、`paper_automation/downloader.py`、`paper_automation/institutional/workflow.py`、`paper_automation/oa_recovery.py`、`paper_automation/workflow.py`、`paper_automation/zotero_bridge.py`、`paper_batch.py`、`sd_institutional_skill.py`、`sd_scraper.py`、`sd_supplements.py`、`tests/test_batch_workflow.py`、`tests/test_paper_automation.py` 和本 `CHANGELOG.md`；未删除文件。
+- 具体修改内容：将 `batch_state.json` 升级为兼容 v1 的 v2，并记录输入类型、原始 SHA-256、规范化 SHA-256、任务集合 SHA-256 和条目数；固定批次输入任务变化时返回 `input_changed_for_existing_run`，相同任务可按原顺序续跑，v1 仅在确认匹配后原子升级。新增 DOI→PII→题名优先级的论文身份和 `paper-0001_<identity-hash>.pdf` 内部命名，统一批次的 OA、OA recovery、非 Elsevier 机构、ScienceDirect 与 Zotero 工件均启用身份隔离。新增共享 PDF 发布器，使用同目录临时文件、`flush/fsync`、PDF 头尾校验、SHA-256、排他发布和哈希冲突后缀，不覆盖任何同名不同内容文件。最终交付前重新检查普通文件、symlink/reparse、同一文件句柄快照、最小大小、`%PDF-`、`%%EOF` 和复制前后哈希；失败行降级为 `not_pdf_response` 并写回状态。新增 `working/delivery_owned.json`，按 generation、相对路径、SHA-256、task_id 和文件类型管理程序文件；重发时递归保留手工 PDF、非 PDF、补充材料、空目录和用户修改文件，冲突文件改用 `_manual_<hash>`，并将 `结果/`、`下载清单.csv` 与所有权清单作为同一可回滚事务发布。
+- 修改原因：旧固定目录可能把新输入当作旧任务续跑；显示文件名和跨论文内容复用不足以证明论文身份；直接写入或覆盖可能留下半文件或破坏原文件；仅在下载时校验不能保证最终交付仍可信；清空重建 `结果/` 会误删用户手工整理内容。
+- 生成的输出文件：项目内仅新增源码和测试文件，没有生成真实 PDF、Cookie、机构会话、结果批次或打包文件。全量测试在排除 `.git`、`.venv`、`dist`、`results` 的系统临时副本中运行；未修改、删除或重新生成现有 XPI。
+- 如何运行：正常入口仍为 `.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"`。若固定批次输入任务集合已经变化，使用 `--fresh` 新建批次，或指定新的 `--run-name`；不要手工合并不同任务集合的 `batch_state.json`。
+- 如何检查是否成功：项目要求的 `compileall` 通过；完整性专项测试共 15 项，其中 13 项通过、2 项因当前 Windows 符号链接权限跳过；排除现有 `dist/*.xpi` 的临时副本中，全量离线测试共 431 项，其中 427 项通过、4 项按环境条件跳过；`git diff --check` 通过。现有 `dist/zotero-paper-download-bridge-0.2.0.xpi` 的 SHA-256 仍为 `D1C0C0E93228EF050FD674FCBE201731793EA19C4933C32747880043F474A460`。
+- 注意事项或潜在风险：本轮未进行真实机构下载、未自动打包、未提交或推送，也未新增解析器级页数检查。Windows 当前权限不能创建测试 symlink，因此相关拒绝逻辑由静态路径检查和可用环境下的跳过测试覆盖；真实机构会话仍需后续手工 QA。元数据缓存、结构化网络错误、retry 租约、浏览器实例身份、`--auto-zotero`、`recover-oa` 退出码和解析器级 PDF 校验仍按计划留待后续阶段。
+
+## 2026-07-22 19:34:05 +08:00 — 第二阶段恢复能力、元数据缓存与可信下载闭环
+
+- 修改日期和时间：2026-07-22 19:34:05 +08:00。
+- 本次任务目标：在第一阶段工作区上补齐批次尝试租约、结构化元数据缓存、全路径流式下载限额、DevTools 流式捕获、解析器级 PDF 复验，以及插件供应链 CI；保持统一批次界面、目录和“年份-作者-题名.pdf”交付命名不变。
+- 新增、修改或删除的文件：新增 `paper_automation/metadata_cache.py`、`tests/offline_network_guard.py`、`tests/sitecustomize.py`、`tests/test_000_offline_network.py`、`tests/test_recovery_phase2.py`；扩展第一阶段新增的 `paper_automation/artifact_store.py`；修改 `.github/workflows/tests.yml`、`.gitignore`、`requirements.txt`、`paper_batch.py`、`sd_scraper.py`、`sd_scraper_en.py`、`sd_supplements.py`、`sd_institutional_skill.py`、`paper_automation/` 下的批次、元数据、OA、机构、Zotero、下载与 PDF 校验模块，以及相关测试、`README.md`、`README_zh.md` 和本文件。未删除用户文件。
+- 具体修改内容：为 `batch_state.json` v2 增加可选 `active_attempts`，实现 5 分钟租约、30 秒续租、过期回收、`attempt_id` 结果栅栏、`attempting` 持久状态和原失败原因保留；新增带文件锁、逐行追加和 `fsync` 的 `working/metadata_cache.jsonl`，使用 `LookupOutcome` 区分 `ok/not_found/timeout/rate_limited/network_error/invalid_response`，成功与未找到缓存 30 天，临时错误缓存 5 分钟，并允许忽略最后一条崩溃残缺记录；DOI-only 输入不再进行联网预检，仅在存在独立题名时检查严重冲突。所有正文与补充材料下载统一进入分块流式发布器，在响应头和读取过程中双重限制大小，PDF 默认 256 MB、补充材料 2 GB、元数据 JSON 8 MB，并对中断、HTML、截断、超限和哈希异常执行临时文件清理；ScienceDirect DevTools 捕获改用 `Fetch.takeResponseBodyAsStream` 与 `IO.read`。最终交付快照使用 `pypdf>=6,<7` 深检可打开且页数大于零的 PDF，失败项原子降级并记录内部解析错误。插件 CI 使用 Node 24，运行完整 65 项测试、检查关键源码被 Git 跟踪，并只在 CI 临时目录构建和检查 XPI 根目录内容；默认 Python 测试阻断未 mock 的公网 socket，但允许本机回环地址。
+- 修改原因：避免异常退出造成任务永久卡住或重复下载，防止旧进程迟到结果覆盖新结果；避免把超时、限速和网络故障误报为“未找到”；避免整块响应占用过多内存或超大文件突破磁盘边界；确保结构上看似 PDF 的损坏、零页或不可解密文件不能进入最终成功清单；确保插件 manifest/package metadata 不再被宽泛 JSON 忽略规则漏掉，并在 Windows CI 中持续验证完整供应链。
+- 生成的输出文件：仅新增或修改源代码、测试、CI、依赖和说明文件；测试使用系统临时目录及项目内排除 XPI 的临时副本，未生成真实论文 PDF、Cookie、机构会话或新的持久 XPI。现有 `dist/zotero-paper-download-bridge-0.2.0.xpi` 未修改，SHA-256 仍为 `D1C0C0E93228EF050FD674FCBE201731793EA19C4933C32747880043F474A460`。
+- 如何运行：安装依赖后仍使用 `\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"`；恢复失败项使用 `retry-failed`，活跃租约冲突会返回 `batch_attempt_in_progress` 和退出码 2，过期租约会自动回收。开发验证可运行项目 README 中列出的 `compileall`、完整 Python 离线测试和 `node --test zotero_bridge_plugin/tests/*.test.cjs`。
+- 如何检查是否成功：项目要求的 `compileall` 通过；插件 Node 24 环境下 65/65 项测试通过；排除现有 XPI 的临时副本中完整 Python 测试共 449 项，445 项通过、4 项按环境条件跳过、0 失败；`git diff --check` 通过；关键插件 manifest、package、bootstrap、核心脚本与本地化文件均被 Git 跟踪；现有 XPI 哈希与修改前一致。
+- 注意事项或潜在风险：本轮未进行真实机构下载、未自动打包、未提交或推送；真实出版社与机构端的流式接口仍需后续手工 QA。`pypdf` 深检提高交付可信度，但不能证明论文语义内容与 DOI 必然一致；缓存文件如出现非末尾损坏会明确报错，需要保留文件后人工排查，不应直接删除。浏览器实例身份、`--auto-zotero`、`recover-oa` 退出码、`status` 命令和 UI 服务层仍不在本阶段范围内。
+
+## 2026-07-22 20:06:42 +08:00 — 第三阶段 CLI 语义、浏览器身份与统一状态服务
+
+- 修改日期和时间：2026-07-22 20:06:42 +08:00。
+- 本次任务目标：修复 Zotero 自动参数语义和 `recover-oa` 恒为零的退出码；增加只读批次状态、统一 CLI/UI 请求边界和受控共享机构浏览器身份验证，同时保持批次目录、状态 v2、交付命名、兼容页面及现有 XPI 不变。
+- 新增、修改或删除的文件：新增 `paper_automation/batch_app.py` 和 `tests/test_phase3_cli_browser_status.py`；修改 `paper_batch.py`、`paper_scraper_ui.py`、`paper_automation/batch_stages.py`、`paper_automation/batch_workflow.py`、`paper_automation/institutional/browser_session.py`、`paper_automation/institutional/workflow.py`、相关既有测试、`.github/workflows/tests.yml`、`README.md`、`README_zh.md`、`MANUAL_QA.md`、`skills/paper-download/SKILL.md` 和本文件。未删除用户文件。
+- 具体修改内容：将 `start`、`retry-failed`、`recover-oa` 的 `--auto-zotero/--no-auto-zotero` 改为互斥且由单一布尔值控制，默认自动排队，所有 Zotero 入口默认 `--wait-seconds 0`；`recover-oa` 按无目标/全部成功、验证错误、等待桥接、确定性未解决和可恢复网络故障分别返回 0/2/3/4/5。新增类型化 `BatchCommandRequest`、`BatchCommandResult`、`BatchStatusSummary`，统一批次 UI 的六个动作共用请求构造与参数合同。新增 `paper_batch.py status --run-dir ... [--json]`，在状态锁内读取并验证前后字节完全一致，只输出汇总计数和下一步，不回收租约、不暴露 Cookie、附件路径或逐篇元数据。新批次允许 `debug_port=0` 动态分配；机构浏览器使用 `%LOCALAPPDATA%\PaperScraperDOI\browser-session\v1` 专用共享 profile、进程锁和原子实例描述文件，复用前同时验证 PID、浏览器路径、profile、`DevToolsActivePort`、端口及 browser ID，未知固定端口会拒绝接管。补充面向用户的租约、响应大小、元数据缓存和浏览器身份错误提示，并在 CI 编译列表中显式加入 `paper_batch.py`。
+- 修改原因：旧 `--auto-zotero` 未实际参与决策且默认等待 600 秒容易表现为卡死；`recover-oa` 两个分支均返回 0，无法供脚本判断失败；仅凭固定 CDP 端口复用浏览器可能连接或关闭无关会话；UI、CLI 和自动化需要一个不修改状态的稳定进度接口与一致参数来源。
+- 生成的输出文件：仅新增或修改源代码、测试、CI 和说明文件；未生成真实论文 PDF、Cookie、机构会话、Zotero 数据或新 XPI。测试在项目内排除 XPI 的临时副本和系统临时目录运行，临时副本在验证后清理。
+- 如何运行：新批次仍使用 `.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"`；有 fallback 时默认立即排队并以 3 返回，稍后运行 `.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"`。状态检查使用 `.\.venv\Scripts\python.exe paper_batch.py status --run-dir "<run-dir>"`，自动化可追加 `--json`；只有希望当前进程等待时才显式传 `--wait-seconds N`。
+- 如何检查是否成功：第三阶段专项测试覆盖互斥参数、默认零等待、OA 退出码、状态只读性/JSON、六个 UI 动作、浏览器身份字段、未知端口拒绝、动态端口和并发实例锁；项目 `compileall` 通过；排除现有 XPI 的临时副本中完整 Python 测试共 462 项，458 项通过、4 项按环境条件跳过、0 失败；Node 24 插件测试 65/65 通过；`git diff --check` 通过。现有 `dist/zotero-paper-download-bridge-0.2.0.xpi` SHA-256 仍为 `D1C0C0E93228EF050FD674FCBE201731793EA19C4933C32747880043F474A460`。
+- 注意事项或潜在风险：本轮未进行真实机构下载、未启动或接管真实调试浏览器、未操作真实 Zotero 文库、未自动打包、未提交或推送。真实 Chrome/Edge 的动态 `DevToolsActivePort`、进程路径查询、机构登录复用和 Zotero 往返仍需按 `MANUAL_QA.md` 在隔离环境手工验收；实例描述文件不含 Cookie，但专用浏览器 profile 可能保存用户主动建立的登录会话，应按本机凭据目录保护。
+

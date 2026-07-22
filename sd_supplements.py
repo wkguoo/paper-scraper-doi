@@ -11,6 +11,10 @@ from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse
 
 from doi_batch_utils import SupplementDownloadRecord
+from paper_automation.artifact_store import (
+    DEFAULT_SUPPLEMENT_MAX_BYTES,
+    publish_stream_atomic,
+)
 
 
 SUPPLEMENT_HOSTS = (
@@ -199,6 +203,8 @@ def download_supplements_for_article(
     output_dir: str | Path,
     session,
     headers: dict[str, str] | None = None,
+    artifact_stem: str = "",
+    max_bytes: int = DEFAULT_SUPPLEMENT_MAX_BYTES,
 ) -> list[SupplementDownloadRecord]:
     candidates = extract_supplement_candidates(article_html, article_url)
     if not candidates:
@@ -214,7 +220,7 @@ def download_supplements_for_article(
             )
         ]
 
-    stem = make_article_stem(article_index, article)
+    stem = str(artifact_stem or "").strip() or make_article_stem(article_index, article)
     supplement_dir = Path(output_dir) / "supplements" / stem
     supplement_dir.mkdir(parents=True, exist_ok=True)
     records: list[SupplementDownloadRecord] = []
@@ -225,24 +231,9 @@ def download_supplements_for_article(
         content_type = ""
         temp_path: Path | None = None
         try:
-            existing_path = _find_existing_supplement_file(supplement_dir, index, candidate, "")
-            if existing_path is not None:
-                relative_path = Path("supplements") / stem / existing_path.name
-                records.append(
-                    _record(
-                        article,
-                        article_file,
-                        index,
-                        candidate,
-                        "skipped",
-                        relative_path,
-                        "",
-                        existing_path.stat().st_size,
-                        "文件已存在",
-                    )
-                )
-                continue
-
+            # Always stream the response so the shared exclusive publisher can
+            # compare content. A same-name file alone is not proof that it is
+            # the same supplement.
             response = session.get(candidate.url, headers=request_headers, allow_redirects=True, timeout=60, stream=True)
             status_code = int(getattr(response, "status_code", 0) or 0)
             content_type = _response_content_type(response)
@@ -250,9 +241,6 @@ def download_supplements_for_article(
             relative_path = Path("supplements") / stem / filename
             target_path = supplement_dir / filename
 
-            if target_path.is_file() and target_path.stat().st_size > 0:
-                records.append(_record(article, article_file, index, candidate, "skipped", relative_path, content_type, target_path.stat().st_size, "文件已存在"))
-                continue
             if status_code < 200 or status_code >= 400:
                 records.append(_record(article, article_file, index, candidate, "failed", "", content_type, 0, f"HTTP {status_code}"))
                 continue
@@ -260,10 +248,18 @@ def download_supplements_for_article(
                 records.append(_record(article, article_file, index, candidate, "failed", "", content_type, 0, "非附件响应或登录页面"))
                 continue
 
-            temp_path = _make_unique_temp_path(supplement_dir, target_path)
-            size_bytes = _stream_response_to_temp(response, temp_path)
-            os.replace(temp_path, target_path)
-            temp_path = None
+            published = publish_stream_atomic(
+                _validated_supplement_chunks(response),
+                supplement_dir,
+                filename,
+                max_bytes=max_bytes,
+                content_length=_response_content_length(response),
+                validator=_validate_supplement_artifact,
+                temporary_prefix=".supplement_stream_",
+            )
+            target_path = published
+            relative_path = Path("supplements") / stem / published.name
+            size_bytes = published.stat().st_size
             records.append(_record(article, article_file, index, candidate, "success", relative_path, content_type, size_bytes, ""))
         except Exception as exc:
             records.append(_record(article, article_file, index, candidate, "failed", "", content_type, 0, str(exc)))
@@ -414,6 +410,58 @@ def _response_content_type(response) -> str:
             if str(key).lower() == "content-type":
                 return str(value).split(";", 1)[0].strip().lower()
     return ""
+
+
+def _response_content_length(response) -> int | None:
+    headers = getattr(response, "headers", {}) or {}
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return None
+    value = getter("content-length") or getter("Content-Length")
+    if value in {None, ""}:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _validate_supplement_artifact(path: Path) -> bool:
+    with path.open("rb") as handle:
+        sample = handle.read(HTML_SNIFF_BYTES)
+    if not sample:
+        raise ValueError("empty_response")
+    if _looks_like_html_response(sample, ""):
+        raise ValueError("not_supplement_response")
+    return True
+
+
+def _validated_supplement_chunks(response):
+    pending = bytearray()
+    sniff_complete = False
+    for raw_chunk in response.iter_content(chunk_size=STREAM_CHUNK_SIZE):
+        if not raw_chunk:
+            continue
+        chunk = raw_chunk.encode("utf-8", errors="ignore") if isinstance(raw_chunk, str) else bytes(raw_chunk)
+        if sniff_complete:
+            yield chunk
+            continue
+        remaining = HTML_SNIFF_BYTES - len(pending)
+        pending.extend(chunk[:remaining])
+        if _looks_like_html_response(bytes(pending), ""):
+            raise ValueError("not_supplement_response")
+        rest = chunk[remaining:]
+        if len(pending) >= HTML_SNIFF_BYTES:
+            sniff_complete = True
+            yield bytes(pending)
+            pending.clear()
+            if rest:
+                yield rest
+    if pending:
+        if _looks_like_html_response(bytes(pending), ""):
+            raise ValueError("not_supplement_response")
+        yield bytes(pending)
 
 
 def _is_html_content_type(content_type: str) -> bool:

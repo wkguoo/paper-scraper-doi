@@ -243,7 +243,7 @@ class ScienceDirectSupplementHelperTests(unittest.TestCase):
 
 
 class ScienceDirectSupplementDownloadTests(unittest.TestCase):
-    def test_existing_exact_file_skips_without_get(self) -> None:
+    def test_existing_exact_file_is_reused_only_after_content_matches(self) -> None:
         from sd_supplements import SupplementCandidate, make_article_stem, make_supplement_filename
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,16 +257,20 @@ class ScienceDirectSupplementDownloadTests(unittest.TestCase):
             filename = make_supplement_filename(1, SupplementCandidate(url=url, title=title), "")
             target = supplement_dir / filename
             target.write_bytes(b"cached bytes")
-            session = FakeSession()
+            response = FakeStreamingResponse(
+                headers={"Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                chunks=[b"cached bytes"],
+                forbid_content=True,
+            )
+            session = FakeSession([response])
 
             records, _ = _download_one(output_dir=output_dir, session=session, url=url, title=title)
 
-        self.assertEqual(session.calls, [])
-        self.assertEqual(records[0].status, "skipped")
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(records[0].status, "success")
         self.assertEqual(Path(records[0].file).name, filename)
         self.assertEqual(records[0].size_bytes, len(b"cached bytes"))
-        self.assertTrue(records[0].reason)
-        self.assertEqual(records[0].content_type, "")
+        self.assertEqual(records[0].reason, "")
 
     def test_empty_existing_file_does_not_skip_without_get(self) -> None:
         from sd_supplements import SupplementCandidate, make_article_stem, make_supplement_filename
@@ -291,13 +295,17 @@ class ScienceDirectSupplementDownloadTests(unittest.TestCase):
 
             records, _ = _download_one(output_dir=output_dir, session=session, url=url, title=title)
             target_bytes = target.read_bytes()
+            published = supplement_dir / Path(records[0].file).name
+            published_bytes = published.read_bytes()
 
         self.assertEqual(len(session.calls), 1)
         self.assertEqual(records[0].status, "success")
         self.assertEqual(records[0].size_bytes, len(b"real workbook"))
-        self.assertEqual(target_bytes, b"real workbook")
+        self.assertEqual(target_bytes, b"")
+        self.assertNotEqual(published, target)
+        self.assertEqual(published_bytes, b"real workbook")
 
-    def test_existing_extensionless_candidate_skips_by_prefix_without_get(self) -> None:
+    def test_existing_extensionless_candidate_is_reused_after_hash_match(self) -> None:
         from sd_supplements import make_article_stem
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -308,7 +316,12 @@ class ScienceDirectSupplementDownloadTests(unittest.TestCase):
             supplement_dir.mkdir(parents=True)
             cached = supplement_dir / "S01_Appendix A raw data.xlsx"
             cached.write_bytes(b"cached workbook")
-            session = FakeSession()
+            response = FakeStreamingResponse(
+                headers={"Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+                chunks=[b"cached workbook"],
+                forbid_content=True,
+            )
+            session = FakeSession([response])
 
             records, _ = _download_one(
                 output_dir=output_dir,
@@ -317,11 +330,11 @@ class ScienceDirectSupplementDownloadTests(unittest.TestCase):
                 title=title,
             )
 
-        self.assertEqual(session.calls, [])
-        self.assertEqual(records[0].status, "skipped")
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(records[0].status, "success")
         self.assertEqual(Path(records[0].file).name, cached.name)
         self.assertEqual(records[0].size_bytes, len(b"cached workbook"))
-        self.assertTrue(records[0].reason)
+        self.assertEqual(records[0].reason, "")
 
     def test_download_streams_chunks_without_reading_response_content(self) -> None:
         response = FakeStreamingResponse(

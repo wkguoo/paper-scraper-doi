@@ -46,6 +46,7 @@ class MetadataResult:
     crossref: dict = field(default_factory=dict)
     openalex: dict = field(default_factory=dict)
     unpaywall: dict = field(default_factory=dict)
+    lookup_outcomes: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import inspect
 import time
 from pathlib import Path
 from typing import Callable
 
-from doi_batch_utils import DoiRecord, load_doi_records, write_pdf_bytes_atomic
+from doi_batch_utils import DoiRecord, load_doi_records
+from paper_automation.artifact_store import make_artifact_filename, publish_pdf_bytes_atomic
 from paper_automation.file_manager import make_pdf_filename
 from paper_automation.metadata_resolver import MetadataResolver
 from paper_automation.models import MetadataResult, PaperCandidate
@@ -26,7 +28,7 @@ def run_institutional_workflow(
     sheet_name: str | None = None,
     email: str = "",
     browser_exe: str | None = None,
-    debug_port: int = 9333,
+    debug_port: int = 0,
     login_wait_seconds: int = 0,
     throttle_seconds: float = 1.0,
     overwrite: bool = False,
@@ -38,10 +40,15 @@ def run_institutional_workflow(
     try_oa_direct: bool = True,
     # C6: IUCr short institutional try — trip iucr adapter after 1 fail → OA → Zotero.
     iucr_short_try: bool = True,
+    artifact_filenames: bool = False,
+    metadata_cache_path: str | Path | None = None,
 ) -> InstitutionalWorkflowResult:
     directories = ensure_output_dirs(output_dir)
     records = load_doi_records(input_path, doi_column=doi_column, sheet_name=sheet_name)
-    metadata_resolver = resolver or MetadataResolver(email=email)
+    metadata_resolver = resolver or MetadataResolver(
+        email=email,
+        cache_path=metadata_cache_path,
+    )
     session_builder = session_factory or (lambda exe, port: DebugBrowserSession(browser_exe=exe, debug_port=port))
     session = session_builder(browser_exe, debug_port)
     oa_email = str(email or "")
@@ -97,6 +104,8 @@ def run_institutional_workflow(
                 email=oa_email,
                 try_oa_direct=try_oa_direct,
                 iucr_short_try=iucr_short_try,
+                artifact_filenames=artifact_filenames,
+                metadata_cache_path=metadata_cache_path,
             )
             rows.append(row)
             continue
@@ -119,6 +128,8 @@ def run_institutional_workflow(
                     overwrite=overwrite,
                     email=oa_email,
                     prior=row,
+                    artifact_filenames=artifact_filenames,
+                    metadata_cache_path=metadata_cache_path,
                 )
             rows.append(row)
             continue
@@ -131,6 +142,8 @@ def run_institutional_workflow(
             email=oa_email,
             try_oa_direct=try_oa_direct,
             iucr_short_try=iucr_short_try,
+            artifact_filenames=artifact_filenames,
+            metadata_cache_path=metadata_cache_path,
         )
         rows.append(row)
         # Browser adapter success resets breaker; browser-path failure increments it.
@@ -216,6 +229,8 @@ def _download_one(
     email: str = "",
     try_oa_direct: bool = True,
     iucr_short_try: bool = True,
+    artifact_filenames: bool = False,
+    metadata_cache_path: str | Path | None = None,
 ) -> InstitutionalReportRow:
     adapter = select_adapter(paper)
     if not adapter:
@@ -232,13 +247,21 @@ def _download_one(
                 overwrite=overwrite,
                 email=email,
                 prior=prior,
+                artifact_filenames=artifact_filenames,
+                metadata_cache_path=metadata_cache_path,
             )
         return prior
     if session_error:
         prior = _report_row(paper, adapter=adapter.name, status="error", reason=session_error)
         if try_oa_direct:
             return _maybe_oa_direct(
-                paper, pdf_dir=pdf_dir, overwrite=overwrite, email=email, prior=prior
+                paper,
+                pdf_dir=pdf_dir,
+                overwrite=overwrite,
+                email=email,
+                prior=prior,
+                artifact_filenames=artifact_filenames,
+                metadata_cache_path=metadata_cache_path,
             )
         return prior
     if not (paper.landing_url or paper.doi):
@@ -253,7 +276,13 @@ def _download_one(
         )
         if try_oa_direct:
             return _maybe_oa_direct(
-                paper, pdf_dir=pdf_dir, overwrite=overwrite, email=email, prior=prior
+                paper,
+                pdf_dir=pdf_dir,
+                overwrite=overwrite,
+                email=email,
+                prior=prior,
+                artifact_filenames=artifact_filenames,
+                metadata_cache_path=metadata_cache_path,
             )
         return prior
     except OSError as exc:
@@ -262,7 +291,13 @@ def _download_one(
         )
         if try_oa_direct:
             return _maybe_oa_direct(
-                paper, pdf_dir=pdf_dir, overwrite=overwrite, email=email, prior=prior
+                paper,
+                pdf_dir=pdf_dir,
+                overwrite=overwrite,
+                email=email,
+                prior=prior,
+                artifact_filenames=artifact_filenames,
+                metadata_cache_path=metadata_cache_path,
             )
         return prior
     attempt_notes: list[str] = []
@@ -271,7 +306,7 @@ def _download_one(
     if iucr_short_try and adapter.name == "iucr" and len(candidates) > 3:
         candidates = candidates[:3]
     for candidate in candidates:
-        target_path = pdf_dir / _make_filename(paper)
+        target_path = pdf_dir / _make_filename(paper, artifact_filenames=artifact_filenames)
         if target_path.exists() and not overwrite:
             if is_valid_pdf(target_path):
                 return _report_row(
@@ -284,28 +319,43 @@ def _download_one(
                     final_landing_url=landing.final_url,
                     pdf_url=candidate.url,
                 )
-            try:
-                target_path.unlink()
-            except OSError:
-                return _report_row(
-                    paper,
-                    adapter=adapter.name,
-                    status="error",
-                    reason="invalid_existing_pdf",
-                    landing_url=landing_url,
-                    final_landing_url=landing.final_url,
-                    pdf_url=candidate.url,
-                )
+            # Preserve the unexpected entry.  The exclusive publisher will use
+            # an identity/content suffix instead of overwriting it.
         try:
-            capture = session.capture_pdf(candidate.url, candidate.fetch_patterns)
+            capture_method = session.capture_pdf
+            parameters = inspect.signature(capture_method).parameters
+            if "target_path" in parameters:
+                capture = capture_method(
+                    candidate.url,
+                    candidate.fetch_patterns,
+                    target_path=target_path,
+                )
+            else:
+                capture = capture_method(candidate.url, candidate.fetch_patterns)
         except RuntimeError as exc:
             attempt_notes.append(str(exc))
             continue
         except OSError as exc:
             attempt_notes.append(str(exc))
             continue
+        captured_file = str(getattr(capture, "pdf_file", "") or "")
+        if captured_file and is_valid_pdf(captured_file):
+            target_path = Path(captured_file)
+            return _report_row(
+                paper,
+                adapter=adapter.name,
+                status="pdf_downloaded",
+                file=str(target_path),
+                landing_url=landing_url,
+                final_landing_url=landing.final_url,
+                pdf_url=capture.pdf_url or candidate.url,
+            )
         if capture.pdf_bytes and is_pdf_bytes(capture.pdf_bytes):
-            write_pdf_bytes_atomic(target_path, capture.pdf_bytes)
+            target_path = publish_pdf_bytes_atomic(
+                capture.pdf_bytes,
+                pdf_dir,
+                target_path.name,
+            )
             return _report_row(
                 paper,
                 adapter=adapter.name,
@@ -335,6 +385,8 @@ def _download_one(
             overwrite=overwrite,
             email=email,
             prior=prior,
+            artifact_filenames=artifact_filenames,
+            metadata_cache_path=metadata_cache_path,
         )
     return prior
 
@@ -346,13 +398,15 @@ def _maybe_oa_direct(
     overwrite: bool,
     email: str = "",
     prior: InstitutionalReportRow,
+    artifact_filenames: bool = False,
+    metadata_cache_path: str | Path | None = None,
 ) -> InstitutionalReportRow:
     """Bounded OA/repo HTTP download after institutional miss (no browser)."""
 
     doi = (paper.doi or paper.input_doi or "").strip()
     if not doi:
         return prior
-    target_path = pdf_dir / _make_filename(paper)
+    target_path = pdf_dir / _make_filename(paper, artifact_filenames=artifact_filenames)
     if target_path.exists() and not overwrite and is_valid_pdf(target_path):
         return _report_row(
             paper,
@@ -382,6 +436,9 @@ def _maybe_oa_direct(
             email=email,
             output_dir=pdf_dir,
             budget_seconds=45.0,
+            task_id=f"paper-{max(1, paper.row_number - 1):04d}",
+            artifact_filenames=artifact_filenames,
+            metadata_cache_path=metadata_cache_path,
         )
     except Exception as exc:  # noqa: BLE001
         return _report_row(
@@ -427,7 +484,7 @@ def _maybe_oa_direct(
     )
 
 
-def _make_filename(paper: InstitutionalPaper) -> str:
+def _make_filename(paper: InstitutionalPaper, *, artifact_filenames: bool = False) -> str:
     metadata = MetadataResult(
         source_index=paper.row_number,
         query_title=paper.input_title or paper.title,
@@ -436,6 +493,8 @@ def _make_filename(paper: InstitutionalPaper) -> str:
         authors=list(paper.authors),
         year=paper.year,
     )
+    if artifact_filenames:
+        return make_artifact_filename(max(1, paper.row_number - 1), metadata)
     return make_pdf_filename(metadata)
 
 

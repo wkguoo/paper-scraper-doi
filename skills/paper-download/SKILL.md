@@ -104,14 +104,14 @@ input or any project-generated pending CSV.
    user explicitly wants title-only rows.
 
 2. Run the project workflow (default: DOI preflight on; no manual resume;
-   failures with DOI go to Zotero; `start` auto-queues the bridge and waits):
+   failures with DOI go to Zotero; `start` auto-queues the bridge without waiting):
 
    ```powershell
    .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
    ```
 
    Keep Zotero 9 open with the bridge plugin **0.2.0+** enabled before or during
-   `start`. Defaults: auto-Zotero + `--wait-seconds 600`. Use `--no-auto-zotero`
+   `start`. Defaults: auto-Zotero + `--wait-seconds 0`. Use `--no-auto-zotero`
    only if the user asks to queue later; `--no-doi-preflight` to skip Crossref
    checks; `--enable-manual-retry` only for the old one-shot login/CAPTCHA path.
 
@@ -136,14 +136,15 @@ input or any project-generated pending CSV.
    `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`. It sends no cookies,
    credentials, arbitrary commands, URLs, or caller-selected output paths.
 
-6. Exit code `3` means the batch is queued and waiting for the plugin to finish.
+6. Exit code `3` means the batch is queued and waiting for the plugin to finish;
+   the CLI has already returned and is not hung.
    Plugin **0.2.0+** auto-confirms (one Zotero confirmation per batch is applied
    automatically; no modal unless the user disabled auto-confirm). Keep Zotero
    open. Do not rerun `start` or `resume`, and do not import items manually while
    the batch is active.
 
 7. After the plugin writes every outbox result for the run, rerun only the same
-   command (or rely on `start --wait-seconds` already polling):
+   command (or use an explicit positive `start --wait-seconds N` to poll):
 
    ```powershell
    .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
@@ -153,6 +154,13 @@ input or any project-generated pending CSV.
    strict `zotero_results.csv` (or an exclusive retry filename), and finalizes
    automatically. Do not call `paper_batch.py finalize` on the normal bridge
    path and do not construct plugin results by hand.
+
+   A read-only progress check is also available and never replaces the required
+   `zotero` continuation command:
+
+   ```powershell
+   .\.venv\Scripts\python.exe paper_batch.py status --run-dir "<run-dir>"
+   ```
 
 8. Report `<run-dir>\pdfs\` / user `结果\` as the final PDF directory and
    `<run-dir>\reports\` as the audit trail. Never report unresolved rows as

@@ -38,6 +38,7 @@ import time
 import random
 import argparse
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlencode
 
 try:
@@ -59,6 +60,11 @@ from doi_batch_utils import (
     SupplementDownloadRecord,
     write_pdf_bytes_atomic,
     write_supplement_download_report,
+)
+from paper_automation.artifact_store import (
+    DEFAULT_PDF_MAX_BYTES,
+    STREAM_CHUNK_SIZE,
+    publish_pdf_stream_atomic,
 )
 from sd_supplements import download_supplements_for_article, make_article_stem, supplement_status_counts
 from windows_paths import chrome_bin, chrome_debug_log, chrome_debug_profile, chrome_default_profile
@@ -226,7 +232,23 @@ _BROWSER_COMPAT_JS = """
 """
 
 
-def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
+def _dt_capture_pdf(
+    ws_url: str,
+    url: str,
+    timeout: int = 35,
+    *,
+    output_path: str | Path | None = None,
+    max_bytes: int = DEFAULT_PDF_MAX_BYTES,
+):
+    from sd_scraper import _dt_capture_pdf as _stream_capture_pdf
+
+    return _stream_capture_pdf(
+        ws_url,
+        url,
+        timeout=timeout,
+        output_path=output_path,
+        max_bytes=max_bytes,
+    )
     """
     Navigate to url in an existing DevTools tab and capture PDF bytes via
     Network/Fetch interception.
@@ -293,7 +315,7 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
                 hdrs = p.get("responseHeaders") or []
                 if req_id and _dt_is_pdf_fetch_response(req_url, status, hdrs):
                     fetch_meta[req_id] = {"url": req_url}
-                    bid = send("Fetch.getResponseBody", {"requestId": req_id})
+                    raise RuntimeError("unreachable_legacy_whole_body_capture")
                     fetch_body_reqs[bid] = req_id
                 elif req_id:
                     send("Fetch.continueRequest", {"requestId": req_id})
@@ -308,7 +330,7 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
             elif method == "Network.loadingFinished":
                 rid = msg.get("params", {}).get("requestId")
                 if rid in pdf_req_ids and rid not in body_reqs.values():
-                    bid = send("Network.getResponseBody", {"requestId": rid})
+                    raise RuntimeError("unreachable_legacy_whole_body_capture")
                     body_reqs[bid] = rid
             elif method == "Network.loadingFailed":
                 p = msg.get("params", {})
@@ -362,6 +384,33 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35):
 # ──────────────────────────────────────────────────────────────────────────────
 # Core scraper class
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _publish_curl_pdf_response(response, target_path: str | Path) -> Path:
+    """Publish a curl_cffi response without materializing its body in memory."""
+
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if status_code < 200 or status_code >= 400:
+        raise ValueError(f"http_{status_code}")
+    headers = getattr(response, "headers", {}) or {}
+    raw_length = headers.get("content-length") or headers.get("Content-Length")
+    try:
+        declared = int(raw_length) if raw_length not in {None, ""} else None
+    except (TypeError, ValueError):
+        declared = None
+    target = Path(target_path)
+    try:
+        return publish_pdf_stream_atomic(
+            response.iter_content(chunk_size=STREAM_CHUNK_SIZE),
+            target.parent,
+            target.name,
+            content_length=declared,
+            max_bytes=DEFAULT_PDF_MAX_BYTES,
+        )
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+
 
 class ScienceDirectScraper:
     BASE_URL = "https://www.sciencedirect.com"
@@ -1099,14 +1148,19 @@ class ScienceDirectScraper:
                 p_tab = open_tab("about:blank")
                 time.sleep(1)
 
-        def _fetch_one(pii, pdf_url):
+        def _fetch_one(pii, pdf_url, output_path):
             _ensure_tab()
             article_url = f"{self.BASE_URL}/science/article/pii/{pii}"
             _tab_navigate(article_url, wait=random.uniform(4, 6))
             try:
                 article_html = _tab_outer_html()
-                pdf_bytes, note = _dt_capture_pdf(p_tab["webSocketDebuggerUrl"], pdf_url, timeout=45)
-                return pdf_bytes, note, article_html
+                captured, note = _dt_capture_pdf(
+                    p_tab["webSocketDebuggerUrl"],
+                    pdf_url,
+                    timeout=45,
+                    output_path=output_path,
+                )
+                return captured, note, article_html
             except Exception as exc:
                 return None, str(exc), ""
 
@@ -1190,9 +1244,9 @@ class ScienceDirectScraper:
                 if not pdf_url or "pdfft" not in pdf_url:
                     pdf_url = f"{self.BASE_URL}/science/article/pii/{pii}/pdfft"
 
-                pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
+                pdf_result, note, article_html = _fetch_one(pii, pdf_url, filepath)
 
-                if pdf_bytes is None and str(note).startswith("blocked:"):
+                if pdf_result is None and str(note).startswith("blocked:"):
                     note_low = str(note).lower()
                     is_captcha = any(s in note_low for s in CAPTCHA_SIGNALS)
 
@@ -1207,21 +1261,32 @@ class ScienceDirectScraper:
                             input("  >>> Press Enter after completing verification: ")
                         except EOFError:
                             time.sleep(30)
-                        pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
+                        pdf_result, note, article_html = _fetch_one(pii, pdf_url, filepath)
                     else:
                         print(f"  [{idx}/{total}] Rate limited. Waiting {BLOCK_WAIT_1}s (~{BLOCK_WAIT_1//60} min) before retry...")
                         _tab_navigate("about:blank", wait=2)
                         time.sleep(BLOCK_WAIT_1)
-                        pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
+                        pdf_result, note, article_html = _fetch_one(pii, pdf_url, filepath)
 
-                        if pdf_bytes is None and str(note).startswith("blocked:"):
+                        if pdf_result is None and str(note).startswith("blocked:"):
                             print(f"  [{idx}/{total}] Still rate limited. Waiting {BLOCK_WAIT_2}s (~{BLOCK_WAIT_2//60} min)...")
                             _tab_navigate("about:blank", wait=2)
                             time.sleep(BLOCK_WAIT_2)
-                            pdf_bytes, note, article_html = _fetch_one(pii, pdf_url)
+                            pdf_result, note, article_html = _fetch_one(pii, pdf_url, filepath)
 
-                if pdf_bytes and pdf_bytes[:4] == b"%PDF":
-                    size_kb = write_pdf_bytes_atomic(filepath, pdf_bytes) // 1024
+                if isinstance(pdf_result, (str, Path)) and Path(pdf_result).is_file():
+                    published = Path(pdf_result)
+                    size_kb = published.stat().st_size // 1024
+                    filename = published.name
+                    print(f"  [{idx}/{total}] 鉁?{filename}  ({size_kb} KB)")
+                    success += 1
+                    downloads_since_break += 1
+                    _record(article, "success", file=filename)
+                    _download_supplements(article, idx, filename, article_html)
+                elif isinstance(pdf_result, (bytes, bytearray)) and bytes(pdf_result)[:4] == b"%PDF":
+                    # Compatibility for injected capture fakes. Real CDP
+                    # responses publish to ``filepath`` while streaming.
+                    size_kb = write_pdf_bytes_atomic(filepath, bytes(pdf_result)) // 1024
                     print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)")
                     success += 1
                     downloads_since_break += 1
@@ -1564,11 +1629,12 @@ class ScienceDirectScraper:
                         headers_a["sec-fetch-site"] = "same-origin"
                         resp = dl_session.get(
                             pdf_url_from_search, headers=headers_a,
-                            allow_redirects=True, timeout=60,
+                            allow_redirects=True, timeout=60, stream=True,
                         )
-                        ct = resp.headers.get("content-type", "")
-                        if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
-                            size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
+                        published = _publish_curl_pdf_response(resp, filepath)
+                        if published:
+                            filename = published.name
+                            size_kb = published.stat().st_size // 1024
                             print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)  [direct]")
                             success += 1
                             downloaded = True
@@ -1629,11 +1695,12 @@ class ScienceDirectScraper:
                     headers_b["sec-fetch-site"] = "cross-site"
                     resp = dl_session.get(
                         pdf_assets_url, headers=headers_b,
-                        allow_redirects=True, timeout=60,
+                        allow_redirects=True, timeout=60, stream=True,
                     )
-                    ct = resp.headers.get("content-type", "")
-                    if "pdf" in ct.lower() or resp.content[:4] == b"%PDF":
-                        size_kb = write_pdf_bytes_atomic(filepath, resp.content) // 1024
+                    published = _publish_curl_pdf_response(resp, filepath)
+                    if published:
+                        filename = published.name
+                        size_kb = published.stat().st_size // 1024
                         print(f"  [{idx}/{total}] ✓ {filename}  ({size_kb} KB)  [CDP+direct]")
                         success += 1
                     else:
