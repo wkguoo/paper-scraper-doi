@@ -95,7 +95,6 @@ def enrich_row_metadata_for_delivery(
     *,
     email: str = "",
     resolver: Callable[[PaperCandidate], MetadataResult] | None = None,
-    metadata_cache_path: str | Path | None = None,
 ) -> dict:
     """Fill year/authors/title from Crossref when missing so delivery names are final.
 
@@ -125,10 +124,7 @@ def enrich_row_metadata_for_delivery(
         else:
             from .metadata_resolver import MetadataResolver
 
-            metadata = MetadataResolver(
-                email=email,
-                cache_path=metadata_cache_path,
-            ).resolve_one(
+            metadata = MetadataResolver(email=email).resolve_one(
                 PaperCandidate(
                     source_index=int(str(result.get("source_index", "") or "0") or 0),
                     raw_text=raw_title,

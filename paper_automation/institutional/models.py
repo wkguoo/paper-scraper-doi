@@ -39,7 +39,6 @@ class PdfCaptureResult:
     requested_url: str
     pdf_url: str = ""
     pdf_bytes: bytes = b""
-    pdf_file: str = ""
     note: str = ""
 
 

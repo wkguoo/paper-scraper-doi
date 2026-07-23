@@ -3,21 +3,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import socket
 from typing import Callable
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from doi_batch_utils import clean_doi
 
 from .deduplicator import title_similarity, titles_are_safe_match
-from .metadata_cache import (
-    DEFAULT_METADATA_MAX_BYTES,
-    LookupOutcome,
-    MetadataCache,
-    normalize_lookup_query,
-)
 from .models import MetadataResult, PaperCandidate
 
 
@@ -33,19 +25,14 @@ class MetadataResolver:
         timeout: int = 20,
         search_provider: SearchProvider | None = None,
         max_search_candidates: int = 5,
-        cache_path: str | os.PathLike[str] | None = None,
-        cache: MetadataCache | None = None,
     ) -> None:
         self.email = email or os.environ.get("PAPER_SKILL_EMAIL", "")
         self.http_json = http_json or get_json
         self.timeout = timeout
         self.search_provider = search_provider
         self.max_search_candidates = max(1, max_search_candidates)
-        self.cache = cache or (MetadataCache(cache_path) if cache_path is not None else None)
-        self.last_lookup_outcomes: dict[str, LookupOutcome] = {}
 
     def resolve_one(self, candidate: PaperCandidate) -> MetadataResult:
-        self.last_lookup_outcomes = {}
         doi = clean_doi(candidate.doi).lower()
         result = MetadataResult(candidate.source_index, candidate.title, doi=doi, title=candidate.title)
 
@@ -86,49 +73,30 @@ class MetadataResolver:
             result.confidence = max(result.confidence, 0.4)
             result.reason = "metadata_not_found"
 
-        result.lookup_outcomes = dict(self.last_lookup_outcomes)
-
         return result
 
     def _query_crossref_by_doi(self, doi: str) -> dict:
         if not doi:
             return {}
         url = f"https://api.crossref.org/works/{quote(doi, safe='')}"
-        return self._lookup_json(
-            "crossref",
-            "doi",
-            doi,
-            url,
-            lambda data: data.get("message") if isinstance(data.get("message"), dict) else {},
-        ).data
+        data = _safe_json(self.http_json, url, self._headers(), self.timeout)
+        return data.get("message") or {}
 
     def _query_crossref_by_title(self, title: str) -> dict:
         if not title:
             return {}
         params = urlencode({"query.bibliographic": title, "rows": "3"})
-        return self._lookup_json(
-            "crossref",
-            "title",
-            title,
-            f"https://api.crossref.org/works?{params}",
-            lambda data: _best_crossref_item(
-                title, ((data.get("message") or {}).get("items") or [])
-            ),
-        ).data
+        data = _safe_json(self.http_json, f"https://api.crossref.org/works?{params}", self._headers(), self.timeout)
+        items = (data.get("message") or {}).get("items") or []
+        return _best_crossref_item(title, items)
 
     def _query_crossref_by_citation(self, citation_text: str) -> dict:
         if not citation_text:
             return {}
         params = urlencode({"query.bibliographic": citation_text, "rows": "5"})
-        return self._lookup_json(
-            "crossref",
-            "citation",
-            citation_text,
-            f"https://api.crossref.org/works?{params}",
-            lambda data: _best_crossref_citation_item(
-                citation_text, ((data.get("message") or {}).get("items") or [])
-            ),
-        ).data
+        data = _safe_json(self.http_json, f"https://api.crossref.org/works?{params}", self._headers(), self.timeout)
+        items = (data.get("message") or {}).get("items") or []
+        return _best_crossref_citation_item(citation_text, items)
 
     def _query_crossref_by_search_provider(self, candidate: PaperCandidate) -> dict:
         query = candidate.raw_text or candidate.title
@@ -152,189 +120,35 @@ class MetadataResolver:
             return {}
         doi_url = f"https://doi.org/{doi}"
         params = urlencode({"filter": f"doi:{doi_url}", "per-page": "1"})
-        return self._lookup_json(
-            "openalex",
-            "doi",
-            doi,
-            f"https://api.openalex.org/works?{params}",
-            lambda data: (data.get("results") or [{}])[0] if data.get("results") else {},
-        ).data
+        data = _safe_json(self.http_json, f"https://api.openalex.org/works?{params}", self._headers(), self.timeout)
+        results = data.get("results") or []
+        return results[0] if results else {}
 
     def _query_openalex_by_title(self, title: str) -> dict:
         if not title:
             return {}
         params = urlencode({"search": title, "per-page": "3"})
-        return self._lookup_json(
-            "openalex",
-            "title",
-            title,
-            f"https://api.openalex.org/works?{params}",
-            lambda data: _best_openalex_item(title, data.get("results") or []),
-        ).data
+        data = _safe_json(self.http_json, f"https://api.openalex.org/works?{params}", self._headers(), self.timeout)
+        results = data.get("results") or []
+        return _best_openalex_item(title, results)
 
     def _query_unpaywall(self, doi: str) -> dict:
         if not doi or not self.email:
             return {}
         params = urlencode({"email": self.email})
         url = f"https://api.unpaywall.org/v2/{quote(doi, safe='')}?{params}"
-        return self._lookup_json(
-            "unpaywall",
-            "doi",
-            doi,
-            url,
-            lambda data: data,
-        ).data
-
-    def _lookup_json(
-        self,
-        provider: str,
-        query_type: str,
-        query: str,
-        url: str,
-        selector: Callable[[dict], dict],
-    ) -> LookupOutcome:
-        normalized_query = normalize_lookup_query(query_type, query)
-        if self.cache is not None:
-            cached = self.cache.get(provider, query_type, normalized_query)
-            if cached is not None:
-                self._remember_outcome(cached)
-                return cached
-
-        raw = _request_json_outcome(
-            self.http_json,
-            provider=provider,
-            query_type=query_type,
-            query=normalized_query,
-            url=url,
-            headers=self._headers(),
-            timeout=self.timeout,
-        )
-        if raw.status == "ok":
-            try:
-                selected = selector(raw.data)
-            except Exception as exc:
-                outcome = LookupOutcome(
-                    provider,
-                    query_type,
-                    normalized_query,
-                    "invalid_response",
-                    detail=f"selector_{type(exc).__name__}",
-                )
-            else:
-                if not isinstance(selected, dict):
-                    outcome = LookupOutcome(
-                        provider,
-                        query_type,
-                        normalized_query,
-                        "invalid_response",
-                        detail="selected_value_not_object",
-                    )
-                else:
-                    outcome = LookupOutcome(
-                        provider,
-                        query_type,
-                        normalized_query,
-                        "ok" if selected else "not_found",
-                        data=selected,
-                    )
-        else:
-            outcome = raw
-        if self.cache is not None:
-            try:
-                outcome = self.cache.put(outcome)
-            except ValueError as exc:
-                if str(exc) != "metadata_response_too_large":
-                    raise
-                outcome = self.cache.put(
-                    LookupOutcome(
-                        provider,
-                        query_type,
-                        normalized_query,
-                        "invalid_response",
-                        detail="metadata_response_too_large",
-                    )
-                )
-        self._remember_outcome(outcome)
-        return outcome
-
-    def _remember_outcome(self, outcome: LookupOutcome) -> None:
-        key = f"{outcome.provider}:{outcome.query_type}:{outcome.query}"
-        self.last_lookup_outcomes[key] = outcome
+        return _safe_json(self.http_json, url, self._headers(), self.timeout)
 
     def _headers(self) -> dict[str, str]:
         mailto = f" mailto:{self.email}" if self.email else ""
         return {"User-Agent": f"paper-scraper-doi-oa/0.1{mailto}"}
 
 
-class MetadataResponseTooLarge(ValueError):
-    pass
-
-
-def get_json(
-    url: str,
-    headers: dict[str, str] | None = None,
-    timeout: int = 20,
-    *,
-    max_bytes: int = DEFAULT_METADATA_MAX_BYTES,
-) -> dict:
+def get_json(url: str, headers: dict[str, str] | None = None, timeout: int = 20) -> dict:
     request = Request(url, headers=headers or {})
     with urlopen(request, timeout=timeout) as response:
-        content_length = response.headers.get("Content-Length")
-        if content_length:
-            try:
-                declared = int(content_length)
-            except ValueError:
-                declared = -1
-            if declared > max_bytes:
-                raise MetadataResponseTooLarge("metadata_response_too_large")
-        raw = response.read(max_bytes + 1)
-    if len(raw) > max_bytes:
-        raise MetadataResponseTooLarge("metadata_response_too_large")
+        raw = response.read()
     return json.loads(raw.decode("utf-8"))
-
-
-def _request_json_outcome(
-    getter: JsonGetter,
-    *,
-    provider: str,
-    query_type: str,
-    query: str,
-    url: str,
-    headers: dict[str, str],
-    timeout: int,
-) -> LookupOutcome:
-    try:
-        data = getter(url, headers, timeout)
-    except HTTPError as exc:
-        if exc.code == 404:
-            status = "not_found"
-        elif exc.code == 429:
-            status = "rate_limited"
-        elif 500 <= exc.code <= 599:
-            status = "network_error"
-        else:
-            status = "invalid_response"
-        return LookupOutcome(provider, query_type, query, status, detail=f"http_{exc.code}")
-    except (TimeoutError, socket.timeout) as exc:
-        return LookupOutcome(provider, query_type, query, "timeout", detail=type(exc).__name__)
-    except URLError as exc:
-        status = "timeout" if isinstance(exc.reason, (TimeoutError, socket.timeout)) else "network_error"
-        return LookupOutcome(provider, query_type, query, status, detail=f"url_{type(exc.reason).__name__}")
-    except (MetadataResponseTooLarge, json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
-        return LookupOutcome(provider, query_type, query, "invalid_response", detail=type(exc).__name__)
-    except OSError as exc:
-        return LookupOutcome(provider, query_type, query, "network_error", detail=type(exc).__name__)
-    except Exception as exc:
-        return LookupOutcome(provider, query_type, query, "network_error", detail=type(exc).__name__)
-    if not isinstance(data, dict):
-        return LookupOutcome(
-            provider,
-            query_type,
-            query,
-            "invalid_response",
-            detail="response_not_object",
-        )
-    return LookupOutcome(provider, query_type, query, "ok", data=data)
 
 
 def _safe_json(getter: JsonGetter, url: str, headers: dict[str, str], timeout: int) -> dict:
@@ -415,47 +229,19 @@ def semantic_scholar_search_provider(
     http_json: JsonGetter | None = None,
     email: str = "",
     timeout: int = 20,
-    cache_path: str | os.PathLike[str] | None = None,
-    cache: MetadataCache | None = None,
 ) -> SearchProvider:
     getter = http_json or get_json
-    metadata_cache = cache or (MetadataCache(cache_path) if cache_path is not None else None)
 
     def search(query: str, max_results: int) -> list[dict[str, object]]:
-        normalized_query = normalize_lookup_query("title_search", query)
-        if metadata_cache is not None:
-            cached = metadata_cache.get("semantic_scholar", "title_search", normalized_query)
-            if cached is not None:
-                cached_rows = cached.data.get("items") or []
-                return [row for row in cached_rows if isinstance(row, dict)][:max_results]
         params = urlencode({
             "query": query,
             "limit": str(max(1, max_results)),
             "fields": "title,year,venue,externalIds,authors,url,publicationVenue",
         })
         headers = {"User-Agent": f"paper-scraper-doi-search/0.1{f' mailto:{email}' if email else ''}"}
-        outcome = _request_json_outcome(
-            getter,
-            provider="semantic_scholar",
-            query_type="title_search",
-            query=normalized_query,
-            url=f"https://api.semanticscholar.org/graph/v1/paper/search?{params}",
-            headers=headers,
-            timeout=timeout,
-        )
-        rows = outcome.data.get("data") or [] if outcome.status == "ok" else []
-        selected_rows = [row for row in rows if isinstance(row, dict)]
-        selected = LookupOutcome(
-            "semantic_scholar",
-            "title_search",
-            normalized_query,
-            "ok" if selected_rows else ("not_found" if outcome.status == "ok" else outcome.status),
-            data={"items": selected_rows} if selected_rows else {},
-            detail=outcome.detail,
-        )
-        if metadata_cache is not None:
-            metadata_cache.put(selected)
-        return selected_rows
+        data = _safe_json(getter, f"https://api.semanticscholar.org/graph/v1/paper/search?{params}", headers, timeout)
+        rows = data.get("data") or []
+        return [row for row in rows if isinstance(row, dict)]
 
     return search
 

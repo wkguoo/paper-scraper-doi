@@ -20,7 +20,7 @@
 
 **推荐输入：** 每行一个 DOI 的 TXT，或带 DOI 列的 CSV/XLSX。Markdown 可用，但默认**只识别 DOI**（章节标题、备注行会被丢弃）。题名-only 需显式 `--resolve-title-metadata`。
 
-**默认行为（减少手动）：** DOI 预检开启；机构失败后有 OA 信号才做有界 OA 补救；失败 DOI 自动排队 Zotero，但默认不等待。退出码 `3` 表示已经排队，稍后重跑同一条 `zotero` 命令即可；只有显式传入 `--wait-seconds N` 才会在当前进程等待。可用 `--no-doi-preflight` / `--no-auto-zotero` 关闭对应自动行为。
+**默认行为（减少手动）：** DOI 预检开启；机构失败后有 OA 信号才做有界 OA 补救；失败 DOI 自动排队 Zotero 并等待结果（约 600s）；Zotero 桥接插件 **0.2.0+** 默认自动确认（无需点弹窗）。可用 `--no-doi-preflight` / `--no-auto-zotero` / pref `extensions.zoteroPaperDownloadBridge.autoConfirm=false` 关闭。
 
 **不要**把 `paper_skill.py`、`sd_institutional_skill.py`、`sd_scraper.py`、`sd_scraper_en.py` 当作新任务的首选入口；它们不走统一批次状态，失败项也进不了同一份 Zotero 回退清单。
 
@@ -109,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1
 .\.venv\Scripts\python.exe paper_batch.py start --help
 ```
 
-如果能显示 `start`、`retry-failed`、`recover-oa`、`zotero`、`status` 和 `finalize`，说明统一入口可用。
+如果能显示 `start`、`resume`、`zotero` 和 `finalize`，说明统一入口可用。
 
 ## 推荐用法：直接让 Codex 调用 Skill
 
@@ -178,15 +178,6 @@ Example title copied from a bibliography
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
-
-随时可以只读查看批次状态；该命令不会回收租约或修改 `batch_state.json`：
-
-```powershell
-.\.venv\Scripts\python.exe paper_batch.py status --run-dir "<run-dir>"
-.\.venv\Scripts\python.exe paper_batch.py status --run-dir "<run-dir>" --json
-```
-
-新批次默认使用动态调试端口和项目专用共享 profile。只有 PID、浏览器路径、profile、端口和 DevTools browser ID 全部匹配时才复用；若固定端口被未知浏览器占用，程序会拒绝连接而不是接管其标签页。
 ```
 
 桥接队列固定在 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。多个分块仍是 one confirmation per batch。
@@ -289,14 +280,6 @@ D:\Literature\OA\
 
 `manifest.csv` 和 `manifest.json` 会记录每篇论文的 DOI、标题、作者、期刊、年份、OA 状态、PDF 来源、下载状态和失败原因。
 
-## 批次恢复、缓存与文件校验
-
-统一批次会在 `working\batch_state.json` 中记录正在执行的下载尝试。每个尝试使用 5 分钟租约并定期续租；同一批次已有进程工作时，第二个命令会返回 `batch_attempt_in_progress`，不会重复下载或覆盖状态。进程异常退出后，过期租约会自动回收；旧进程的迟到结果会以 `attempt_lease_lost` 拒绝。不要手工编辑 `active_attempts`。
-
-同一批次的 Crossref、OpenAlex、Unpaywall 和 Semantic Scholar 查询共用 `working\metadata_cache.jsonl`。正常结果和“未找到”缓存 30 天，网络错误、超时和限速缓存 5 分钟。仅有 DOI 的输入只做 DOI 格式清洗，不把联网查询作为下载前提；存在独立题名时才检查严重的 DOI—题名冲突。
-
-正文 PDF、ScienceDirect 捕获和补充材料均采用分块下载与排他发布。默认上限为正文 PDF 256 MB、补充材料 2 GB、元数据 JSON 8 MB；超限记录为 `response_too_large`。已有同名不同内容文件不会被覆盖，而会使用内容哈希后缀。最终交付还会用 `pypdf` 打开程序生成的 PDF，并要求至少一页；打不开、零页、损坏或不能用空密码打开的加密 PDF 会降级为 `not_pdf_response`，不会进入成功清单。用户手工放入的 PDF 不做删除或改名。
-
 ## 常见问题
 
 | 问题 | 处理方法 |
@@ -347,13 +330,9 @@ git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist
 修改 Python 代码前，至少运行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall paper_batch.py paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
-$env:PYTHONPATH = (Resolve-Path -LiteralPath ".\tests").Path
+.\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-node --test .\zotero_bridge_plugin\tests\*.test.cjs
 ```
-
-离线单元测试默认阻断未 mock 的公网 socket，但允许 `127.0.0.1`/`localhost` 回环连接。Windows CI 使用 Node 24 运行完整 65 项插件测试，并只在 CI 临时目录检查 XPI 内容；本地测试不会在 `dist\` 中生成或替换 XPI。
 
 真实机构登录、PDF 下载、CAPTCHA 和补充材料下载属于人工 QA，见 [MANUAL_QA.md](MANUAL_QA.md)。
 

@@ -18,63 +18,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
       - name: Compile Python sources
-        run: python -m compileall paper_batch.py paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
+        run: python -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
 
       - name: Run unit tests
-        env:
-          PYTHONPATH: ${{ github.workspace }}\tests
         run: python -m unittest discover -s tests -v
-
-      - name: Verify plugin source metadata is tracked
-        shell: pwsh
-        run: |
-          git ls-files --error-unmatch zotero_bridge_plugin/manifest.json
-          git ls-files --error-unmatch zotero_bridge_plugin/package.json
-          git ls-files --error-unmatch zotero_bridge_plugin/bootstrap.js
-          git ls-files --error-unmatch zotero_bridge_plugin/content/bridge-core.js
-          git ls-files --error-unmatch zotero_bridge_plugin/content/bridge-runtime.js
-          git ls-files --error-unmatch zotero_bridge_plugin/locale/zh-CN/bridge.ftl
-
-      - name: Run all 65 Zotero plugin tests
-        shell: pwsh
-        working-directory: zotero_bridge_plugin
-        run: |
-          $output = & node --test tests/*.test.cjs 2>&1
-          $output | ForEach-Object { Write-Host $_ }
-          if ($LASTEXITCODE -ne 0) { throw "Zotero plugin tests failed." }
-          if (($output -join "`n") -notmatch '# tests 65') {
-            throw "Expected the complete 65-test plugin suite."
-          }
-
-      - name: Build and inspect a temporary XPI
-        shell: pwsh
-        run: |
-          $xpiDir = Join-Path $env:RUNNER_TEMP "zotero-xpi-check"
-          .\build_zotero_bridge_xpi.ps1 -OutputDirectory $xpiDir
-          $archives = @(Get-ChildItem -LiteralPath $xpiDir -Filter *.xpi -File)
-          if ($archives.Count -ne 1) { throw "Expected exactly one temporary XPI." }
-          $entries = @(& tar -tf $archives[0].FullName) |
-            ForEach-Object { $_.Replace('\', '/').TrimStart('./') }
-          foreach ($required in @(
-            'manifest.json',
-            'bootstrap.js',
-            'content/bridge-core.js',
-            'content/bridge-runtime.js',
-            'locale/zh-CN/bridge.ftl'
-          )) {
-            if ($entries -notcontains $required) { throw "XPI missing $required at root." }
-          }
-          foreach ($entry in $entries) {
-            if ($entry -match '(^|/)(tests|package.json|plugin-state.json)(/|$)') {
-              throw "Forbidden XPI entry: $entry"
-            }
-          }

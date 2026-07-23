@@ -22,8 +22,7 @@ class BatchOptions:
     cookies: str = ""
     browser_exe: str = ""
     login_wait_seconds: int = 0
-    # 0 asks the controlled browser session to allocate a dynamic CDP port.
-    debug_port: int = 0
+    debug_port: int = 9333
     throttle_seconds: float = 1.0
     # When True (default), auth/captcha failures go straight to zotero_fallback.
     skip_manual_retry: bool = True
@@ -146,13 +145,7 @@ def run_oa_stage(rows: list[dict], output_dir: Path, options: BatchOptions) -> l
         stage_rows.append(stage_row)
     input_text = "\n".join(input_values)
     try:
-        workflow_result = run_workflow(
-            input_text,
-            output_dir / "oa",
-            email=options.email,
-            artifact_filenames=True,
-            metadata_cache_path=output_dir.parent / "working" / "metadata_cache.jsonl",
-        )
+        workflow_result = run_workflow(input_text, output_dir / "oa", email=options.email)
     except Exception as exc:
         owner_results = _stage_failure(prepared.owner_rows, "oa", _exception_reason(exc))
         return _restore_stage_results(rows, prepared, owner_results, "oa")
@@ -199,9 +192,6 @@ def run_sciencedirect_stage(input_path: Path, output_dir: Path, options: BatchOp
         str(output_dir),
         "--run-name",
         "sciencedirect",
-        "--artifact-filenames",
-        "--metadata-cache",
-        str(output_dir.parent / "working" / "metadata_cache.jsonl"),
     ]
     # Supplements on by default.
     if bool(getattr(options, "download_supplements", True)):
@@ -272,8 +262,6 @@ def run_non_elsevier_stage(input_path: Path, output_dir: Path, options: BatchOpt
             throttle_seconds=options.throttle_seconds,
             circuit_breaker_threshold=int(getattr(options, "circuit_breaker_threshold", 3) or 3),
             iucr_short_try=bool(getattr(options, "iucr_short_try", True)),
-            artifact_filenames=True,
-            metadata_cache_path=output_dir.parent / "working" / "metadata_cache.jsonl",
         )
     except Exception as exc:
         owner_results = _stage_failure(prepared.owner_rows, "non_elsevier", _exception_reason(exc))

@@ -22,7 +22,7 @@ from paper_automation.batch_workflow import (
     load_batch_state,
     paths_from_run_dir,
     result_from_state,
-    _write_latest_state_outputs,
+    write_final_reports,
 )
 
 BRIDGE_SCHEMA_VERSION = 1
@@ -953,15 +953,10 @@ def run_zotero_bridge(
     if not fallback_rows:
         paths = paths_from_run_dir(root)
         state = load_batch_state(paths.root)
-        initial_result = result_from_state(paths, state)
-        if initial_result.zotero_fallback_count:
-            raise ValueError("bridge_fallback_state_mismatch")
-        _write_latest_state_outputs(
-            paths,
-            state,
-            pending_manual_retry_used=bool(state.get("manual_retry_used")),
-        )
         batch_result = result_from_state(paths, state)
+        if batch_result.zotero_fallback_count:
+            raise ValueError("bridge_fallback_state_mismatch")
+        write_final_reports(paths, state["rows"])
         return BridgeRunResult("no_fallback", None, None, batch_result)
 
     bridge = queue_bridge_jobs(root, library_id=library_id, bridge_root=bridge_root)

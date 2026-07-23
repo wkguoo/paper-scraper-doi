@@ -10,12 +10,10 @@ import os
 import shutil
 import stat
 import tempfile
-import threading
 import time
-import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, is_dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -43,9 +41,6 @@ _WINDOWS_RESERVED_NAMES = {
 
 _LOCK_POLL_SECONDS = 0.05
 _STATE_REPLACE_TIMEOUT_SECONDS = 2.0
-ATTEMPT_LEASE_SECONDS = 5 * 60
-ATTEMPT_HEARTBEAT_SECONDS = 30
-_ATTEMPT_RESTORE_FIELDS = ("status", "source", "file", "reason")
 
 
 @dataclass(frozen=True)
@@ -122,8 +117,6 @@ FINAL_REPORT_FILENAMES = (
 # User-facing delivery (keep this simple — one inventory + one results folder).
 USER_DELIVERY_DIR_NAME = "结果"
 USER_INVENTORY_NAME = "下载清单.csv"
-DELIVERY_OWNED_NAME = "delivery_owned.json"
-DELIVERY_OWNED_VERSION = 1
 USER_INVENTORY_FIELDS = [
     "序号",
     "状态",
@@ -399,199 +392,6 @@ def batch_state_lock(
         yield
 
 
-def _attempt_now(now_fn: Callable[[], datetime] | None = None) -> datetime:
-    value = (now_fn or (lambda: datetime.now(timezone.utc)))()
-    if not isinstance(value, datetime):
-        raise ValueError("invalid_attempt_clock")
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _attempt_timestamp(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _parse_attempt_timestamp(value: object) -> datetime:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("invalid_batch_state_active_attempts")
-    try:
-        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError("invalid_batch_state_active_attempts") from exc
-    if parsed.tzinfo is None:
-        raise ValueError("invalid_batch_state_active_attempts")
-    return parsed.astimezone(timezone.utc)
-
-
-def _active_attempts(state: dict) -> dict[str, dict]:
-    attempts = state.get("active_attempts")
-    if attempts is None:
-        attempts = {}
-        state["active_attempts"] = attempts
-    if not isinstance(attempts, dict):
-        raise ValueError("invalid_batch_state_active_attempts")
-    return attempts
-
-
-def _reclaim_expired_attempts_locked(
-    state: dict,
-    *,
-    now: datetime,
-) -> list[dict]:
-    """Restore abandoned rows while retaining already durable successes."""
-
-    attempts = _active_attempts(state)
-    rows_by_id = {str(row.get("task_id", "")): row for row in state["rows"]}
-    reclaimed: list[dict] = []
-    for task_id, record in list(attempts.items()):
-        if _parse_attempt_timestamp(record.get("lease_expires_at")) > now:
-            continue
-        row = rows_by_id.get(task_id)
-        if row is None:
-            raise ValueError("invalid_batch_state_active_attempts")
-        reclaimed.append(dict(record))
-        if not _is_terminal_status(row.get("status", "")):
-            for field in _ATTEMPT_RESTORE_FIELDS:
-                row[field] = str(record.get(f"previous_{field}", "") or "")
-        attempts.pop(task_id, None)
-    return reclaimed
-
-
-def _ensure_no_active_attempts_locked(state: dict, *, now: datetime) -> list[dict]:
-    reclaimed = _reclaim_expired_attempts_locked(state, now=now)
-    if _active_attempts(state):
-        raise ValueError("batch_attempt_in_progress")
-    return reclaimed
-
-
-def _claim_attempts_locked(
-    state: dict,
-    paths: BatchPaths,
-    task_ids: set[str],
-    *,
-    stage: str,
-    now: datetime,
-    lease_seconds: float = ATTEMPT_LEASE_SECONDS,
-) -> tuple[dict[str, str], list[dict]]:
-    if not task_ids:
-        return {}, []
-    if not math.isfinite(float(lease_seconds)) or float(lease_seconds) <= 0:
-        raise ValueError("invalid_attempt_lease")
-    attempts = _active_attempts(state)
-    if attempts:
-        raise ValueError("batch_attempt_in_progress")
-    rows_by_id = {str(row.get("task_id", "")): row for row in state["rows"]}
-    if not task_ids.issubset(rows_by_id):
-        raise ValueError("invalid_state_task_ids")
-
-    started_at = _attempt_timestamp(now)
-    expires_at = _attempt_timestamp(now + timedelta(seconds=float(lease_seconds)))
-    expected: dict[str, str] = {}
-    execution_rows: list[dict] = []
-    for row in state["rows"]:
-        task_id = str(row.get("task_id", ""))
-        if task_id not in task_ids:
-            continue
-        execution_rows.append(dict(row))
-        attempt_id = uuid.uuid4().hex
-        expected[task_id] = attempt_id
-        attempts[task_id] = {
-            "task_id": task_id,
-            "attempt_id": attempt_id,
-            "stage": str(stage),
-            "started_at": started_at,
-            "lease_expires_at": expires_at,
-            **{
-                f"previous_{field}": str(row.get(field, "") or "")
-                for field in _ATTEMPT_RESTORE_FIELDS
-            },
-        }
-        row["status"] = "attempting"
-    save_batch_state(paths, state)
-    return expected, execution_rows
-
-
-def _assert_attempt_fence(state: dict, expected_attempts: dict[str, str]) -> None:
-    attempts = _active_attempts(state)
-    for task_id, attempt_id in expected_attempts.items():
-        record = attempts.get(task_id)
-        if not isinstance(record, dict) or record.get("attempt_id") != attempt_id:
-            raise ValueError("attempt_lease_lost")
-
-
-def _renew_attempt_leases(
-    paths: BatchPaths,
-    expected_attempts: dict[str, str],
-    *,
-    lease_seconds: float,
-    now_fn: Callable[[], datetime] | None = None,
-) -> bool:
-    with batch_state_lock(paths.root):
-        state = load_batch_state(paths.root)
-        _validate_state(state, expected_run_dir=paths.root)
-        try:
-            _assert_attempt_fence(state, expected_attempts)
-        except ValueError:
-            return False
-        expires_at = _attempt_timestamp(
-            _attempt_now(now_fn) + timedelta(seconds=float(lease_seconds))
-        )
-        for task_id in expected_attempts:
-            state["active_attempts"][task_id]["lease_expires_at"] = expires_at
-        save_batch_state(paths, state)
-    return True
-
-
-class _AttemptHeartbeat:
-    def __init__(
-        self,
-        paths: BatchPaths,
-        expected_attempts: dict[str, str],
-        *,
-        interval_seconds: float = ATTEMPT_HEARTBEAT_SECONDS,
-        lease_seconds: float = ATTEMPT_LEASE_SECONDS,
-    ) -> None:
-        self.paths = paths
-        self.expected_attempts = dict(expected_attempts)
-        self.interval_seconds = float(interval_seconds)
-        self.lease_seconds = float(lease_seconds)
-        self.stop_event = threading.Event()
-        self.lease_lost = threading.Event()
-        self.thread: threading.Thread | None = None
-
-    def __enter__(self) -> "_AttemptHeartbeat":
-        if not self.expected_attempts:
-            return self
-
-        def heartbeat() -> None:
-            while not self.stop_event.wait(self.interval_seconds):
-                try:
-                    renewed = _renew_attempt_leases(
-                        self.paths,
-                        self.expected_attempts,
-                        lease_seconds=self.lease_seconds,
-                    )
-                except Exception:
-                    renewed = False
-                if not renewed:
-                    self.lease_lost.set()
-                    return
-
-        self.thread = threading.Thread(
-            target=heartbeat,
-            name="batch-attempt-heartbeat",
-            daemon=True,
-        )
-        self.thread.start()
-        return self
-
-    def __exit__(self, _exc_type, _exc, _traceback) -> None:
-        self.stop_event.set()
-        if self.thread is not None:
-            self.thread.join(timeout=max(1.0, min(self.interval_seconds, 5.0)))
-
-
 def claim_manual_retry(
     run_dir: str | Path,
     *,
@@ -714,8 +514,15 @@ def _publish_verified_pdf_snapshot(
     destination: Path,
     filename: str,
     source_hash: str,
+    *,
+    reuse_any_hash: bool = False,
 ) -> Path:
     """Publish an already validated private snapshot without reopening its source."""
+
+    if reuse_any_hash:
+        for candidate in sorted(destination.glob("*.pdf"), key=lambda path: path.name.casefold()):
+            if _same_pdf_content(candidate, source_hash):
+                return candidate
 
     target = destination / filename
     while True:
@@ -749,7 +556,9 @@ def copy_pdf_safely(
     lock_timeout: float = 10.0,
 ) -> Path:
     safe_filename = _validate_path_component(filename, error="invalid_filename")
-    source_path = _absolute_lexical_path(source)
+    source_path = Path(source).expanduser().resolve()
+    if not source_path.is_file():
+        raise ValueError("not_pdf_response")
     # Keep the caller's absolute spelling for the returned path. Windows may
     # resolve the same directory as either a long path or an 8.3 short path
     # (for example RUNNER~1); returning the worker-local spelling makes
@@ -763,7 +572,7 @@ def copy_pdf_safely(
         _cleanup_stale_pdf_snapshots(destination)
         snapshot = None
         try:
-            snapshot, source_hash = _snapshot_delivery_pdf(source_path, destination)
+            snapshot, source_hash = _snapshot_pdf_source(source_path, destination)
             published = _publish_verified_pdf_snapshot(
                 snapshot,
                 destination,
@@ -1143,150 +952,6 @@ def normalize_input(
     return rows
 
 
-def _hash_json_value(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _raw_input_descriptor(
-    *,
-    input_text: str | None,
-    input_path: str | Path | None,
-) -> dict[str, str]:
-    if (input_text is None) == (input_path is None):
-        raise ValueError("exactly_one_input_required")
-    digest = hashlib.sha256()
-    if input_path is not None:
-        source = Path(input_path).expanduser().resolve()
-        if not source.is_file():
-            raise ValueError("file_missing")
-        with source.open("rb") as handle:
-            for block in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(block)
-        input_type = "file"
-    else:
-        digest.update(str(input_text or "").encode("utf-8"))
-        input_type = "text"
-    return {"source_type": input_type, "raw_sha256": digest.hexdigest()}
-
-
-def _canonical_input_text(value: object) -> str:
-    return " ".join(str(value or "").casefold().split())
-
-
-def _input_task_key(row: dict) -> str:
-    from .artifact_store import paper_identity
-
-    identity = paper_identity(
-        doi=row.get("input_doi") or row.get("doi") or "",
-        title=row.get("input_title") or row.get("title") or "",
-    )
-    if identity.kind == "unknown":
-        raise ValueError("input_identity_unavailable")
-    return f"{identity.kind}:{identity.value}"
-
-
-def _build_input_identity(raw: dict[str, str], rows: list[dict]) -> dict[str, object]:
-    canonical_rows: list[dict[str, str]] = []
-    task_keys: list[str] = []
-    for row in rows:
-        task_key = _input_task_key(row)
-        task_keys.append(task_key)
-        canonical_rows.append(
-            {
-                "task": task_key,
-                "doi": _normalise_doi(row.get("input_doi") or row.get("doi") or ""),
-                "title": _canonical_input_text(
-                    row.get("input_title") or row.get("title") or ""
-                ),
-                "authors": _canonical_input_text(row.get("authors", "")),
-                "journal": _canonical_input_text(row.get("journal", "")),
-                "year": _canonical_input_text(row.get("year", "")),
-            }
-        )
-    return {
-        "source_type": raw["source_type"],
-        "raw_sha256": raw["raw_sha256"],
-        "normalized_sha256": _hash_json_value(canonical_rows),
-        "task_set_sha256": _hash_json_value(sorted(task_keys)),
-        "input_count": len(task_keys),
-    }
-
-
-def _validate_input_identity(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise ValueError("invalid_batch_state_input_identity")
-    required = {
-        "source_type",
-        "raw_sha256",
-        "normalized_sha256",
-        "task_set_sha256",
-        "input_count",
-    }
-    if not required.issubset(value):
-        raise ValueError("invalid_batch_state_input_identity")
-    if value.get("source_type") not in {"file", "text"}:
-        raise ValueError("invalid_batch_state_input_identity")
-    for field in ("raw_sha256", "normalized_sha256", "task_set_sha256"):
-        digest = value.get(field)
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
-            raise ValueError("invalid_batch_state_input_identity")
-    if type(value.get("input_count")) is not int or int(value["input_count"]) < 0:
-        raise ValueError("invalid_batch_state_input_identity")
-    return dict(value)
-
-
-def _raw_identity_matches(saved: dict[str, object], raw: dict[str, str]) -> bool:
-    return (
-        saved.get("source_type") == raw.get("source_type")
-        and saved.get("raw_sha256") == raw.get("raw_sha256")
-    )
-
-
-def _normalized_identity_matches(
-    saved: dict[str, object], incoming: dict[str, object]
-) -> bool:
-    if saved.get("normalized_sha256") == incoming.get("normalized_sha256"):
-        return True
-    return (
-        saved.get("task_set_sha256") == incoming.get("task_set_sha256")
-        and saved.get("input_count") == incoming.get("input_count")
-    )
-
-
-def _normalize_input_in_scratch(
-    *,
-    input_text: str | None,
-    input_path: str | Path | None,
-    options: Any,
-    normalizer: Callable[..., list[dict]],
-    raw: dict[str, str],
-) -> tuple[list[dict], dict[str, object]]:
-    with tempfile.TemporaryDirectory(prefix="paper_batch_input_compare_") as temporary:
-        scratch_paths = _batch_paths_for_root(Path(temporary) / "comparison")
-        rows = [
-            _normalise_row_mapping(row)
-            for row in normalizer(
-                input_text=input_text,
-                input_path=input_path,
-                paths=scratch_paths,
-                options=options,
-            )
-        ]
-        _validate_stage_updates(rows, [])
-        return rows, _build_input_identity(raw, rows)
-
-
 def _is_successful_status(status: object) -> bool:
     value = str(status or "").strip().lower()
     return value in SUCCESS_STATUSES
@@ -1294,17 +959,6 @@ def _is_successful_status(status: object) -> bool:
 
 def _is_terminal_status(status: object) -> bool:
     return _is_successful_status(status) or str(status or "").strip().lower() == "duplicate"
-
-
-def _artifact_index_for_row(row: dict) -> int:
-    task_id = str(row.get("task_id", "") or "")
-    try:
-        return max(1, int(task_id.rsplit("-", 1)[-1]))
-    except (TypeError, ValueError):
-        try:
-            return max(1, int(str(row.get("source_index", "") or "1")))
-        except ValueError:
-            return 1
 
 
 def _update_as_mapping(update: object) -> dict:
@@ -1368,18 +1022,11 @@ def _copy_successful_pdf(row: dict, paths: BatchPaths, *, email: str = "") -> di
         result.update(status="not_pdf_response", file="", reason="not_pdf_response")
         return result
     try:
-        # Internal storage is identity-based.  The readable
-        # 年份-作者-题名.pdf name is chosen only at the delivery boundary.
-        from .artifact_store import make_artifact_filename
+        # Mandatory delivery naming: 年份-作者-题名 at first publish (not a later rename).
         from .file_manager import enrich_row_metadata_for_delivery
 
-        result = enrich_row_metadata_for_delivery(
-            result,
-            email=email,
-            metadata_cache_path=paths.working / "metadata_cache.jsonl",
-        )
-        artifact_index = _artifact_index_for_row(result)
-        preferred_name = make_artifact_filename(artifact_index, result)
+        result = enrich_row_metadata_for_delivery(result, email=email)
+        preferred_name = _filename_for_batch_row(result)
         copied = copy_pdf_safely(source_path, paths.pdfs, preferred_name)
     except (OSError, ValueError) as exc:
         result.update(
@@ -1474,84 +1121,6 @@ def _accepts_on_updates(method: Callable[..., object]) -> bool:
     )
 
 
-def _persist_fenced_updates(
-    paths: BatchPaths,
-    state: dict,
-    expected_attempts: dict[str, str],
-    updates: object,
-) -> list[dict]:
-    with batch_state_lock(paths.root):
-        latest = load_batch_state(paths.root)
-        _validate_state(latest, expected_run_dir=paths.root)
-        _assert_attempt_fence(latest, expected_attempts)
-        normalized = _validate_stage_updates(latest["rows"], updates)
-        if any(update["task_id"] not in expected_attempts for update in normalized):
-            raise ValueError("gateway_task_id_unknown")
-        _apply_stage_updates(latest, normalized, paths, assume_locked=True)
-        state.clear()
-        state.update(latest)
-        return normalized
-
-
-def _finish_fenced_attempts(
-    paths: BatchPaths,
-    state: dict,
-    expected_attempts: dict[str, str],
-    *,
-    returned_updates: object | None = None,
-    callback_applied_ids: set[str] | None = None,
-    failure: str | None = None,
-) -> None:
-    with batch_state_lock(paths.root):
-        latest = load_batch_state(paths.root)
-        _validate_state(latest, expected_run_dir=paths.root)
-        _assert_attempt_fence(latest, expected_attempts)
-
-        returned_ids: set[str] = set()
-        if returned_updates is not None:
-            normalized = _validate_stage_updates(latest["rows"], returned_updates)
-            if any(update["task_id"] not in expected_attempts for update in normalized):
-                raise ValueError("gateway_task_id_unknown")
-            _apply_stage_updates(latest, normalized, paths, assume_locked=True)
-            returned_ids = {update["task_id"] for update in normalized}
-
-        rows_by_id = {str(row.get("task_id", "")): row for row in latest["rows"]}
-        if failure is not None:
-            failed_ids = set(expected_attempts)
-            failure_status = failure
-            failure_reason = failure
-        else:
-            failed_ids = (
-                set(expected_attempts)
-                - returned_ids
-                - set(callback_applied_ids or set())
-            )
-            failure_status = "missing_stage_update"
-            failure_reason = "missing_stage_update"
-        failure_updates = []
-        for task_id in failed_ids:
-            row = rows_by_id[task_id]
-            if _is_terminal_status(row.get("status", "")):
-                continue
-            failure_updates.append(
-                {
-                    **row,
-                    "status": failure_status,
-                    "file": "",
-                    "reason": failure_reason,
-                }
-            )
-        if failure_updates:
-            _apply_stage_updates(latest, failure_updates, paths, assume_locked=True)
-
-        attempts = _active_attempts(latest)
-        for task_id in expected_attempts:
-            attempts.pop(task_id, None)
-        save_batch_state(paths, latest)
-        state.clear()
-        state.update(latest)
-
-
 def _run_gateway_with_state(
     *,
     runner: object,
@@ -1561,7 +1130,6 @@ def _run_gateway_with_state(
     options: Any,
     state: dict,
     required_ids: set[str],
-    expected_attempts: dict[str, str],
 ) -> None:
     method = getattr(runner, method_name)
     callback_error: Exception | None = None
@@ -1570,12 +1138,8 @@ def _run_gateway_with_state(
     def persist_updates(updates: list[dict]) -> None:
         nonlocal callback_error
         try:
-            normalized_updates = _persist_fenced_updates(
-                paths,
-                state,
-                expected_attempts,
-                updates,
-            )
+            normalized_updates = _validate_stage_updates(state["rows"], updates)
+            _apply_stage_updates(state, normalized_updates, paths)
             callback_applied_ids.update(
                 update["task_id"] for update in normalized_updates
             )
@@ -1583,55 +1147,33 @@ def _run_gateway_with_state(
             callback_error = exc
             raise
 
-    if set(expected_attempts) != set(required_ids):
-        raise ValueError("invalid_attempt_task_ids")
-    with _AttemptHeartbeat(paths, expected_attempts):
-        try:
-            if _accepts_on_updates(method):
-                returned_updates = method(rows, paths, options, on_updates=persist_updates)
-            else:
-                returned_updates = method(rows, paths, options)
-        except Exception as exc:
-            if callback_error is exc or str(exc).startswith("attempt_lease_lost"):
-                raise
-            if isinstance(exc, ValueError) and str(exc).startswith(
-                ("gateway_task_id", "invalid_gateway_updates")
-            ):
-                failure = str(exc).split(":", 1)[0]
-                _finish_fenced_attempts(
-                    paths,
-                    state,
-                    expected_attempts,
-                    failure=failure,
-                )
-                raise
-            failure = f"gateway_exception_{type(exc).__name__}"
-            _finish_fenced_attempts(
-                paths,
-                state,
-                expected_attempts,
-                failure=failure,
-            )
-            return
-
-        try:
-            _finish_fenced_attempts(
-                paths,
-                state,
-                expected_attempts,
-                returned_updates=returned_updates,
-                callback_applied_ids=callback_applied_ids,
-            )
-        except ValueError as exc:
-            if str(exc).startswith(("gateway_task_id", "invalid_gateway_updates")):
-                failure = str(exc).split(":", 1)[0]
-                _finish_fenced_attempts(
-                    paths,
-                    state,
-                    expected_attempts,
-                    failure=failure,
-                )
+    try:
+        if _accepts_on_updates(method):
+            returned_updates = method(rows, paths, options, on_updates=persist_updates)
+        else:
+            returned_updates = method(rows, paths, options)
+    except Exception as exc:
+        if callback_error is exc or (
+            isinstance(exc, ValueError)
+            and str(exc).startswith(("gateway_task_id", "invalid_gateway_updates"))
+        ):
             raise
+        failure = f"gateway_exception_{type(exc).__name__}"
+        _mark_required_failures(state, paths, required_ids, failure, failure)
+        return
+
+    normalized_updates = _validate_stage_updates(state["rows"], returned_updates)
+    _apply_stage_updates(state, normalized_updates, paths)
+    returned_ids = {update["task_id"] for update in normalized_updates}
+    missing_ids = required_ids - returned_ids - callback_applied_ids
+    if missing_ids:
+        _mark_required_failures(
+            state,
+            paths,
+            missing_ids,
+            "missing_stage_update",
+            "missing_stage_update",
+        )
 
 
 def _pending_rows(rows: list[dict], *, manual_retry_used: bool) -> tuple[list[dict], list[dict]]:
@@ -1708,7 +1250,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
                 "cookies": "",
                 "browser_exe": "",
                 "login_wait_seconds": 0,
-                "debug_port": 0,
+                "debug_port": 9333,
                 "throttle_seconds": 1.0,
                 "skip_manual_retry": True,
                 "download_supplements": True,
@@ -1751,7 +1293,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
     if type(login_wait_seconds) is not int or login_wait_seconds < 0:
         raise ValueError("invalid_login_wait_seconds")
     debug_port = payload["debug_port"]
-    if type(debug_port) is not int or not 0 <= debug_port <= 65535:
+    if type(debug_port) is not int or not 1 <= debug_port <= 65535:
         raise ValueError("invalid_debug_port")
     throttle_seconds = payload["throttle_seconds"]
     if (
@@ -1803,41 +1345,6 @@ def _options_from_state(state: dict):
     return _batch_options_type()(**validated)
 
 
-def _validate_active_attempts(value: object, rows: list[dict]) -> None:
-    if value is None:
-        return
-    if not isinstance(value, dict):
-        raise ValueError("invalid_batch_state_active_attempts")
-    known_ids = {str(row.get("task_id", "")) for row in rows}
-    required_fields = {
-        "task_id",
-        "attempt_id",
-        "stage",
-        "started_at",
-        "lease_expires_at",
-        *{f"previous_{field}" for field in _ATTEMPT_RESTORE_FIELDS},
-    }
-    for task_id, record in value.items():
-        if not isinstance(task_id, str) or task_id not in known_ids or not isinstance(record, dict):
-            raise ValueError("invalid_batch_state_active_attempts")
-        if set(record) != required_fields or record.get("task_id") != task_id:
-            raise ValueError("invalid_batch_state_active_attempts")
-        if any(
-            not isinstance(record.get(field), str) or not str(record.get(field)).strip()
-            for field in ("attempt_id", "stage")
-        ):
-            raise ValueError("invalid_batch_state_active_attempts")
-        if any(
-            not isinstance(record.get(f"previous_{field}"), str)
-            for field in _ATTEMPT_RESTORE_FIELDS
-        ):
-            raise ValueError("invalid_batch_state_active_attempts")
-        started = _parse_attempt_timestamp(record.get("started_at"))
-        expires = _parse_attempt_timestamp(record.get("lease_expires_at"))
-        if expires <= started:
-            raise ValueError("invalid_batch_state_active_attempts")
-
-
 def _validate_state(
     state: object,
     *,
@@ -1845,16 +1352,11 @@ def _validate_state(
 ) -> dict:
     if not isinstance(state, dict):
         raise ValueError("invalid_batch_state")
-    version = state.get("version")
-    if type(version) is not int or version not in {1, 2} or not isinstance(state.get("run_dir"), str):
+    if state.get("version") != 1 or not isinstance(state.get("run_dir"), str):
         raise ValueError("invalid_batch_state")
-    if version == 2:
-        _validate_input_identity(state.get("input_identity"))
     if not isinstance(state.get("manual_retry_used"), bool) or not isinstance(state.get("rows"), list):
         raise ValueError("invalid_batch_state")
-    normalized_rows = [_normalise_row_mapping(row) for row in state["rows"]]
-    _validate_stage_updates(normalized_rows, [])
-    _validate_active_attempts(state.get("active_attempts"), normalized_rows)
+    _validate_stage_updates([_normalise_row_mapping(row) for row in state["rows"]], [])
     _options_from_state(state)
     if expected_run_dir is not None:
         saved_run_dir = Path(state["run_dir"]).expanduser()
@@ -1991,31 +1493,6 @@ def _validate_zotero_attachment_chain(source: Path) -> tuple[Path, os.stat_resul
     return resolved, final_details
 
 
-def _validate_regular_directory_chain(source_value: str | Path) -> Path:
-    """Resolve one directory only after every lexical component passes lstat."""
-
-    source = _absolute_lexical_path(source_value)
-    current = Path(source.anchor)
-    try:
-        for component in source.parts[1:]:
-            if component in {"", "."}:
-                continue
-            current = current.parent if component == ".." else current / component
-            details = current.lstat()
-            if (
-                current.is_symlink()
-                or stat.S_ISLNK(details.st_mode)
-                or _stat_is_reparse_point(details)
-            ):
-                raise ValueError("delivery_supplement_reparse_point")
-        final_details = current.lstat()
-        if not stat.S_ISDIR(final_details.st_mode):
-            raise ValueError("delivery_supplement_not_directory")
-        return source.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError("delivery_supplement_not_directory") from exc
-
-
 def _local_zotero_attachment(path_value: str) -> Path:
     source = _zotero_attachment_absolute_path(path_value)
     resolved, _ = _validate_zotero_attachment_chain(source)
@@ -2132,15 +1609,10 @@ def _copy_zotero_attachment(
     if source != verified_source or source_hash != verified_hash:
         raise ValueError("zotero_attachment_changed")
     from .file_manager import enrich_row_metadata_for_delivery
-    from .artifact_store import make_artifact_filename
 
-    enriched = enrich_row_metadata_for_delivery(
-        row,
-        email=email,
-        metadata_cache_path=paths.working / "metadata_cache.jsonl",
-    )
+    enriched = enrich_row_metadata_for_delivery(row, email=email)
     safe_filename = _validate_path_component(
-        make_artifact_filename(_artifact_index_for_row(enriched), enriched),
+        _filename_for_batch_row(enriched),
         error="invalid_filename",
     )
     destination = paths.pdfs.expanduser().resolve()
@@ -2160,6 +1632,7 @@ def _copy_zotero_attachment(
                 destination,
                 safe_filename,
                 snapshot_hash,
+                reuse_any_hash=True,
             )
         finally:
             if snapshot is not None:
@@ -2266,10 +1739,6 @@ def _collect_supplement_dirs(row: dict, paths: BatchPaths) -> list[Path]:
     if doi:
         stems.append(doi.replace("/", "_"))
         stems.append(doi.rsplit("/", 1)[-1])
-    from .artifact_store import paper_identity
-
-    identity = paper_identity(row)
-    identity_suffix = f"_{identity.digest}" if identity.kind != "unknown" else ""
 
     search_roots = [
         paths.reports / "sciencedirect" / "supplements",
@@ -2293,17 +1762,44 @@ def _collect_supplement_dirs(row: dict, paths: BatchPaths) -> list[Path]:
             if folder.is_dir() and any(folder.iterdir()):
                 candidates.append(folder)
                 seen.add(key)
-        # Stage inputs are subsets of the original batch, so their numeric
-        # paper prefix can differ.  The stable identity suffix is authoritative.
-        if identity_suffix:
-            for folder in root.glob(f"paper-*{identity_suffix}"):
-                key = str(folder).lower()
-                if key in seen:
-                    continue
-                if folder.is_dir() and any(folder.iterdir()):
-                    candidates.append(folder)
-                    seen.add(key)
     return candidates
+
+
+def _copy_tree_files(source_dir: Path, destination_dir: Path) -> list[str]:
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    relative_names: list[str] = []
+    for source in sorted(source_dir.rglob("*")):
+        if not source.is_file() or source.is_symlink():
+            continue
+        rel = source.relative_to(source_dir)
+        target = destination_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        relative_names.append(str(rel).replace("\\", "/"))
+    return relative_names
+
+
+def _replace_user_directory(target: Path, staging: Path) -> None:
+    backup: Path | None = None
+    if target.exists() or target.is_symlink():
+        backup = target.with_name(f".{target.name}.bak_{time.time_ns()}")
+        if backup.exists() or backup.is_symlink():
+            if backup.is_dir() and not backup.is_symlink():
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                backup.unlink(missing_ok=True)
+        target.replace(backup)
+    try:
+        staging.replace(target)
+    except Exception:
+        if backup is not None and backup.exists() and not target.exists():
+            backup.replace(target)
+        raise
+    if backup is not None:
+        if backup.is_dir() and not backup.is_symlink():
+            shutil.rmtree(backup, ignore_errors=True)
+        else:
+            backup.unlink(missing_ok=True)
 
 
 def _file_sha256(path: Path, *, chunk: int = 1024 * 1024) -> str:
@@ -2317,594 +1813,38 @@ def _file_sha256(path: Path, *, chunk: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
-def _absolute_lexical_path(path: str | Path) -> Path:
-    source = Path(path).expanduser()
-    if not source.is_absolute():
-        source = Path.cwd() / source
-    return Path(os.path.abspath(source))
-
-
-def _snapshot_delivery_pdf(source_value: str | Path, destination: Path) -> tuple[Path, str]:
-    """Snapshot one stable regular PDF handle and reject path/file swaps."""
-
-    source = _absolute_lexical_path(source_value)
-    resolved, path_details = _validate_zotero_attachment_chain(source)
-    snapshot: Path | None = None
-    try:
-        with resolved.open("rb") as source_handle:
-            opened_before = os.fstat(source_handle.fileno())
-            if not _same_file_identity(opened_before, path_details):
-                raise ValueError("delivery_pdf_changed")
-            _revalidate_open_zotero_path(source, resolved, opened_before)
-            snapshot, digest = _snapshot_pdf_handle(source_handle, destination)
-            opened_after = os.fstat(source_handle.fileno())
-            if not _stable_open_file(opened_before, opened_after):
-                raise ValueError("delivery_pdf_changed")
-            _revalidate_open_zotero_path(source, resolved, opened_after)
-        if _file_sha256(snapshot) != digest:
-            raise ValueError("delivery_pdf_changed")
-        return snapshot, digest
-    except BaseException:
-        if snapshot is not None:
-            snapshot.unlink(missing_ok=True)
-        raise
-
-
-def _is_program_owned_success_row(paths: BatchPaths, row: dict) -> bool:
-    if not _is_successful_status(row.get("status", "")):
-        return False
-    if str(row.get("status", "") or "").strip().lower() == "manual_imported":
-        return False
-    source_value = str(row.get("file", "") or "").strip()
-    if not source_value:
-        return True
-    try:
-        source = _absolute_lexical_path(source_value).resolve()
-        source.relative_to(paths.pdfs.expanduser().resolve())
-    except (OSError, ValueError):
-        return False
-    return True
-
-
-def _log_delivery_pdf_validation_failure(
-    paths: BatchPaths,
-    row: dict,
-    detail: str,
-) -> None:
-    record = {
-        "time": _attempt_timestamp(_attempt_now()),
-        "task_id": str(row.get("task_id", "") or ""),
-        "file": str(row.get("file", "") or ""),
-        "detail": str(detail or "")[:500],
-    }
-    path = paths.working / "delivery_pdf_validation_failures.jsonl"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = (json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
-    with path.open("ab", buffering=0) as handle:
-        handle.write(encoded)
-        os.fsync(handle.fileno())
-
-
-def _validate_owned_delivery_snapshot(paths: BatchPaths, row: dict, snapshot: Path) -> None:
-    if not _is_program_owned_success_row(paths, row):
-        return
-    from .pdf_validation import validate_pdf_with_parser
-
-    valid, detail = validate_pdf_with_parser(snapshot)
-    if not valid:
-        _log_delivery_pdf_validation_failure(paths, row, detail)
-        raise ValueError("delivery_pdf_parser_validation_failed")
-
-
-def _revalidate_success_rows(paths: BatchPaths, rows: list[dict]) -> bool:
-    """Downgrade success rows whose PDF cannot cross the delivery boundary."""
-
-    changed = False
-    paths.working.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".delivery_revalidation_",
-        dir=paths.working,
-    ) as temporary:
-        scratch = Path(temporary)
-        for row in rows:
-            if not _is_program_owned_success_row(paths, row):
-                continue
-            snapshot: Path | None = None
-            try:
-                source = str(row.get("file", "") or "").strip()
-                if not source:
-                    raise ValueError("not_pdf_response")
-                snapshot, _ = _snapshot_delivery_pdf(source, scratch)
-                _validate_owned_delivery_snapshot(paths, row, snapshot)
-            except (OSError, ValueError):
-                row["status"] = "not_pdf_response"
-                row["file"] = ""
-                row["reason"] = "delivery_pdf_revalidation_failed"
-                changed = True
-            finally:
-                if snapshot is not None:
-                    snapshot.unlink(missing_ok=True)
-    return changed
-
-
-def _owned_relative_path(value: object) -> str:
-    text = str(value or "").strip().replace("\\", "/")
-    while text.startswith("./"):
-        text = text[2:]
-    parts = text.split("/") if text else []
-    if (
-        not parts
-        or text.startswith("/")
-        or any(part in {"", ".", ".."} for part in parts)
-        or any(
-            any(character in _WINDOWS_INVALID_CHARS or ord(character) < 32 for character in part)
-            or part != part.rstrip(". ")
-            or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
-            for part in parts
-        )
-    ):
-        raise ValueError("invalid_delivery_owned_manifest")
-    return "/".join(parts)
-
-
-def _delivery_owned_path(paths: BatchPaths) -> Path:
-    return paths.working / DELIVERY_OWNED_NAME
-
-
-def _read_delivery_owned_manifest(paths: BatchPaths) -> dict | None:
-    manifest_path = _delivery_owned_path(paths)
-    if not manifest_path.exists() and not manifest_path.is_symlink():
-        return None
-    details = manifest_path.lstat()
-    if manifest_path.is_symlink() or _stat_is_reparse_point(details) or not stat.S_ISREG(details.st_mode):
-        raise ValueError("invalid_delivery_owned_manifest")
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("invalid_delivery_owned_manifest") from exc
-    if (
-        not isinstance(payload, dict)
-        or payload.get("version") != DELIVERY_OWNED_VERSION
-        or type(payload.get("generation")) is not int
-        or payload["generation"] < 1
-        or not isinstance(payload.get("files"), list)
-    ):
-        raise ValueError("invalid_delivery_owned_manifest")
-    normalized_files: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for item in payload["files"]:
-        if not isinstance(item, dict):
-            raise ValueError("invalid_delivery_owned_manifest")
-        relative_path = _owned_relative_path(item.get("relative_path"))
-        digest = str(item.get("sha256", "") or "").lower()
-        if (
-            relative_path.casefold() in seen
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-            or not isinstance(item.get("task_id", ""), str)
-            or not isinstance(item.get("file_type", ""), str)
-        ):
-            raise ValueError("invalid_delivery_owned_manifest")
-        seen.add(relative_path.casefold())
-        normalized_files.append(
-            {
-                "relative_path": relative_path,
-                "sha256": digest,
-                "task_id": str(item.get("task_id", "")),
-                "file_type": str(item.get("file_type", "")),
-            }
-        )
-    return {
-        "version": DELIVERY_OWNED_VERSION,
-        "generation": payload["generation"],
-        "files": normalized_files,
-    }
-
-
-def _legacy_delivery_ownership(paths: BatchPaths) -> dict[str, str]:
-    """First migration: only exact result paths named by the old inventory."""
-
-    inventory = paths.root / USER_INVENTORY_NAME
-    if not inventory.is_file() or inventory.is_symlink():
-        return {}
-    owned: dict[str, str] = {}
-    try:
-        with inventory.open("r", newline="", encoding="utf-8-sig") as handle:
-            rows = list(csv.DictReader(handle))
-    except (OSError, UnicodeError, csv.Error):
-        return {}
-    for row in rows:
-        raw = str(row.get("结果文件", "") or "").strip().lstrip("'")
-        if not raw:
-            continue
-        try:
-            relative_path = _owned_relative_path(raw)
-        except ValueError:
-            continue
-        if not relative_path.casefold().startswith(f"{USER_DELIVERY_DIR_NAME}/".casefold()):
-            continue
-        target = paths.root.joinpath(*relative_path.split("/"))
-        try:
-            details = target.lstat()
-            if target.is_symlink() or _stat_is_reparse_point(details):
-                owned[relative_path.casefold()] = ""
-            elif stat.S_ISREG(details.st_mode):
-                owned[relative_path.casefold()] = _file_sha256(target)
-        except OSError:
-            continue
-    return owned
-
-
-def _previous_delivery_ownership(
-    paths: BatchPaths,
-) -> tuple[int, dict[str, str], str]:
-    manifest = _read_delivery_owned_manifest(paths)
-    if manifest is None:
-        return 0, _legacy_delivery_ownership(paths), ""
-    owned = {
-        item["relative_path"].casefold(): item["sha256"]
-        for item in manifest["files"]
-        if item["relative_path"].casefold().startswith(
-            f"{USER_DELIVERY_DIR_NAME}/".casefold()
-        )
-    }
-    inventory_hash = next(
-        (
-            item["sha256"]
-            for item in manifest["files"]
-            if item["relative_path"].casefold() == USER_INVENTORY_NAME.casefold()
-        ),
-        "",
-    )
-    return int(manifest["generation"]), owned, inventory_hash
-
-
-def _copy_regular_file_stable(source_value: str | Path, target: Path) -> str:
-    source = _absolute_lexical_path(source_value)
-    resolved, path_details = _validate_zotero_attachment_chain(source)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256()
-    try:
-        with resolved.open("rb") as source_handle, target.open("xb") as target_handle:
-            before = os.fstat(source_handle.fileno())
-            if not _same_file_identity(before, path_details):
-                raise ValueError("delivery_source_changed")
-            _revalidate_open_zotero_path(source, resolved, before)
-            for block in iter(lambda: source_handle.read(1024 * 1024), b""):
-                target_handle.write(block)
-                digest.update(block)
-            target_handle.flush()
-            os.fsync(target_handle.fileno())
-            after = os.fstat(source_handle.fileno())
-            if not _stable_open_file(before, after):
-                raise ValueError("delivery_source_changed")
-            _revalidate_open_zotero_path(source, resolved, after)
-        return digest.hexdigest()
-    except BaseException:
-        target.unlink(missing_ok=True)
-        raise
-
-
-def _copy_preserved_delivery_tree(
-    source_root: Path,
-    staging_root: Path,
-    prior_owned: dict[str, str],
-) -> None:
-    if not source_root.exists() and not source_root.is_symlink():
-        return
-    root_details = source_root.lstat()
-    if (
-        source_root.is_symlink()
-        or _stat_is_reparse_point(root_details)
-        or not stat.S_ISDIR(root_details.st_mode)
-    ):
-        raise ValueError("delivery_unowned_reparse_point")
-
-    def visit(source_dir: Path, destination_dir: Path, relative_dir: Path) -> None:
-        destination_dir.mkdir(parents=True, exist_ok=True)
-        with os.scandir(source_dir) as entries:
-            for entry in entries:
-                source = Path(entry.path)
-                relative = relative_dir / entry.name
-                owned_key = (
-                    f"{USER_DELIVERY_DIR_NAME}/{relative.as_posix()}".casefold()
-                )
-                details = source.lstat()
-                is_reparse = (
-                    source.is_symlink()
-                    or stat.S_ISLNK(details.st_mode)
-                    or _stat_is_reparse_point(details)
-                )
-                if is_reparse:
-                    if owned_key in prior_owned:
-                        continue
-                    raise ValueError("delivery_unowned_reparse_point")
-                target = destination_dir / entry.name
-                if stat.S_ISDIR(details.st_mode):
-                    visit(source, target, relative)
-                    continue
-                if not stat.S_ISREG(details.st_mode):
-                    if owned_key in prior_owned:
-                        continue
-                    raise ValueError("delivery_unowned_special_file")
-                digest = _copy_regular_file_stable(source, target)
-                if prior_owned.get(owned_key) == digest:
-                    target.unlink(missing_ok=True)
-
-    visit(source_root, staging_root, Path())
-
-
-def _manual_collision_name(path: Path, digest: str) -> Path:
-    suffix = digest[:8]
-    candidate = path.with_name(f"{path.stem}_manual_{suffix}{path.suffix}")
-    counter = 2
-    while candidate.exists() or candidate.is_symlink():
-        candidate = path.with_name(
-            f"{path.stem}_manual_{suffix}_{counter}{path.suffix}"
-        )
-        counter += 1
-    return candidate
-
-
-def _preserve_collision_as_manual(path: Path) -> Path:
-    if path.is_symlink():
-        raise ValueError("delivery_unowned_reparse_point")
-    if path.is_file():
-        digest = _file_sha256(path)
-    elif path.is_dir():
-        digest = hashlib.sha256(path.name.encode("utf-8")).hexdigest()
-    else:
-        raise ValueError("delivery_unowned_special_file")
-    target = _manual_collision_name(path, digest)
-    os.replace(path, target)
-    return target
-
-
-def _remove_transaction_target(path: Path) -> None:
-    if not path.exists() and not path.is_symlink():
-        return
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink(missing_ok=True)
-
-
-def _publish_delivery_transaction(
-    paths: BatchPaths,
-    staging_results: Path,
-    staging_inventory: Path,
-    staging_manifest: Path,
-    extra_files: list[tuple[Path, Path]] | None = None,
-) -> None:
-    manifest_target = _delivery_owned_path(paths)
-    manifest_target.parent.mkdir(parents=True, exist_ok=True)
-    targets = [
-        (paths.root / USER_DELIVERY_DIR_NAME, staging_results),
-        (paths.root / USER_INVENTORY_NAME, staging_inventory),
-        *(extra_files or []),
-        (manifest_target, staging_manifest),
-    ]
-    backup_root = Path(tempfile.mkdtemp(prefix=".delivery_backup_", dir=paths.root))
-    backups: dict[Path, Path] = {}
-    published: list[Path] = []
-    cleanup_backup = True
-    try:
-        for index, (target, staged) in enumerate(targets):
-            if target.exists() or target.is_symlink():
-                backup = backup_root / f"item_{index}"
-                os.replace(target, backup)
-                backups[target] = backup
-            os.replace(staged, target)
-            published.append(target)
-    except Exception as publish_error:
-        rollback_errors: list[str] = []
-        for target in reversed([item[0] for item in targets]):
-            try:
-                if target in published:
-                    _remove_transaction_target(target)
-                backup = backups.get(target)
-                if backup is not None and (backup.exists() or backup.is_symlink()):
-                    os.replace(backup, target)
-            except OSError as rollback_error:
-                rollback_errors.append(f"{target.name}:{rollback_error}")
-        if rollback_errors:
-            cleanup_backup = False
-            raise RuntimeError(
-                "delivery_transaction_rollback_failed:" + ";".join(rollback_errors)
-            ) from publish_error
-        raise
-    finally:
-        if cleanup_backup:
-            shutil.rmtree(backup_root, ignore_errors=True)
-
-
-
 def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
-    """Transactionally publish inventory, results tree, and ownership manifest."""
+    """Publish the only user-facing deliverables: 下载清单.csv + 结果/.
 
-    from .artifact_store import paper_identity
+    Internal reports/ and working/ remain for the pipeline; daily use only needs
+    these two paths at the run root.
+
+    **A1 merge-safe:** existing PDFs in ``结果/`` that are not produced from
+    current success rows (manual drops / external imports) are preserved by
+    content hash and listed as ``外部补入``.
+    """
 
     paths.root.mkdir(parents=True, exist_ok=True)
-    paths.working.mkdir(parents=True, exist_ok=True)
-    previous_generation, prior_owned, prior_inventory_hash = (
-        _previous_delivery_ownership(paths)
-    )
-    base_counts: dict[str, int] = {}
-    for index, row in enumerate(rows, start=1):
-        if not _is_successful_status(row.get("status", "")):
-            continue
-        fallback = f"{row.get('task_id') or f'paper-{index:04d}'}.pdf"
-        base = _safe_delivery_name(_filename_for_batch_row(row), fallback=fallback)
-        if not base.lower().endswith(".pdf"):
-            base = f"{base}.pdf"
-        key = base.casefold()
-        base_counts[key] = base_counts.get(key, 0) + 1
-
     staging_root = Path(
         tempfile.mkdtemp(prefix=".user_delivery_staging_", dir=paths.root)
     )
     staging_results = staging_root / USER_DELIVERY_DIR_NAME
     staging_results.mkdir(parents=True, exist_ok=True)
     inventory_rows: list[dict[str, str]] = []
-    owned_records: dict[str, dict[str, str]] = {}
-    new_hashes: dict[str, str] = {}
-    extra_transaction_files: list[tuple[Path, Path]] = []
+    used_names: set[str] = set()
+    staged_hashes: set[str] = set()
 
-    def owned_key(path: Path) -> str:
-        return f"{USER_DELIVERY_DIR_NAME}/{path.relative_to(staging_results).as_posix()}".casefold()
-
-    def record_owned(path: Path, digest: str, task_id: str, file_type: str) -> None:
-        relative_path = f"{USER_DELIVERY_DIR_NAME}/{path.relative_to(staging_results).as_posix()}"
-        key = relative_path.casefold()
-        new_hashes[key] = digest
-        owned_records[key] = {
-            "relative_path": relative_path,
-            "sha256": digest,
-            "task_id": task_id,
-            "file_type": file_type,
-        }
-
-    def place_snapshot(
-        snapshot: Path,
-        digest: str,
-        target: Path,
-        *,
-        task_id: str,
-        file_type: str,
-    ) -> Path:
-        base_target = target
-        collision_attempt = 0
-        while target.exists() or target.is_symlink():
-            key = owned_key(target)
-            if key not in new_hashes:
-                _preserve_collision_as_manual(target)
-                break
-            if new_hashes[key] == digest:
-                snapshot.unlink(missing_ok=True)
-                return target
-            collision_attempt += 1
-            if collision_attempt == 1:
-                suffix = digest[:8]
-            else:
-                suffix = hashlib.sha256(
-                    f"{task_id}:{digest}:{collision_attempt}".encode("utf-8")
-                ).hexdigest()[:12]
-            target = base_target.with_name(
-                f"{base_target.stem}_{suffix}{base_target.suffix}"
-            )
-            if collision_attempt > 4:
-                raise ValueError("delivery_filename_hash_collision")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(snapshot, target)
-        if _file_sha256(target) != digest:
-            raise ValueError("delivery_copy_hash_mismatch")
-        record_owned(target, digest, task_id, file_type)
-        return target
-
-    def copy_supplement_tree(
-        source_root: Path,
-        destination_root: Path,
-        *,
-        task_id: str,
-    ) -> int:
-        source_root = _validate_regular_directory_chain(source_root)
-        copied = 0
-
-        def visit(source_dir: Path, destination_dir: Path) -> None:
-            nonlocal copied
-            destination_dir.mkdir(parents=True, exist_ok=True)
-            with os.scandir(source_dir) as entries:
-                for entry in entries:
-                    source = Path(entry.path)
-                    details = source.lstat()
-                    if (
-                        source.is_symlink()
-                        or stat.S_ISLNK(details.st_mode)
-                        or _stat_is_reparse_point(details)
-                    ):
-                        raise ValueError("delivery_supplement_reparse_point")
-                    target = destination_dir / entry.name
-                    if stat.S_ISDIR(details.st_mode):
-                        visit(source, target)
-                        continue
-                    if not stat.S_ISREG(details.st_mode):
-                        raise ValueError("delivery_supplement_special_file")
-                    descriptor, temporary_name = tempfile.mkstemp(
-                        prefix=".supplement_snapshot_",
-                        suffix=".tmp",
-                        dir=destination_dir,
-                    )
-                    os.close(descriptor)
-                    temporary = Path(temporary_name)
-                    temporary.unlink(missing_ok=True)
-                    try:
-                        digest = _copy_regular_file_stable(source, temporary)
-                        place_snapshot(
-                            temporary,
-                            digest,
-                            target,
-                            task_id=task_id,
-                            file_type="supplement",
-                        )
-                    finally:
-                        temporary.unlink(missing_ok=True)
-                    copied += 1
-
-        visit(source_root, destination_root)
-        return copied
+    delivery_target = paths.root / USER_DELIVERY_DIR_NAME
+    # Snapshot orphans before replace so manual drops survive republish.
+    prior_orphans: list[Path] = []
+    if delivery_target.is_dir():
+        prior_orphans = [
+            p
+            for p in delivery_target.iterdir()
+            if p.is_file() and not p.is_symlink() and p.suffix.lower() == ".pdf"
+        ]
 
     try:
-        current_inventory = paths.root / USER_INVENTORY_NAME
-        if prior_inventory_hash and (
-            current_inventory.exists() or current_inventory.is_symlink()
-        ):
-            details = current_inventory.lstat()
-            if (
-                current_inventory.is_symlink()
-                or _stat_is_reparse_point(details)
-                or not stat.S_ISREG(details.st_mode)
-            ):
-                raise ValueError("delivery_unowned_reparse_point")
-            current_inventory_hash = _file_sha256(current_inventory)
-            if current_inventory_hash != prior_inventory_hash:
-                manual_name = (
-                    f"{Path(USER_INVENTORY_NAME).stem}_manual_"
-                    f"{current_inventory_hash[:8]}{Path(USER_INVENTORY_NAME).suffix}"
-                )
-                manual_target: Path | None = paths.root / manual_name
-                counter = 2
-                while manual_target is not None and (
-                    manual_target.exists() or manual_target.is_symlink()
-                ):
-                    if (
-                        manual_target.is_file()
-                        and not manual_target.is_symlink()
-                        and _file_sha256(manual_target) == current_inventory_hash
-                    ):
-                        manual_target = None
-                        break
-                    manual_target = paths.root / (
-                        f"{Path(USER_INVENTORY_NAME).stem}_manual_"
-                        f"{current_inventory_hash[:8]}_{counter}"
-                        f"{Path(USER_INVENTORY_NAME).suffix}"
-                    )
-                    counter += 1
-                if manual_target is not None:
-                    staged_manual = staging_root / manual_name
-                    copied_hash = _copy_regular_file_stable(
-                        current_inventory,
-                        staged_manual,
-                    )
-                    if copied_hash != current_inventory_hash:
-                        raise ValueError("delivery_source_changed")
-                    extra_transaction_files.append((manual_target, staged_manual))
-
-        _copy_preserved_delivery_tree(
-            paths.root / USER_DELIVERY_DIR_NAME,
-            staging_results,
-            prior_owned,
-        )
-
         for index, row in enumerate(rows, start=1):
             status = str(row.get("status", "") or "").strip()
             label = _status_label_zh(status)
@@ -2918,70 +1858,43 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
             supplements_rel = ""
             if label == "成功":
                 source_file = str(row.get("file", "") or "").strip()
-                task_id = str(row.get("task_id", "") or "")
-                snapshot: Path | None = None
-                try:
-                    snapshot, digest = _snapshot_delivery_pdf(source_file, staging_results)
-                    _validate_owned_delivery_snapshot(paths, row, snapshot)
-                    fallback = f"{task_id or f'paper-{index:04d}'}.pdf"
-                    base = _safe_delivery_name(_filename_for_batch_row(row), fallback=fallback)
-                    if not base.lower().endswith(".pdf"):
-                        base = f"{base}.pdf"
-                    identity = paper_identity(row)
-                    identity_digest = identity.digest
-                    if identity.kind == "unknown":
-                        identity_digest = hashlib.sha256(
-                            (task_id or fallback).encode("utf-8")
-                        ).hexdigest()[:12]
-                    preferred = base
-                    if base_counts.get(base.casefold(), 0) > 1:
-                        preferred = f"{Path(base).stem}_{identity_digest}.pdf"
-                    target_pdf = place_snapshot(
-                        snapshot,
-                        digest,
-                        staging_results / preferred,
-                        task_id=task_id,
-                        file_type="pdf",
+                source_path = Path(source_file).expanduser() if source_file else None
+                if source_path is not None and source_path.is_file() and not source_path.is_symlink():
+                    preferred = _safe_delivery_name(
+                        source_path.name if source_path.suffix.lower() == ".pdf" else f"{source_path.stem}.pdf",
+                        fallback=f"{row.get('task_id') or f'paper-{index:04d}'}.pdf",
                     )
-                    snapshot = None
-                    result_rel = (
-                        f"{USER_DELIVERY_DIR_NAME}/"
-                        f"{target_pdf.relative_to(staging_results).as_posix()}"
-                    )
+                    if not preferred.lower().endswith(".pdf"):
+                        preferred = f"{preferred}.pdf"
+                    base = preferred
+                    counter = 2
+                    while preferred.lower() in used_names:
+                        preferred = f"{Path(base).stem}_{counter}.pdf"
+                        counter += 1
+                    used_names.add(preferred.lower())
+                    target_pdf = staging_results / preferred
+                    shutil.copy2(source_path, target_pdf)
+                    try:
+                        staged_hashes.add(_file_sha256(target_pdf))
+                    except OSError:
+                        pass
+                    result_rel = f"{USER_DELIVERY_DIR_NAME}/{preferred}"
+
                     supplement_dirs = _collect_supplement_dirs(row, paths)
                     if supplement_dirs:
-                        supplement_folder = f"{target_pdf.stem}_supplements"
-                        supplement_destination = staging_results / supplement_folder
-                        supplement_count = 0
+                        suppl_folder_name = f"{Path(preferred).stem}_supplements"
+                        suppl_dest = staging_results / suppl_folder_name
+                        copied_names: list[str] = []
                         for folder in supplement_dirs:
-                            supplement_count += copy_supplement_tree(
-                                folder,
-                                supplement_destination,
-                                task_id=task_id,
-                            )
-                        if supplement_count:
+                            copied_names.extend(_copy_tree_files(folder, suppl_dest))
+                        if copied_names:
                             supplements_rel = (
-                                f"{USER_DELIVERY_DIR_NAME}/{supplement_folder}"
-                                f"（{supplement_count}个文件）"
+                                f"{USER_DELIVERY_DIR_NAME}/{suppl_folder_name}"
+                                f"（{len(copied_names)}个文件）"
                             )
-                except ValueError as exc:
-                    if str(exc) not in {
-                        "not_pdf_response",
-                        "zotero_attachment_reparse_point",
-                        "zotero_attachment_changed",
-                        "delivery_pdf_changed",
-                        "delivery_pdf_parser_validation_failed",
-                    }:
-                        raise
-                    row["status"] = "not_pdf_response"
-                    row["file"] = ""
-                    row["reason"] = "delivery_pdf_revalidation_failed"
+                else:
                     label = "失败"
-                    reason = "delivery_pdf_revalidation_failed"
-                    result_rel = ""
-                finally:
-                    if snapshot is not None:
-                        snapshot.unlink(missing_ok=True)
+                    reason = str(row.get("reason", "") or "").strip() or "missing_result_pdf"
 
             inventory_rows.append(
                 {
@@ -3000,82 +1913,58 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
                 }
             )
 
-        # Make preserved/manual PDFs visible in the user inventory without
-        # claiming ownership of them.
-        for external in sorted(staging_results.rglob("*.pdf"), key=lambda item: str(item).casefold()):
-            if not external.is_file() or external.is_symlink():
+        # A1: re-attach orphan PDFs not already staged by content hash.
+        orphan_index = 0
+        for orphan in sorted(prior_orphans, key=lambda p: p.name.lower()):
+            try:
+                digest = _file_sha256(orphan)
+            except OSError:
                 continue
-            relative_path = (
-                f"{USER_DELIVERY_DIR_NAME}/"
-                f"{external.relative_to(staging_results).as_posix()}"
-            )
-            if relative_path.casefold() in owned_records:
+            if digest in staged_hashes:
                 continue
+            preferred = _safe_delivery_name(orphan.name, fallback=f"external_{orphan_index + 1:04d}.pdf")
+            if not preferred.lower().endswith(".pdf"):
+                preferred = f"{preferred}.pdf"
+            base = preferred
+            counter = 2
+            while preferred.lower() in used_names:
+                preferred = f"{Path(base).stem}_{counter}.pdf"
+                counter += 1
+            used_names.add(preferred.lower())
+            shutil.copy2(orphan, staging_results / preferred)
+            staged_hashes.add(digest)
+            orphan_index += 1
             inventory_rows.append(
                 {
                     "序号": str(len(inventory_rows) + 1),
                     "状态": "外部补入",
                     "DOI": "",
-                    "题名": external.stem,
+                    "题名": Path(preferred).stem,
                     "作者": "",
                     "年份": "",
                     "期刊": "",
                     "下载来源": "外部补入",
-                    "结果文件": relative_path,
+                    "结果文件": f"{USER_DELIVERY_DIR_NAME}/{preferred}",
                     "补充材料": "",
                     "失败原因": "",
                     "task_id": "",
                 }
             )
 
-        staging_inventory = staging_root / USER_INVENTORY_NAME
-        _write_report_csv(staging_inventory, USER_INVENTORY_FIELDS, inventory_rows)
-        inventory_digest = _file_sha256(staging_inventory)
-        inventory_key = USER_INVENTORY_NAME.casefold()
-        owned_records[inventory_key] = {
-            "relative_path": USER_INVENTORY_NAME,
-            "sha256": inventory_digest,
-            "task_id": "",
-            "file_type": "inventory",
-        }
-        manifest_payload = {
-            "version": DELIVERY_OWNED_VERSION,
-            "generation": previous_generation + 1,
-            "files": sorted(
-                owned_records.values(),
-                key=lambda item: item["relative_path"].casefold(),
-            ),
-        }
-        staging_manifest = staging_root / DELIVERY_OWNED_NAME
-        _write_report_json(staging_manifest, manifest_payload)
-        _publish_delivery_transaction(
-            paths,
-            staging_results,
-            staging_inventory,
-            staging_manifest,
-            extra_transaction_files,
-        )
-        return paths.root / USER_INVENTORY_NAME
+        inventory_staging = staging_root / USER_INVENTORY_NAME
+        _write_report_csv(inventory_staging, USER_INVENTORY_FIELDS, inventory_rows)
+
+        inventory_target = paths.root / USER_INVENTORY_NAME
+        _replace_user_directory(delivery_target, staging_results)
+        os.replace(inventory_staging, inventory_target)
+        return inventory_target
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
 
 
-def write_final_reports(
-    paths: BatchPaths,
-    rows: list[dict],
-    *,
-    _already_revalidated: bool = False,
-) -> None:
+def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
     """Write stable final reports from the current state, with or without Zotero data."""
 
-    if not _already_revalidated:
-        _revalidate_success_rows(paths, rows)
-    try:
-        # Delivery is built from verified snapshots first.  Any last-moment
-        # source downgrade is therefore reflected in the reports below.
-        publish_user_delivery(paths, rows)
-    except Exception as exc:
-        raise RuntimeError(f"final_report_write_failed:{type(exc).__name__}:{exc}") from exc
     manifest_rows = [dict(row) for row in rows]
     failed_rows = [
         row for row in manifest_rows
@@ -3146,6 +2035,8 @@ def write_final_reports(
                 _publish_report_set(paths, staging)
             finally:
                 _cleanup_report_transaction_dir(staging)
+            # User-facing package: one inventory + one results folder.
+            publish_user_delivery(paths, manifest_rows)
     except Exception as exc:
         raise RuntimeError(f"final_report_write_failed:{type(exc).__name__}:{exc}") from exc
 
@@ -3171,8 +2062,6 @@ def _write_latest_state_outputs(
 
     latest = load_batch_state(paths.root)
     _validate_state(latest, expected_run_dir=paths.root)
-    if _revalidate_success_rows(paths, latest["rows"]):
-        save_batch_state(paths, latest)
     if pending_manual_retry_used is not None:
         _write_pending_files(
             paths,
@@ -3180,9 +2069,6 @@ def _write_latest_state_outputs(
             manual_retry_used=pending_manual_retry_used,
         )
     write_final_reports(paths, latest["rows"])
-    # publish_user_delivery performs a final same-handle snapshot as well; if
-    # it caught a last-moment source swap, persist that downgrade atomically.
-    save_batch_state(paths, latest)
     state.clear()
     state.update(latest)
 
@@ -3568,102 +2454,15 @@ def start_batch(
     selected_options = options or _batch_options_type()()
     serialized_options = _serialize_options(selected_options)
     resolved_name = run_name or default_run_name_from_input(input_path, input_text)
-    normalize = normalizer or normalize_input
-    raw_identity = _raw_input_descriptor(input_text=input_text, input_path=input_path)
 
     # Fixed delivery folder (default): one stable path per job.
     use_fixed = bool(fixed_run) and not bool(fresh)
     if use_fixed:
-        safe_name = _validate_path_component(
-            resolved_name,
-            error="invalid_run_name",
-            clean_spaces=True,
-        )
-        candidate_root = Path(output_root).expanduser().resolve() / safe_name
-        existing_state = candidate_root / "working" / "batch_state.json"
-        # For an existing run, construct paths without creating any missing
-        # directory.  A rejected input must leave even a partially damaged run
-        # byte-for-byte and structure-for-structure unchanged.
-        paths = (
-            _paths_from_run_dir(candidate_root)
-            if existing_state.is_file()
-            else create_batch_paths(
-                output_root,
-                run_name=safe_name,
-                now=now,
-                fixed=True,
-            )
-        )
+        paths = create_batch_paths(output_root, run_name=resolved_name, now=now, fixed=True)
         print(f"[fixed_run] 批次目录（固定）: {paths.root}", flush=True)
         if paths.state.is_file():
-            # Compare before any state/output mutation.  A v2 raw-byte match can
-            # resume immediately; otherwise normalize only in a scratch folder.
-            with batch_state_lock(paths.root):
-                existing = load_batch_state(paths.root)
-                _validate_state(existing, expected_run_dir=paths.root)
-                version = int(existing["version"])
-                saved_identity = (
-                    _validate_input_identity(existing.get("input_identity"))
-                    if version == 2
-                    else None
-                )
-                raw_match = bool(
-                    saved_identity is not None
-                    and _raw_identity_matches(saved_identity, raw_identity)
-                )
-
-            incoming_identity: dict[str, object] | None = None
-            if not raw_match:
-                _, incoming_identity = _normalize_input_in_scratch(
-                    input_text=input_text,
-                    input_path=input_path,
-                    options=selected_options,
-                    normalizer=normalize,
-                    raw=raw_identity,
-                )
-
-            with batch_state_lock(paths.root):
-                existing = load_batch_state(paths.root)
-                _validate_state(existing, expected_run_dir=paths.root)
-                version = int(existing["version"])
-                if version == 2:
-                    saved_identity = _validate_input_identity(existing.get("input_identity"))
-                    matches = _raw_identity_matches(saved_identity, raw_identity)
-                    if not matches and incoming_identity is not None:
-                        matches = _normalized_identity_matches(
-                            saved_identity,
-                            incoming_identity,
-                        )
-                    if not matches:
-                        raise ValueError("input_changed_for_existing_run")
-                else:
-                    # v1 has no raw-input digest.  Its original task identities
-                    # are the only safe upgrade evidence.
-                    if incoming_identity is None:
-                        _, incoming_identity = _normalize_input_in_scratch(
-                            input_text=input_text,
-                            input_path=input_path,
-                            options=selected_options,
-                            normalizer=normalize,
-                            raw=raw_identity,
-                        )
-                    try:
-                        legacy_identity = _build_input_identity(
-                            raw_identity,
-                            existing["rows"],
-                        )
-                    except ValueError as exc:
-                        raise ValueError("input_changed_for_existing_run") from exc
-                    if not _normalized_identity_matches(legacy_identity, incoming_identity):
-                        raise ValueError("input_changed_for_existing_run")
-                    existing["version"] = 2
-                    existing["input_identity"] = incoming_identity
-                    save_batch_state(paths, existing)
-                    print("[fixed_run] 旧批次输入已确认，batch_state 已原子升级到 v2。", flush=True)
-
-            # Reuse existing batch: continue unresolved rows only (keep successes
-            # and their original task ordering).
-            print("[fixed_run] 输入身份一致，续跑未完成项（成功项保留）…", flush=True)
+            # Reuse existing batch: continue unresolved rows only (keep successes).
+            print("[fixed_run] 发现已有 batch_state，续跑未完成项（成功项保留）…", flush=True)
             return retry_failed_batch(
                 paths.root,
                 gateway=gateway,
@@ -3679,54 +2478,40 @@ def start_batch(
         )
         print(f"[run] 新建时间戳批次目录: {paths.root}", flush=True)
 
+    normalize = normalizer or normalize_input
     rows = [_normalise_row_mapping(row) for row in normalize(
         input_text=input_text,
         input_path=input_path,
         paths=paths,
         options=selected_options,
     )]
-    input_identity = _build_input_identity(raw_identity, rows)
-    # The product normalizer enables DOI/title preflight by default. A custom
-    # normalizer is an internal/test injection point and owns its metadata
-    # policy unless the caller explicitly opts in with ``doi_preflight=True``.
-    # This also guarantees synthetic offline tests never make accidental calls.
+    # A4: DOI preflight ON by default (fail-open on network errors).
     if doi_preflight is None:
-        doi_preflight = normalizer is None
+        doi_preflight = True
     if doi_preflight:
         rows = _apply_doi_preflight(rows, email=str(getattr(selected_options, "email", "") or ""), paths=paths)
     _validate_stage_updates(rows, [])
     _write_csv_rows(paths.normalized_input, rows)
     skip_manual = bool(serialized_options.get("skip_manual_retry", True))
     state = {
-        "version": 2,
+        "version": 1,
         "run_dir": str(paths.root),
         # skip_manual_retry: treat as already used so all failures go to zotero_fallback.
         "manual_retry_used": skip_manual,
         "options": serialized_options,
-        "input_identity": input_identity,
-        "active_attempts": {},
         "rows": rows,
     }
-    required_ids = set(_required_task_ids(rows))
     with batch_state_lock(paths.root):
         save_batch_state(paths, state)
-        expected_attempts, execution_rows = _claim_attempts_locked(
-            state,
-            paths,
-            required_ids,
-            stage="start",
-            now=_attempt_now(),
-        )
     runner = gateway or DefaultStageGateway()
     _run_gateway_with_state(
         runner=runner,
         method_name="run_initial",
-        rows=execution_rows,
+        rows=rows,
         paths=paths,
         options=selected_options,
         state=state,
-        required_ids=required_ids,
-        expected_attempts=expected_attempts,
+        required_ids=set(_required_task_ids(rows)),
     )
     # A2: institutional → OA recovery → zotero_fallback + delivery.
     return run_post_download_ladder(
@@ -3757,61 +2542,56 @@ def retry_failed_batch(
     with batch_state_lock(paths.root):
         state = load_batch_state(paths.root)
         _validate_state(state, expected_run_dir=paths.root)
-        reclaimed = _ensure_no_active_attempts_locked(state, now=_attempt_now())
         selected_options = options or _options_from_state(state)
         if options is not None:
             state["options"] = _serialize_options(selected_options)
-        reclaimed_ids = {
-            str(record.get("task_id", "") or "") for record in reclaimed
-        }
         failed_rows = [
             row
             for row in state["rows"]
             if not _is_terminal_status(row.get("status", ""))
-            and (
-                str(row.get("task_id", "") or "") in reclaimed_ids
-                or str(row.get("status", "") or "").strip().lower() == "pending"
-                or is_retry_eligible(
-                    row.get("status", ""),
-                    row.get("reason", ""),
-                    retry_all=retry_all,
-                )
+            and is_retry_eligible(
+                row.get("status", ""),
+                row.get("reason", ""),
+                retry_all=retry_all,
             )
         ]
         if not failed_rows:
-            if reclaimed:
-                save_batch_state(paths, state)
             return _result_from_state(paths, state)
-        retry_ids = {str(row.get("task_id", "")) for row in failed_rows}
-        expected_attempts, execution_rows = _claim_attempts_locked(
-            state,
-            paths,
-            retry_ids,
-            stage="retry_failed",
-            now=_attempt_now(),
-        )
-
-    # The durable row remains ``attempting``.  A private execution copy is made
-    # runnable without erasing its original failure reason from batch_state.json.
-    pending_rows = []
-    for row in execution_rows:
-        runnable = dict(row)
-        runnable["status"] = "pending"
-        runnable["source"] = "retry_failed"
-        runnable["file"] = ""
-        pending_rows.append(runnable)
+        # Reset unresolved rows to pending so stages will process them.
+        for row in failed_rows:
+            row["status"] = "pending"
+            row["source"] = "retry_failed"
+            row["file"] = ""
+            if str(row.get("reason", "") or "").startswith("doi_"):
+                pass
+            else:
+                row["reason"] = "retry_failed_reset"
+        # Opt1: do not re-run DOI preflight on retry by default (avoids hangs).
+        save_batch_state(paths, state)
 
     runner = gateway or DefaultStageGateway()
     method = "run_institutional_only" if skip_oa else "run_initial"
+    retry_ids = {
+        str(row.get("task_id", ""))
+        for row in state["rows"]
+        if str(row.get("status", "")).lower() == "pending"
+    }
+    if not retry_ids:
+        _write_latest_state_outputs(
+            paths,
+            state,
+            pending_manual_retry_used=bool(state.get("manual_retry_used")),
+        )
+        return _result_from_state(paths, state)
+    pending_rows = [row for row in state["rows"] if str(row.get("task_id", "")) in retry_ids]
     _run_gateway_with_state(
         runner=runner,
         method_name=method,
-        rows=pending_rows,
+        rows=pending_rows if method == "run_institutional_only" else state["rows"],
         paths=paths,
         options=selected_options,
         state=state,
         required_ids=retry_ids,
-        expected_attempts=expected_attempts,
     )
     # A2: even institutional-only retries still run limited OA (unsupported/not_pdf)
     # then rebuild zotero_fallback + delivery package.
@@ -3829,11 +2609,7 @@ def _apply_doi_preflight(rows: list[dict], *, email: str, paths: BatchPaths) -> 
     except Exception:
         return rows
     try:
-        updated, changes = preflight_rows(
-            rows,
-            email=email,
-            cache_path=paths.working / "metadata_cache.jsonl",
-        )
+        updated, changes = preflight_rows(rows, email=email)
     except Exception as exc:
         print(f"[DOI预检] 跳过（{type(exc).__name__}）")
         return rows
@@ -3879,63 +2655,41 @@ def resume_batch(
     options: Any | None = None,
 ) -> BatchRunResult:
     paths = _paths_from_run_dir(run_dir)
-    with batch_state_lock(paths.root):
-        state = load_batch_state(paths.root)
+    retry_csv_rows: list[dict] = []
+
+    def validate_state(state: dict) -> None:
         _validate_state(state, expected_run_dir=paths.root)
-        reclaimed = _ensure_no_active_attempts_locked(state, now=_attempt_now())
-        recovered_manual_ids = {
-            str(record.get("task_id", ""))
-            for record in reclaimed
-            if str(record.get("stage", "")) == "resume"
-        }
 
-        if state.get("manual_retry_used") and not recovered_manual_ids:
-            if reclaimed:
-                save_batch_state(paths, state)
-            return _result_from_state(paths, state)
-
-        if recovered_manual_ids:
-            state_by_id = {
-                str(row.get("task_id", "")): row for row in state["rows"]
-            }
-            retry_ids = {
-                task_id
-                for task_id in recovered_manual_ids
-                if task_id in state_by_id
-                and not _is_terminal_status(state_by_id[task_id].get("status", ""))
-            }
-        else:
-            retry_csv_rows = _validate_manual_retry_preclaim(state, paths)
-            retry_ids = {str(row.get("task_id", "")) for row in retry_csv_rows}
-
+    def validate_before_claim(state: dict) -> bool:
+        validated_rows = _validate_manual_retry_preclaim(state, paths)
         if options is not None:
-            state["options"] = _serialize_options(options)
-        selected_options = options or _options_from_state(state)
-        if not retry_ids:
-            if reclaimed:
-                save_batch_state(paths, state)
-            return _result_from_state(paths, state)
+            _serialize_options(options)
+        if not validated_rows:
+            return False
+        retry_csv_rows.extend(validated_rows)
+        return True
 
-        state["manual_retry_used"] = True
-        expected_attempts, retry_rows = _claim_attempts_locked(
-            state,
-            paths,
-            retry_ids,
-            stage="resume",
-            now=_attempt_now(),
-        )
-
-    runner = gateway or DefaultStageGateway()
-    _run_gateway_with_state(
-        runner=runner,
-        method_name="run_retry",
-        rows=retry_rows,
-        paths=paths,
-        options=selected_options,
-        state=state,
-        required_ids=set(retry_ids),
-        expected_attempts=expected_attempts,
+    claimed, state = claim_manual_retry(
+        run_dir,
+        validate_state=validate_state,
+        validate_before_claim=validate_before_claim,
     )
+    if not claimed:
+        return _result_from_state(paths, state)
+    selected_options = options or _options_from_state(state)
+    retry_ids = {row.get("task_id", "") for row in retry_csv_rows}
+    retry_rows = [row for row in state["rows"] if str(row.get("task_id", "")) in retry_ids]
+    if retry_rows:
+        runner = gateway or DefaultStageGateway()
+        _run_gateway_with_state(
+            runner=runner,
+            method_name="run_retry",
+            rows=retry_rows,
+            paths=paths,
+            options=selected_options,
+            state=state,
+            required_ids=set(retry_ids),
+        )
     _write_latest_state_outputs(
         paths,
         state,

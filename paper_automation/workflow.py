@@ -5,7 +5,6 @@ from pathlib import Path
 from .deduplicator import deduplicate_candidates
 from .downloader import BytesGetter, download_pdf
 from .file_manager import ensure_output_dirs, make_pdf_filename
-from .artifact_store import make_artifact_filename
 from .manifest import write_duplicates, write_manifest
 from .metadata_resolver import JsonGetter, MetadataResolver
 from .models import WorkflowResult
@@ -22,19 +21,13 @@ def run_workflow(
     limit: int | None = None,
     http_json: JsonGetter | None = None,
     http_bytes: BytesGetter | None = None,
-    artifact_filenames: bool = False,
-    metadata_cache_path: str | Path | None = None,
 ) -> WorkflowResult:
     dirs = ensure_output_dirs(output_dir)
     candidates = parse_mixed_text(input_text)
     if limit is not None:
         candidates = candidates[:limit]
     deduped = deduplicate_candidates(candidates)
-    resolver = MetadataResolver(
-        email=email,
-        http_json=http_json,
-        cache_path=metadata_cache_path,
-    )
+    resolver = MetadataResolver(email=email, http_json=http_json)
 
     rows: list[dict] = []
     resolved_count = 0
@@ -61,11 +54,7 @@ def run_workflow(
             file = ""
             reason = "dry_run"
         else:
-            filename = (
-                make_artifact_filename(candidate.source_index, metadata)
-                if artifact_filenames
-                else make_pdf_filename(metadata)
-            )
+            filename = make_pdf_filename(metadata)
             download_result = download_pdf(
                 pdf,
                 dirs["pdfs"] / filename,

@@ -12,7 +12,6 @@ Design goals (see AGENTS.md "Limited OA recovery"):
 from __future__ import annotations
 
 import csv
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -23,11 +22,10 @@ from urllib.request import Request, urlopen
 
 from doi_batch_utils import clean_doi
 
-from .downloader import BROWSER_HEADERS, DownloadResponse, download_pdf
-from .artifact_store import DEFAULT_PDF_MAX_BYTES, make_artifact_filename, publish_pdf_bytes_atomic
+from .downloader import BROWSER_HEADERS, DownloadResponse
 from .file_manager import make_pdf_filename
 from .metadata_resolver import MetadataResolver
-from .models import MetadataResult, PaperCandidate, PdfCandidate
+from .models import MetadataResult, PaperCandidate
 from .pdf_finder import choose_pdf_candidate
 from .pdf_validation import is_pdf_bytes
 
@@ -162,10 +160,6 @@ def recover_oa_limited(
     http_json: JsonGetter | None = None,
     http_bytes: BytesGetter | None = None,
     resolver: MetadataResolver | None = None,
-    task_id: str = "",
-    artifact_filenames: bool = False,
-    metadata_cache_path: str | Path | None = None,
-    max_bytes: int = DEFAULT_PDF_MAX_BYTES,
 ) -> RecoveryResult:
     """Recover at most one legal OA/repo PDF for *doi* within *budget_seconds*."""
 
@@ -181,7 +175,6 @@ def recover_oa_limited(
             status="missing_doi",
             reason="missing_doi",
             elapsed_s=0.0,
-            task_id=task_id,
         )
 
     def remaining() -> float:
@@ -198,7 +191,6 @@ def recover_oa_limited(
         timeout=min(timeout_per_request, max(3, int(remaining()))),
         http_json=http_json,
         resolver=resolver,
-        metadata_cache_path=metadata_cache_path,
     )
     attempts.append(
         RecoveryAttempt(
@@ -220,13 +212,6 @@ def recover_oa_limited(
         journal=metadata.journal or "",
         publisher=metadata.publisher or "",
         attempts=attempts,
-        task_id=task_id,
-    )
-    delivery_target = _delivery_target_path(
-        metadata,
-        output_dir=output_dir,
-        artifact_filenames=artifact_filenames,
-        artifact_index=_task_artifact_index(task_id, metadata.source_index),
     )
 
     if timed_out():
@@ -258,8 +243,6 @@ def recover_oa_limited(
             timeout=min(timeout_per_request, max(3, int(remaining()))),
             http_bytes=http_bytes,
             host_cache=cache,
-            target_path=delivery_target,
-            max_bytes=max_bytes,
         )
         attempts.append(attempt)
         if ok:
@@ -267,8 +250,6 @@ def recover_oa_limited(
                 ok,
                 metadata,
                 output_dir=output_dir,
-                artifact_filenames=artifact_filenames,
-                artifact_index=_task_artifact_index(task_id, metadata.source_index),
             )
             base.status = "oa_downloaded"
             base.file = str(path) if path else ""
@@ -296,18 +277,10 @@ def recover_oa_limited(
                         timeout=min(timeout_per_request, max(3, int(remaining()))),
                         http_bytes=http_bytes,
                         host_cache=cache,
-                        target_path=delivery_target,
-                        max_bytes=max_bytes,
                     )
                     attempts.append(attempt2)
                     if ok2:
-                        path = _write_delivery_pdf(
-                            ok2,
-                            metadata,
-                            output_dir=output_dir,
-                            artifact_filenames=artifact_filenames,
-                            artifact_index=_task_artifact_index(task_id, metadata.source_index),
-                        )
+                        path = _write_delivery_pdf(ok2, metadata, output_dir=output_dir)
                         base.status = "oa_downloaded"
                         base.file = str(path) if path else ""
                         base.reason = "oa_url_rewrite:mdpi_cdn"
@@ -365,18 +338,10 @@ def recover_oa_limited(
             timeout=min(timeout_per_request, max(3, int(remaining()))),
             http_bytes=http_bytes,
             host_cache=cache,
-            target_path=delivery_target,
-            max_bytes=max_bytes,
         )
         attempts.append(attempt)
         if ok:
-            path = _write_delivery_pdf(
-                ok,
-                metadata,
-                output_dir=output_dir,
-                artifact_filenames=artifact_filenames,
-                artifact_index=_task_artifact_index(task_id, metadata.source_index),
-            )
+            path = _write_delivery_pdf(ok, metadata, output_dir=output_dir)
             base.status = "oa_downloaded"
             base.file = str(path) if path else ""
             base.reason = "repo_pdf"
@@ -403,13 +368,7 @@ def metadata_has_oa_signal(metadata: MetadataResult | None) -> bool:
     return bool(repo)
 
 
-def row_has_oa_signal(
-    row: dict,
-    *,
-    email: str = "",
-    resolver: MetadataResolver | None = None,
-    metadata_cache_path: str | Path | None = None,
-) -> bool:
+def row_has_oa_signal(row: dict, *, email: str = "", resolver: MetadataResolver | None = None) -> bool:
     """Check stored reason marker first; otherwise resolve metadata once."""
 
     reason = str(row.get("reason", "") or "")
@@ -421,13 +380,7 @@ def row_has_oa_signal(
     if is_gold_oa_doi(doi):
         return True
     try:
-        meta = _resolve_metadata(
-            doi,
-            email=email,
-            resolver=resolver,
-            timeout=8,
-            metadata_cache_path=metadata_cache_path,
-        )
+        meta = _resolve_metadata(doi, email=email, resolver=resolver, timeout=8)
     except Exception:
         return False
     return metadata_has_oa_signal(meta)
@@ -456,7 +409,8 @@ def run_limited_oa_recovery_on_batch(
         load_batch_state,
         paths_from_run_dir,
         save_batch_state,
-        _write_latest_state_outputs,
+        write_final_reports,
+        _write_pending_files,
         _is_successful_status,
     )
 
@@ -490,11 +444,7 @@ def run_limited_oa_recovery_on_batch(
         if not doi:
             continue
         force_try = status in ALWAYS_TRY_STATUSES
-        if require_oa_signal and not force_try and not row_has_oa_signal(
-            row,
-            email=use_email,
-            metadata_cache_path=paths.working / "metadata_cache.jsonl",
-        ):
+        if require_oa_signal and not force_try and not row_has_oa_signal(row, email=use_email):
             skipped.append(
                 RecoveryResult(
                     doi=doi,
@@ -528,10 +478,8 @@ def run_limited_oa_recovery_on_batch(
             host_cache=host_cache,
             http_json=http_json,
             http_bytes=http_bytes,
-            task_id=str(row.get("task_id") or ""),
-            artifact_filenames=True,
-            metadata_cache_path=paths.working / "metadata_cache.jsonl",
         )
+        result.task_id = str(row.get("task_id") or "")
         return result
 
     workers = max(1, min(int(max_workers), len(targets)))
@@ -586,12 +534,12 @@ def run_limited_oa_recovery_on_batch(
             rows[index] = updated
         state["rows"] = rows
         save_batch_state(paths, state)
-        _write_latest_state_outputs(
+        _write_pending_files(
             paths,
-            state,
-            pending_manual_retry_used=bool(state.get("manual_retry_used")),
-            assume_locked=True,
+            rows,
+            manual_retry_used=bool(state.get("manual_retry_used")),
         )
+        write_final_reports(paths, rows)
 
     ordered = [results_by_task[str(r.get("task_id") or "")] for r in targets if str(r.get("task_id") or "") in results_by_task]
     # fallback order
@@ -629,19 +577,13 @@ def _resolve_metadata(
     *,
     email: str,
     timeout: int,
-    http_json: JsonGetter | None = None,
-    resolver: MetadataResolver | None = None,
-    metadata_cache_path: str | Path | None = None,
+    http_json: JsonGetter | None,
+    resolver: MetadataResolver | None,
 ) -> MetadataResult:
     candidate = PaperCandidate(source_index=0, raw_text=doi, doi=doi, title="")
     if resolver is not None:
         return resolver.resolve_one(candidate)
-    meta_resolver = MetadataResolver(
-        email=email,
-        http_json=http_json,
-        timeout=timeout,
-        cache_path=metadata_cache_path,
-    )
+    meta_resolver = MetadataResolver(email=email, http_json=http_json, timeout=timeout)
     return meta_resolver.resolve_one(candidate)
 
 
@@ -724,40 +666,8 @@ def _try_download_pdf(
     timeout: int,
     http_bytes: BytesGetter | None,
     host_cache: HostHealthCache,
-    target_path: Path | None = None,
-    max_bytes: int = DEFAULT_PDF_MAX_BYTES,
-) -> tuple[bytes | Path | None, RecoveryAttempt]:
+) -> tuple[bytes | None, RecoveryAttempt]:
     started = time.monotonic()
-    if http_bytes is None and target_path is not None:
-        result = download_pdf(
-            PdfCandidate(url=url, source=step),
-            target_path,
-            retries=0,
-            timeout=timeout,
-            max_bytes=max_bytes,
-        )
-        if result.status in {"downloaded", "skipped"} and result.file:
-            return Path(result.file), RecoveryAttempt(
-                step=step,
-                url=url,
-                result="pdf",
-                detail=_host(url),
-                elapsed_s=time.monotonic() - started,
-            )
-        detail = result.reason or result.status
-        if _looks_like_connection_error(detail):
-            host_cache.mark_unreachable(url, "publisher_unreachable")
-            attempt_status = "publisher_unreachable"
-        else:
-            attempt_status = "not_pdf" if "pdf" in detail.lower() else "error"
-        return None, RecoveryAttempt(
-            step=step,
-            url=url,
-            result=attempt_status,
-            detail=detail[:80],
-            elapsed_s=time.monotonic() - started,
-        )
-
     getter = http_bytes or _default_get_bytes
     try:
         response = getter(url, dict(BROWSER_HEADERS), timeout)
@@ -802,61 +712,33 @@ def _try_download_pdf(
 
 
 def _write_delivery_pdf(
-    content: bytes | Path,
+    content: bytes,
     metadata: MetadataResult,
     *,
     output_dir: str | Path | None,
-    artifact_filenames: bool = False,
-    artifact_index: int = 1,
 ) -> Path | None:
-    if isinstance(content, Path):
-        return content
     if not output_dir:
         return None
     directory = Path(output_dir)
-    name = (
-        make_artifact_filename(artifact_index, metadata)
-        if artifact_filenames
-        else make_pdf_filename(metadata)
-    )
-    return publish_pdf_bytes_atomic(content, directory, name)
-
-
-def _delivery_target_path(
-    metadata: MetadataResult,
-    *,
-    output_dir: str | Path | None,
-    artifact_filenames: bool,
-    artifact_index: int,
-) -> Path | None:
-    if not output_dir:
-        return None
-    name = (
-        make_artifact_filename(artifact_index, metadata)
-        if artifact_filenames
-        else make_pdf_filename(metadata)
-    )
-    return Path(output_dir) / name
-
-
-def _task_artifact_index(task_id: str, fallback: int = 1) -> int:
-    match = re.search(r"(\d+)$", str(task_id or ""))
-    if match:
-        return max(1, int(match.group(1)))
-    return max(1, int(fallback or 1))
+    directory.mkdir(parents=True, exist_ok=True)
+    # Year-author-title at write time (metadata already resolved in Step 0).
+    name = make_pdf_filename(metadata)
+    target = directory / name
+    if target.exists() and target.stat().st_size > 0:
+        stem = target.stem
+        n = 2
+        while target.exists():
+            target = directory / f"{stem}-{n}.pdf"
+            n += 1
+    target.write_bytes(content)
+    return target
 
 
 def _default_get_bytes(url: str, headers: dict[str, str] | None, timeout: int) -> DownloadResponse:
     request = Request(url, headers=headers or {})
     with urlopen(request, timeout=timeout) as response:
-        declared = response.headers.get("Content-Length")
-        if declared and int(declared) > DEFAULT_PDF_MAX_BYTES:
-            raise ValueError("response_too_large")
-        content = response.read(DEFAULT_PDF_MAX_BYTES + 1)
-        if len(content) > DEFAULT_PDF_MAX_BYTES:
-            raise ValueError("response_too_large")
         return DownloadResponse(
-            content,
+            response.read(),
             response.headers.get("Content-Type", ""),
             response.geturl(),
         )
