@@ -51,7 +51,7 @@ jobs:
           $output = & node --test tests/*.test.cjs 2>&1
           $output | ForEach-Object { Write-Host $_ }
           if ($LASTEXITCODE -ne 0) { throw "Zotero plugin tests failed." }
-          if (($output -join "`n") -notmatch '(?m)^\s*(?:#|ℹ)\s+tests\s+65\s*$') {
+          if (($output -join "`n") -notmatch '# tests 65') {
             throw "Expected the complete 65-test plugin suite."
           }
 

@@ -1672,15 +1672,3 @@ Release date: 2026-07-12
 - 如何检查是否成功：定向回归测试通过；干净源码副本中 Python 全量测试为 `Ran 462 tests ... OK (skipped=4)`，Node 插件测试为 `65/65` 通过，Python 编译检查通过，`git diff --check` 通过。
 - 注意事项或潜在风险：本机项目中已有的被 Git 忽略旧 `.xpi` 未删除或移动；本次未自动打包、未提交、未推送，GitHub Actions 仍需在推送修复后的提交后重新运行确认。
 
-## 2026-07-23 00:14:27 +08:00 — 修复 Node 24 插件测试计数校验
-
-- 修改日期和时间：2026-07-23 00:14:27 +08:00。
-- 本次任务目标：修复 GitHub Actions `windows-tests` 在提交 `976beee` 上因 Node.js 24 TAP 输出格式变化而误判失败的问题。
-- 新增、修改或删除的文件：修改 `.github/workflows/tests.yml` 和本 `CHANGELOG.md`；未新增或删除源码文件，未修改原始实验/文献数据。
-- 具体修改内容：插件测试仍要求完整的 65 项测试，但计数校验同时接受旧格式 `# tests 65` 和 Node 24 使用的 `ℹ tests 65`，并保持失败测试由 Node 退出码直接判定。
-- 修改原因：Run 21 的实际结果为 `tests 65`、`pass 65`、`fail 0`，但 workflow 只匹配 `# tests 65`，导致 PowerShell 在 Node 返回成功后再次抛出“Expected the complete 65-test plugin suite.”。
-- 生成的输出文件：未生成论文 PDF、Cookie、机构会话或 XPI 打包文件。
-- 如何运行：在 `zotero_bridge_plugin` 目录运行 `node --test tests/*.test.cjs`，并检查 Node 24 输出中的 `ℹ tests 65`、`ℹ pass 65`、`ℹ fail 0`；随后运行项目既有的 Python 编译和测试检查。
-- 如何检查是否成功：本地 Node v24.18.0 测试退出码为 0，65 项全部通过；workflow 正则可匹配 `ℹ tests 65`；提交后需以 GitHub Actions `windows-tests` 成功为最终确认。
-- 注意事项或潜在风险：本次只调整 CI 输出解析，不改变插件业务逻辑、测试内容或交付文件；未自动打包 XPI，未修改现有被 Git 忽略的 XPI。
-
