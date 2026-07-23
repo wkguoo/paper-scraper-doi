@@ -185,31 +185,6 @@ and error code without credentials.
 After all eight cases pass, present the evidence and ask separately before any
 main-profile installation. Do not automatically package the Windows project.
 
-## 11. Phase 3 Nonblocking Queue And Controlled Browser Identity
-
-Use only an isolated test batch and an explicitly approved institutional test
-session. Do not use the main Zotero library and do not expose credentials.
-
-1. Run `paper_batch.py start` without `--wait-seconds`. When fallback rows
-   exist, verify it returns exit code 3 promptly and prints the same `zotero`
-   command to run later. Confirm no 600-second apparent hang.
-2. Run `paper_batch.py status --run-dir "<run-dir>"` and its `--json` form.
-   Hash `working\batch_state.json` before and after; the hashes must match.
-3. Run one supported non-Elsevier institutional test item. Confirm the browser
-   instance record is under
-   `%LOCALAPPDATA%\PaperScraperDOI\browser-session\v1`, contains no cookies,
-   and a second run reuses the session only when PID, executable, profile,
-   port, `DevToolsActivePort`, and browser ID still match.
-4. Start an unrelated CDP browser on an explicitly selected test port. The
-   project must return `browser_instance_mismatch` and must not open or close
-   any tab in that browser.
-5. Close the project-controlled browser and rerun. The stale program-owned
-   descriptor may be replaced atomically, while the profile and unrelated
-   browser data remain untouched.
-
-Expected: no credential values in logs or descriptors, no attachment or PDF
-overwrites, and no automatic XPI or Windows package generation.
-
 ## Cleanup
 
 Run after institutional-access tests if this machine should not keep cached browser state:

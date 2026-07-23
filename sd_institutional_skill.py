@@ -138,16 +138,8 @@ def main(argv: list[str] | None = None) -> int:
             resolve_title_only_files=args.resolve_title_only,
             email=args.email,
             min_confidence=args.min_confidence,
-            search_provider=(
-                semantic_scholar_search_provider(
-                    email=args.email,
-                    cache_path=args.metadata_cache,
-                )
-                if args.auto_web_search
-                else None
-            ),
+            search_provider=semantic_scholar_search_provider(email=args.email) if args.auto_web_search else None,
             max_search_candidates=args.max_search_candidates,
-            metadata_cache_path=args.metadata_cache,
         )
     except Exception as exc:
         print(f"[错误] DOI 输入整理失败: {exc}", flush=True)
@@ -261,17 +253,9 @@ def main(argv: list[str] | None = None) -> int:
     download_pdfs = not args.dry_run and not args.no_download_pdfs
     cookie_cache_path = auth_dir / COOKIE_CACHE_NAME
     scraper = (
-        make_scraper(
-            cookie_cache_path,
-            browser_exe=args.browser_exe,
-            cookies_path=args.cookies,
-            **({"artifact_filenames": True} if args.artifact_filenames else {}),
-        )
+        make_scraper(cookie_cache_path, browser_exe=args.browser_exe, cookies_path=args.cookies)
         if download_pdfs
-        else ScienceDirectScraper(
-            browser_exe=args.browser_exe,
-            **({"artifact_filenames": True} if args.artifact_filenames else {}),
-        )
+        else ScienceDirectScraper(browser_exe=args.browser_exe)
     )
     cookie_message = explicit_cookie_status_message(args.cookies) if args.cookies else cookie_status_message(cookie_cache_path)
 
@@ -496,15 +480,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--browser-exe",
         help="Browser executable path for institutional login/download (defaults to Chrome, then Edge)",
     )
-    parser.add_argument(
-        "--artifact-filenames",
-        action="store_true",
-        help="Use stable internal paper identity filenames (batch integration only)",
-    )
-    parser.add_argument(
-        "--metadata-cache",
-        help=argparse.SUPPRESS,
-    )
     return parser
 
 
@@ -522,7 +497,6 @@ def build_intake(
     http_json: JsonGetter | None = None,
     search_provider: SearchProvider | None = None,
     max_search_candidates: int = 5,
-    metadata_cache_path: str | Path | None = None,
 ) -> IntakeResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     entries: list[SourceEntry] = []
@@ -563,7 +537,6 @@ def build_intake(
         http_json=http_json,
         search_provider=search_provider,
         max_search_candidates=max_search_candidates,
-        metadata_cache_path=metadata_cache_path,
     )
     preview_path = output_dir / "doi_intake_preview.csv"
     merged_path = output_dir / "merged_doi_input.csv"
@@ -582,7 +555,6 @@ def build_intake(
             http_json=http_json,
             search_provider=search_provider,
             max_search_candidates=max_search_candidates,
-            metadata_cache_path=metadata_cache_path,
         )
         write_intake_preview(all_rows, preview_path)
         write_merged_input(unique_rows, merged_path)
@@ -998,7 +970,6 @@ def classify_entries(
     http_json: JsonGetter | None,
     search_provider: SearchProvider | None = None,
     max_search_candidates: int = 5,
-    metadata_cache_path: str | Path | None = None,
 ) -> tuple[list[IntakeRow], list[IntakeRow], Counter]:
     counts: Counter = Counter()
     recognized = [
@@ -1018,7 +989,6 @@ def classify_entries(
             http_json=http_json,
             search_provider=search_provider,
             max_search_candidates=max_search_candidates,
-            cache_path=metadata_cache_path,
         )
         if resolve_metadata
         else None
@@ -1373,11 +1343,8 @@ def make_scraper(
     cookie_cache_path: Path,
     browser_exe: str | None = None,
     cookies_path: str | None = None,
-    artifact_filenames: bool = False,
 ) -> ScienceDirectScraper:
     browser_kwargs = {"browser_exe": browser_exe} if browser_exe else {}
-    if artifact_filenames:
-        browser_kwargs["artifact_filenames"] = True
     if cookies_path:
         cookie_check = check_cookie_json(cookies_path)
         print(f"[Cookie] {cookie_check.message}")

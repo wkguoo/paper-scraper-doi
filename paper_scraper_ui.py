@@ -30,7 +30,6 @@ from doi_batch_utils import (
     write_retry_input_from_reports,
 )
 from windows_paths import chrome_bin
-from paper_automation.batch_app import BatchCommandRequest, UNIFIED_BATCH_ACTIONS
 
 APP_DIR = Path(__file__).resolve().parent
 SD_SCRIPT = APP_DIR / "sd_scraper.py"
@@ -38,7 +37,7 @@ SD_SKILL_SCRIPT = APP_DIR / "sd_institutional_skill.py"
 OA_SCRIPT = APP_DIR / "paper_skill.py"
 BATCH_SCRIPT = APP_DIR / "paper_batch.py"
 SETTINGS_FILE = APP_DIR / "results" / "_ui_settings.json"
-BATCH_ACTIONS = UNIFIED_BATCH_ACTIONS
+BATCH_ACTIONS = ("start", "resume", "zotero")
 PREVIEW_LIMIT = 200
 LOG_DRAIN_LIMIT = 200
 LOG_MAX_LINES = 5000
@@ -860,14 +859,12 @@ class PaperScraperUI:
                 )
             elif action == "resume":
                 summary = f"统一批次 resume（兼容）：run-dir={run_dir}；仅重试一次登录/验证码失败项。"
-            elif action == "status":
-                summary = f"统一批次 status（只读）：run-dir={run_dir}；显示进度和下一步。"
             else:
                 library_id = self.batch_library_id_var.get().strip() or "1"
                 wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
                 summary = (
-                    f"统一批次 {action}：run-dir={run_dir}；library-id={library_id}；"
-                    f"wait-seconds={wait_seconds}（默认只排队不等待）。"
+                    f"统一批次 zotero：run-dir={run_dir}；library-id={library_id}；"
+                    f"wait-seconds={wait_seconds}。"
                 )
             self.summary_var.set(summary)
             preflight_items = self._get_preflight_items()
@@ -980,7 +977,7 @@ class PaperScraperUI:
                         items.append(("ok", "检测到 batch_state.json"))
                     else:
                         items.append(("warn", "未检测到 working/batch_state.json，请确认目录是否为完整批次"))
-                if action in {"retry-failed", "recover-oa", "zotero"}:
+                if action == "zotero":
                     library_id = self.batch_library_id_var.get().strip() or "1"
                     if not library_id.isdigit() or int(library_id) <= 0:
                         items.append(("error", "library-id 必须是正整数"))
@@ -1118,7 +1115,7 @@ class PaperScraperUI:
                 if not Path(run_dir).is_dir():
                     messagebox.showerror("参数错误", f"批次目录不存在：\n{run_dir}")
                     return False
-                if action in {"retry-failed", "recover-oa", "zotero"}:
+                if action == "zotero":
                     library_id = self.batch_library_id_var.get().strip() or "1"
                     wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
                     try:
@@ -1330,49 +1327,38 @@ class PaperScraperUI:
 
     def _build_paper_batch_command(self, materialize_paste: bool = False) -> list[str]:
         action = self.batch_action_var.get().strip() or "start"
-        prefix = [sys.executable, "-u", str(BATCH_SCRIPT)]
+        cmd = [sys.executable, "-u", str(BATCH_SCRIPT), action]
         if action == "start":
             input_path = self.batch_input_file_var.get().strip()
-            input_text = ""
             if input_path:
-                pass
+                self._append_value(cmd, "--input", input_path)
             elif self._get_batch_text():
                 if materialize_paste:
-                    input_text = self._get_batch_text()
+                    self._append_value(cmd, "--text", self._get_batch_text())
                 else:
-                    input_text = "<粘贴内容将在运行时传入>"
-            extras: list[str] = []
+                    self._append_value(cmd, "--text", "<粘贴内容将在运行时传入>")
+            self._append_value(cmd, "--out", self.output_var.get().strip() or str(APP_DIR / "results"))
+            self._append_value(cmd, "--run-name", self.batch_run_name_var.get())
+            self._append_value(cmd, "--email", self.oa_email_var.get())
+            self._append_value(cmd, "--cookies", self.cookies_file_var.get())
             wait_text = self.batch_login_wait_var.get().strip()
             if wait_text and wait_text != "0":
-                extras += ["--login-wait-seconds", wait_text]
+                self._append_value(cmd, "--login-wait-seconds", wait_text)
+            library_id = self.batch_library_id_var.get().strip() or "1"
+            self._append_value(cmd, "--library-id", library_id)
+            wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
+            if wait_seconds and wait_seconds != "0":
+                self._append_value(cmd, "--wait-seconds", wait_seconds)
+            return cmd
+
+        self._append_value(cmd, "--run-dir", self.batch_run_dir_var.get())
+        if action == "zotero":
             library_id = self.batch_library_id_var.get().strip() or "1"
             wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
-            request = BatchCommandRequest(
-                action="start",
-                input_path=input_path,
-                input_text=input_text,
-                output_root=self.output_var.get().strip() or str(APP_DIR / "results"),
-                run_name=self.batch_run_name_var.get().strip(),
-                email=self.oa_email_var.get().strip(),
-                cookies=self.cookies_file_var.get().strip(),
-                library_id=int(library_id),
-                wait_seconds=int(wait_seconds),
-                auto_zotero=True,
-                extra_args=tuple(extras),
-            )
-            return prefix + request.to_argv()
-
-        library_id = int(self.batch_library_id_var.get().strip() or "1")
-        wait_seconds = int(self.batch_wait_seconds_var.get().strip() or "0")
-        request = BatchCommandRequest(
-            action=action,
-            run_dir=self.batch_run_dir_var.get().strip(),
-            email=self.oa_email_var.get().strip() if action == "recover-oa" else "",
-            library_id=library_id,
-            wait_seconds=wait_seconds,
-            auto_zotero=True,
-        )
-        return prefix + request.to_argv()
+            self._append_value(cmd, "--library-id", library_id)
+            if wait_seconds and wait_seconds != "0":
+                self._append_value(cmd, "--wait-seconds", wait_seconds)
+        return cmd
 
     def _build_beginner_preflight_command(self, materialize_paste: bool = False) -> list[str]:
         cmd = [sys.executable, "-u", str(SD_SKILL_SCRIPT)]
