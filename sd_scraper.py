@@ -627,10 +627,7 @@ def _dt_capture_pdf_stream(
                     content_length=total,
                     max_bytes=max_bytes,
                 )
-                # The publisher canonicalizes its internal destination path. Return
-                # the caller's spelling so Windows 8.3 and long-path forms compare
-                # consistently across the capture boundary.
-                return target.with_name(published.name), request_url
+                return published, request_url
             return temporary.read_bytes(), request_url
         return None, "network_pdf_not_captured"
     except ValueError as exc:

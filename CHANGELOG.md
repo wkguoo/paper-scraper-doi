@@ -1660,15 +1660,3 @@ Release date: 2026-07-12
 - 如何检查是否成功：第三阶段专项测试覆盖互斥参数、默认零等待、OA 退出码、状态只读性/JSON、六个 UI 动作、浏览器身份字段、未知端口拒绝、动态端口和并发实例锁；项目 `compileall` 通过；排除现有 XPI 的临时副本中完整 Python 测试共 462 项，458 项通过、4 项按环境条件跳过、0 失败；Node 24 插件测试 65/65 通过；`git diff --check` 通过。现有 `dist/zotero-paper-download-bridge-0.2.0.xpi` SHA-256 仍为 `D1C0C0E93228EF050FD674FCBE201731793EA19C4933C32747880043F474A460`。
 - 注意事项或潜在风险：本轮未进行真实机构下载、未启动或接管真实调试浏览器、未操作真实 Zotero 文库、未自动打包、未提交或推送。真实 Chrome/Edge 的动态 `DevToolsActivePort`、进程路径查询、机构登录复用和 Zotero 往返仍需按 `MANUAL_QA.md` 在隔离环境手工验收；实例描述文件不含 Cookie，但专用浏览器 profile 可能保存用户主动建立的登录会话，应按本机凭据目录保护。
 
-## 2026-07-22 23:51:30 +08:00 — 修复 Windows CI 的 DevTools 捕获路径表示差异
-
-- 修改日期和时间：2026-07-22 23:51:30 +08:00。
-- 本次任务目标：修复 GitHub Actions `windows-tests` 在提交 `365f743` 上唯一失败的 `test_devtools_capture_uses_fetch_stream_and_io_reads`，使 Windows 短路径和长路径环境下的 DevTools PDF 捕获结果稳定。
-- 新增、修改或删除的文件：修改 `sd_scraper.py` 和本 `CHANGELOG.md`；未新增或删除源码文件，未修改原始实验/文献数据。
-- 具体修改内容：`_dt_capture_pdf` 发布 PDF 时继续让原子发布器使用规范化绝对路径进行安全写入，但返回调用者原始路径表达，仅替换可能因内容哈希冲突产生的文件名。这样不会改变文件内容、校验、哈希或交付位置，只避免 `C:\\Users\\RUNNER~1` 与 `C:\\Users\\runneradmin` 的字符串表示差异穿过调用边界。
-- 修改原因：GitHub Windows runner 的临时目录可能以 8.3 短路径传入，而共享发布器内部 `Path.resolve()` 会返回长路径；远端测试因此出现同一实际文件的路径字符串断言失败。
-- 生成的输出文件：未生成论文 PDF、Cookie、机构会话或打包文件；仅使用项目 `.codex-test-tmp\\paper-scraper-doi-ci-check-20260722-235100` 的干净源码副本进行验证。
-- 如何运行：定向测试使用 `.\\.venv\\Scripts\\python.exe -m unittest tests.test_recovery_phase2.StreamingAndParserTests.test_devtools_capture_uses_fetch_stream_and_io_reads -v`；完整验证还运行项目 `compileall`、Python 全量 `unittest discover -s tests -v` 和 `node --test zotero_bridge_plugin/tests/*.test.cjs`。
-- 如何检查是否成功：定向回归测试通过；干净源码副本中 Python 全量测试为 `Ran 462 tests ... OK (skipped=4)`，Node 插件测试为 `65/65` 通过，Python 编译检查通过，`git diff --check` 通过。
-- 注意事项或潜在风险：本机项目中已有的被 Git 忽略旧 `.xpi` 未删除或移动；本次未自动打包、未提交、未推送，GitHub Actions 仍需在推送修复后的提交后重新运行确认。
-
