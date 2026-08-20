@@ -1148,6 +1148,17 @@ class ScienceDirectScraper:
                     },
                 ),
             )
+        try:
+            resolve_workers = max(1, int(os.environ.get("PAPER_SCRAPER_RESOLVE_WORKERS", "1")))
+        except (TypeError, ValueError):
+            resolve_workers = 1
+        if resolve_workers > 1 and len(rows) > 1:
+            return self._resolve_doi_batch_parallel(
+                rows,
+                resume_skipped=resume_skipped,
+                event_path=event_path,
+                workers=resolve_workers,
+            )
         for idx, item in enumerate(rows, start=1):
             doi = item["doi"]
             print(f"  [{idx}/{len(rows)}] 开始解析: {doi or '(空 DOI)'}", flush=True)
@@ -1229,6 +1240,151 @@ class ScienceDirectScraper:
                     ),
                 )
             self._delay()
+        safe_write_run_event(
+            event_path,
+            RunEvent(
+                stage="resolve",
+                status="complete",
+                counts={"resolved": len(resolved), "failed": len(failed), "resume_skipped": len(resume_skipped)},
+            ),
+        )
+        return resolved, failed
+
+    def _resolve_doi_batch_parallel(self, rows, *, resume_skipped, event_path, workers):
+        """Resolve DOI redirects concurrently without sharing HTTP sessions.
+
+        The downstream PDF download remains serial and is still owned by the
+        single ScienceDirect stage. Each worker gets its own curl session;
+        only the read-only DOI-to-PII lookup is parallelized.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        total = len(rows)
+        resolved_with_index = []
+        failed_with_index = []
+        seen = set()
+        work_items = []
+
+        for idx, item in enumerate(rows, start=1):
+            doi = str(item.get("doi", "") or "").strip()
+            if not doi:
+                failed_with_index.append(
+                    (idx, {"row_number": item.get("row_number", ""), "doi": "", "reason": "DOI 为空"})
+                )
+                continue
+            doi_key = doi.lower()
+            if doi_key in seen:
+                failed_with_index.append(
+                    (
+                        idx,
+                        {
+                            "row_number": item.get("row_number", ""),
+                            "doi": doi,
+                            "reason": "重复 DOI，已跳过",
+                        },
+                    )
+                )
+                continue
+            seen.add(doi_key)
+            work_items.append((idx, item))
+
+        print(
+            f"\n[DOI 批量解析] 并行模式 workers={workers}，"
+            f"从 {total} 条记录中解析 {len(work_items)} 条唯一 DOI",
+            flush=True,
+        )
+        thread_local = threading.local()
+
+        def get_worker_scraper():
+            scraper = getattr(thread_local, "scraper", None)
+            if scraper is not None:
+                return scraper
+            scraper = ScienceDirectScraper(
+                browser_exe=self.browser_exe,
+                delay_range=self.delay_range,
+            )
+            scraper._cookie_dict.update(self._cookie_dict)
+            scraper._session_cookies.update(self._session_cookies)
+            try:
+                scraper.session.headers.update(self.session.headers)
+            except Exception:
+                pass
+            try:
+                scraper._apply_cookie_header()
+            except Exception:
+                pass
+            thread_local.scraper = scraper
+            return scraper
+
+        def resolve_one(indexed_item):
+            idx, item = indexed_item
+            scraper = get_worker_scraper()
+            try:
+                article, reason = scraper._resolve_doi_to_article(item)
+            except Exception as exc:
+                article, reason = None, f"并行解析异常_{type(exc).__name__}: {exc}"
+            scraper._delay()
+            return idx, item, article, reason
+
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="doi-resolve") as executor:
+            future_map = {
+                executor.submit(resolve_one, indexed_item): indexed_item
+                for indexed_item in work_items
+            }
+            for future in as_completed(future_map):
+                idx, item, article, reason = future.result()
+                completed += 1
+                doi = str(item.get("doi", "") or "")
+                if article:
+                    resolved_with_index.append((idx, article))
+                    print(
+                        f"  [{completed}/{len(work_items)} | 原序号 {idx}/{total}] "
+                        f"已解析: {doi} -> {article['pii']}",
+                        flush=True,
+                    )
+                    safe_write_run_event(
+                        event_path,
+                        RunEvent(
+                            stage="resolve",
+                            status="success",
+                            row_number=item.get("row_number", ""),
+                            doi=doi,
+                            title=article.get("title", ""),
+                            pii=article.get("pii", ""),
+                            counts={"current": completed, "total": len(work_items), "resolved": len(resolved_with_index), "failed": len(failed_with_index)},
+                        ),
+                    )
+                else:
+                    failure = {
+                        "row_number": item.get("row_number", ""),
+                        "doi": doi,
+                        "reason": reason,
+                    }
+                    failed_with_index.append((idx, failure))
+                    print(
+                        f"  [{completed}/{len(work_items)} | 原序号 {idx}/{total}] "
+                        f"解析失败: {doi} ({reason})",
+                        flush=True,
+                    )
+                    safe_write_run_event(
+                        event_path,
+                        RunEvent(
+                            stage="resolve",
+                            status="failed",
+                            row_number=item.get("row_number", ""),
+                            doi=doi,
+                            title=item.get("title", ""),
+                            reason=reason,
+                            counts={"current": completed, "total": len(work_items), "resolved": len(resolved_with_index), "failed": len(failed_with_index)},
+                        ),
+                    )
+
+        resolved_with_index.sort(key=lambda pair: pair[0])
+        failed_with_index.sort(key=lambda pair: pair[0])
+        resolved = [article for _, article in resolved_with_index]
+        failed = [failure for _, failure in failed_with_index]
         safe_write_run_event(
             event_path,
             RunEvent(
