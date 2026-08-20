@@ -13,8 +13,6 @@ from typing import Sequence
 
 from paper_automation.batch_stages import BatchOptions
 from paper_automation.batch_workflow import (
-    USER_DELIVERY_DIR_NAME,
-    USER_INVENTORY_NAME,
     ZOTERO_RESULT_FIELDS,
     BatchRunResult,
     finalize_batch,
@@ -24,6 +22,8 @@ from paper_automation.batch_workflow import (
     resume_batch,
     retry_failed_batch,
     start_batch,
+    user_delivery_dir,
+    user_inventory_path,
     write_final_reports,
 )
 from paper_automation.zotero_bridge import run_zotero_bridge
@@ -325,13 +325,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     delivery = subparsers.add_parser(
         "delivery",
-        help="仅生成用户交付物：下载清单.csv + 结果/（不重下；merge-safe 保留外部补入）",
+        help="仅生成用户交付物：结果/（输入清单、下载清单.csv、pdf、md及可选补充材料）",
     )
     delivery.add_argument("--run-dir", required=True, help="已有批次目录")
 
     refresh = subparsers.add_parser(
         "refresh-delivery",
-        help="A3：扫描 结果/，重命名为 年份-作者-题名，映射失败 DOI，刷新 下载清单.csv",
+        help="A3：扫描 结果/pdf/，重命名为 年份-作者-题名，映射失败 DOI，刷新结果/下载清单.csv",
     )
     refresh.add_argument("--run-dir", required=True, help="已有批次目录")
     refresh.add_argument("--email", default="", help="Crossref 礼貌邮箱（可选）")
@@ -474,8 +474,8 @@ def _ensure_header_only_zotero_results(result: BatchRunResult) -> tuple[Path, bo
 
 
 def _print_summary(result: BatchRunResult) -> None:
-    inventory = Path(result.paths.root) / USER_INVENTORY_NAME
-    delivery = Path(result.paths.root) / USER_DELIVERY_DIR_NAME
+    inventory = user_inventory_path(result.paths)
+    delivery = user_delivery_dir(result.paths)
     print(f"运行目录：{result.paths.root}")
     print(f"下载清单：{inventory}")
     print(f"结果文件夹：{delivery}")
@@ -623,8 +623,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             _print_summary(result)
             print(f"交付目录：{result.paths.root}")
-            print(f"  清单：{result.paths.root / '下载清单.csv'}")
-            print(f"  PDF：{result.paths.root / '结果'}")
+            print(f"  清单：{user_inventory_path(result.paths)}")
+            print(f"  PDF：{user_delivery_dir(result.paths) / 'pdf'}")
             # Default: auto-queue Zotero and wait for results (less manual).
             auto_zotero = not bool(args.no_auto_zotero)
             if auto_zotero and result.zotero_fallback_count > 0:
@@ -644,7 +644,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if result.failed_count == 0 and result.zotero_fallback_count == 0:
                         print(
                             f"批次已完成。结果文件夹："
-                            f"{Path(result.paths.root) / USER_DELIVERY_DIR_NAME}"
+                            f"{user_delivery_dir(result.paths)}"
                         )
                     else:
                         print("报告已更新。批次未完成且可恢复。")
@@ -724,8 +724,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             paths = paths_from_run_dir(run_dir)
             state = load_batch_state(run_dir)
             write_final_reports(paths, state["rows"])
-            print(f"下载清单：{run_dir / USER_INVENTORY_NAME}")
-            print(f"结果文件夹：{run_dir / USER_DELIVERY_DIR_NAME}")
+            print(f"下载清单：{user_inventory_path(paths)}")
+            print(f"结果文件夹：{user_delivery_dir(paths)}")
             result = result_from_state(paths, state)
             _print_summary(result)
             return 0
@@ -742,7 +742,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"[refresh-delivery] 外部保留约 {refresh_result.external_kept} 个")
             print(f"下载清单：{refresh_result.inventory_path}")
             print(f"对照表：{refresh_result.rename_map_path}")
-            print(f"结果文件夹：{refresh_result.run_dir / USER_DELIVERY_DIR_NAME}")
+            print(f"结果文件夹：{user_delivery_dir(paths_from_run_dir(refresh_result.run_dir))}")
             return 0
         elif args.command == "recover-oa":
             from paper_automation.oa_recovery import (
@@ -816,7 +816,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         _print_summary(result)
         if args.command in {"finalize", "zotero"}:
-            delivery = Path(result.paths.root) / USER_DELIVERY_DIR_NAME
+            delivery = user_delivery_dir(result.paths)
             if result.failed_count == 0 and result.zotero_fallback_count == 0:
                 print(f"批次已完成。结果文件夹：{delivery}")
             else:

@@ -182,7 +182,20 @@ Example title copied from a bibliography
 
 桥接队列固定在 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。多个分块仍是 one confirmation per batch。
 
-输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`：用户交付看 **`下载清单.csv` + `结果\`**；内部缓存仍在 `pdfs\`、报告在 `reports\`。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。Zotero 桥接跟随**当前打开的实例**（不固定测试配置；隔离验收可用 `Zotero test` / Zotero test profile）。请在要用的配置中安装插件。详细步骤见 [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)。
+输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`。用户交付只看 `结果\`，其顶层固定为输入清单、`下载清单.csv`、`pdf\` 和 `md\`；实际下载到补充材料时才增加 `补充材料\`。批次根目录下的 `pdfs\`、`reports\`、`working\` 只用于缓存、续跑、失败恢复和审计。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。Zotero 桥接跟随**当前打开的实例**（不固定测试配置；隔离验收可用 `Zotero test` / Zotero test profile）。请在要用的配置中安装插件。详细步骤见 [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)。
+
+统一批次的用户交付结构如下：
+
+```text
+结果\
+├── <原始输入文件名>       # 原文件名和格式保留；直接粘贴文本时为 输入清单.txt
+├── 下载清单.csv            # UTF-8-SIG，字段和现有批次清单保持一致
+├── pdf\                    # 正文 PDF，文件名为 年份-第一作者姓-题名.pdf
+├── md\                     # 始终创建，供后续 docling-pdf-md 使用
+└── 补充材料\               # 仅实际存在补充材料时创建，按论文文件名分组
+```
+
+`下载清单.csv` 保持现有格式：`序号,状态,DOI,题名,作者,年份,期刊,下载来源,结果文件,补充材料,失败原因,task_id`。其中 `结果文件` 使用批次根目录相对路径 `结果/pdf/<文件名>.pdf`，`补充材料` 使用 `结果/补充材料/<论文文件名>`；这些路径对应的文件夹和文件必须真实存在。重新发布或 `refresh-delivery` 时会保留人工补入的 PDF、补充材料和 MD 文件，并把旧结构中直接位于 `结果\` 的 PDF 迁移到 `结果/pdf\`。
 
 ## 图形界面（推荐页：统一批次）
 

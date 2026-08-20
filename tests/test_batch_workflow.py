@@ -3360,7 +3360,8 @@ class BatchFinalizeTests(unittest.TestCase):
 
         from paper_automation.batch_workflow import (
             USER_DELIVERY_DIR_NAME,
-            USER_INVENTORY_NAME,
+            user_inventory_path,
+            user_pdf_dir,
             write_final_reports,
         )
 
@@ -3382,12 +3383,12 @@ class BatchFinalizeTests(unittest.TestCase):
             formula_cell = values[1][5]
             workbook.close()
             summary = (paths.reports / "run_summary.txt").read_text(encoding="utf-8")
-            inventory_path = paths.root / USER_INVENTORY_NAME
+            inventory_path = user_inventory_path(paths)
             delivery_dir = paths.root / USER_DELIVERY_DIR_NAME
             with inventory_path.open("r", newline="", encoding="utf-8-sig") as handle:
                 inventory = list(csv.DictReader(handle))
             by_task = {row["task_id"]: row for row in inventory}
-            delivery_pdf_count = len(list(delivery_dir.glob("*.pdf")))
+            delivery_pdf_count = len(list(user_pdf_dir(paths).glob("*.pdf")))
 
             self.assertEqual([row["task_id"] for row in failed_rows], ["paper-0002"])
             self.assertEqual(formula_cell.value, "=DANGEROUS")

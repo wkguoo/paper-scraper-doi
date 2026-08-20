@@ -1,5 +1,115 @@
 # CHANGELOG
 
+## 2026-08-20 16:41:04 +08:00 — 重命名结果\pdf 中新增的两篇论文
+
+- 本次任务目标：将 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026\结果\pdf` 中新增的两篇 PDF 按 `年份-第一作者-论文题名.pdf` 规范命名。
+- 新增、修改或删除的文件：仅重命名该目录中的 2 个 PDF；未修改 PDF 内容、其他目录文件、原始清单或 Zotero 附件。
+- 具体修改内容：`INVESTIGATION OF TRIP EFFECT...` → `2015-Zhang-Investigation-of-TRIP-effect-in-ZG06Cr13Ni4Mo-martensitic-stainless-steel-by-in-situ-synchrotron-high-energy-X-ray-diffraction.pdf`；`QUANTIFICATION STUDY...` → `2015-Bi-Quantification-study-on-dendrite-fragmentation-in-solidification-process-of-Alluminum-alloys.pdf`。
+- 修改原因：统一新增 PDF 的年份、第一作者和论文题名命名格式，便于检索。
+- 生成的输出文件：上述 2 个重命名后的 PDF。
+- 如何检查是否成功：两个新文件均存在，两个旧文件名均不存在；文件大小和 PDF 内容未因重命名改变。
+- 注意事项或潜在风险：第二篇题名中的 `Alluminum` 保留期刊页面原题名拼写，未擅自改为 `Aluminum`。
+
+## 2026-08-19 18:07:59 +08:00 — 归并 Zotero 手动添加的 17 个 PDF
+
+- 本次任务目标：读取 Zotero 集合 `Codex下载回退_20260819_115253` 中手动添加的 PDF，复制到本批次结果目录并按 `年份-第一作者-论文题名.pdf` 命名。
+- 新增、修改或删除的文件：新增 `working\zotero_results_retry_20260819_180318.csv`；向 `pdfs` 和 `结果` 各归并 17 个 PDF；更新 `reports\final_manifest.csv`、`final_manifest.xlsx`、`failed.csv`、`run_summary.txt`、`batch_status.csv` 和 `batch_status.json`；未修改 Zotero 原附件、原始输入清单或已有 PDF。
+- 具体修改内容：通过 Zotero 读取集合 133 中 21 个条目，确认其中 17 个具有现存 PDF 附件；使用严格 Zotero 结果 CSV 和 `paper_batch.py finalize` 完成非破坏复制、PDF 校验、元数据补齐和安全命名。
+- 修改原因：将用户在 Zotero 中人工补入的可用 PDF 纳入原 924 篇批次的最终交付目录。
+- 生成的输出文件：结果目录新增 17 个规范命名 PDF；批次成功数由 901 增至 918，失败数由 23 降至 6。
+- 如何检查是否成功：17 条对应 DOI 的状态均为 `zotero_existing_pdf`；`结果` 含 918 个 PDF，内部 `pdfs` 含 919 个 PDF；`reports\failed.csv` 仅剩 6 条未解决记录。
+- 注意事项或潜在风险：集合中另有 4 条没有 PDF 附件；原失败清单中的 2 条 `plugin_error / write_outcome_uncertain` 不在本次手动补入集合中，仍保留为未解决状态。
+
+## 2026-08-19 12:45:34 +08:00 — 规范化单篇 PDF 文件名并核对失败清单
+
+- 本次任务目标：将 DOI `10.1007/s12598-020-01613-z` 对应论文的 `0000-Unknown-*` PDF 文件改为 `年份-第一作者-论文题名` 格式，并提供当前批次下载失败清单。
+- 新增、修改或删除的文件：重命名 `pdfs` 和 `结果` 目录中的同一篇 PDF 各 1 份；未修改 PDF 内容、原始输入清单和 Zotero 附件；未新增或覆盖失败报告。
+- 具体修改内容：依据 DOI 元数据使用 `2021-Guo-In-situ-synchrotron-X-ray-diffraction-analysis-of-deformation-behavior-of-a-Nb-NiTi-composite-for-biomedical-applications.pdf` 作为统一文件名；核对 `reports\failed.csv`。
+- 修改原因：去除 `0000-Unknown` 占位命名，保持最终结果目录与内部 PDF 目录命名一致。
+- 生成的输出文件：`D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026\结果\2021-Guo-In-situ-synchrotron-X-ray-diffraction-analysis-of-deformation-behavior-of-a-Nb-NiTi-composite-for-biomedical-applications.pdf`；`D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026\reports\failed.csv`（23 条）。
+- 如何检查是否成功：两个新文件均存在，大小均为 1,577,747 字节；旧文件名均不存在；失败清单包含 21 条 `no_pdf / no_available_pdf` 和 2 条 `plugin_error / write_outcome_uncertain`。
+- 注意事项或潜在风险：该论文 DOI 元数据的在线发表时间为 2020 年、纸本卷期年份为 2021 年，本次文件名采用纸本卷期年份 `2021`；失败清单中的论文未重新下载。
+
+## 2026-08-19 — 规范化补充材料文件夹命名
+
+- 本次任务目标：将 `结果\补充材料\按论文分组` 中的 `0000-Unknown-*` 文件夹改为 `年份-第一作者-论文题名`。
+- 新增、修改或删除的文件：仅重命名结果目录副本中的 197 个文件夹；新增 `结果\补充材料\补充材料_重命名对照表.csv`；追加本 `CHANGELOG.md`；未修改源 `reports\sciencedirect\supplements`。
+- 具体修改内容：使用最终清单题名、作者和年份进行映射，使用 DOI 公共元数据补齐 3 条缺失作者，对希腊字母和特殊字符做安全规范化，文件夹名截断至 120 字符并检查冲突。
+- 修改原因：避免 `0000-Unknown` 命名，方便按年份、作者和论文题名检索补充材料。
+- 生成的输出文件：197 个重命名后的补充材料文件夹；`D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026\结果\补充材料\补充材料_重命名对照表.csv`。
+- 如何检查是否成功：目标目录 197 个文件夹、397 个文件、总大小 3,040,477,694 字节；`0000-Unknown-*` 目录数为 0；源目录仍为 238 个原始文件夹、397 个文件；对照表 197 行且无重复新名称。
+- 注意事项或潜在风险：内部补充材料文件名本身仍保留下载器生成的 `Sxx_Download ...` 名称；当前只规范了论文文件夹名，未改动补充材料文件名及原始下载副本。
+
+## 2026-08-19 — 将补充材料复制到最终结果目录
+
+- 本次任务目标：按用户要求将已下载的补充材料集中放入 `结果\补充材料\按论文分组`。
+- 新增、修改或删除的文件：新增结果目录下的补充材料副本；追加本 `CHANGELOG.md`；未移动、删除或修改源补充材料。
+- 具体修改内容：从 `reports\sciencedirect\supplements` 按原论文子目录结构复制到 `结果\补充材料\按论文分组`；目标中同名同内容文件跳过，不同内容文件不覆盖。
+- 修改原因：让主论文 PDF 与补充材料都能从最终 `结果` 目录直接访问，同时保留下载器原始目录作为安全副本。
+- 生成的输出文件：397 个补充材料文件，总大小 3,040,477,694 字节，包含 MP4、DOCX、PDF、ZIP、DOC、JPG、PPTX、XLSX、AVI、BIN 等格式。
+- 如何检查是否成功：源目录与目标目录文件数均为 397、总字节数一致；本次复制 397 个，跳过 0 个，冲突 0 个。
+- 注意事项或潜在风险：补充材料格式多样，不应批量改名为 PDF；源目录仍是原始下载副本，后续转换或整理应在结果目录副本上进行。
+
+## 2026-08-19 12:20:00 +08:00 — 通过 Paper Download Bridge 完成 Zotero 回退重试
+
+- 本次任务目标：确认用户已启用的 `Paper Download Bridge` 是正确的 Zotero 回退通道，并继续处理上一轮剩余任务。
+- 新增、修改或删除的文件：追加本 `CHANGELOG.md`；更新批次 `reports`、`结果`、`pdfs`、`working` 下的运行结果；未删除或覆盖原始清单及既有 PDF。
+- 具体修改内容：检测到桥接心跳后使用 `paper_batch.py zotero --run-dir ... --library-id 1`，先处理 64 条，再按断点重试剩余 23 条；未重新运行机构/OA 下载阶段。
+- 修改原因：此前误将 `llm_for_zotero` MCP 的活动文库状态与本地 Paper Download Bridge 状态混为一谈；本次已确认桥接目标为 Zotero 9.0.6 的 `g39b695l.default` 配置，插件版本 0.2.0。
+- 生成的输出文件：新增 40 个 Zotero 下载 PDF、确认 1 个已有 Zotero PDF；生成 `working/zotero_results_retry_20260819_120947.csv` 和 `working/zotero_results_retry_20260819_121830.csv`，并更新 `reports/final_manifest.csv`、`reports/failed.csv`、`reports/run_summary.txt` 及 `结果/`。
+- 如何检查是否成功：最终清单共 924 条，状态为 `institutional_downloaded=769`、`oa_downloaded=91`、`zotero_downloaded=40`、`zotero_existing_pdf=1`、`no_pdf=21`、`plugin_error=2`；用户 `结果/` 中有 901 个 PDF，桥接任务已正常退出。
+- 注意事项或潜在风险：当前仍有 23 条未解决；21 条由 Zotero 返回 `no_available_pdf`，2 条连续两轮为 `write_outcome_uncertain`，不能伪报为成功，也不再盲目重复写入以避免重复条目。
+
+## 2026-08-19 11:45:00 +08:00 — 完成 924 篇批次的自动下载与最终核验
+
+- 本次任务目标：继续下载并持续监控 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026` 批次，处理 OA 补救异常并完成最终清单。
+- 新增、修改或删除的文件：追加本 `CHANGELOG.md`；生成并更新批次 `reports`、`结果`、`working` 下的运行报告和回退结果文件；未删除或覆盖原始文献清单及已有 PDF。
+- 具体修改内容：在保持原 PDF 下载节流策略和仅 DOI 解析并行的前提下，完成 OA 补救、最终状态汇总和逐文件 PDF 完整性核验；未启用自动休眠。
+- 修改原因：确保批次在突发单条 OA 异常后能够正常收尾，并给出可审计的成功/未解决状态。
+- 生成的输出文件：`结果` 中 860 个成功 PDF；`reports/final_manifest.csv`、`reports/failed.csv`、`reports/run_summary.txt`、`working/zotero_fallback.csv`、`working/zotero_results_retry_20260819_114351.csv` 等。
+- 如何检查是否成功：最终清单共 924 条，状态为 `institutional_downloaded=769`、`oa_downloaded=91`、`zotero_unavailable=64`；860 个成功文件均存在、非空且以 `%PDF-` 开头；失败清单 64 条且全部原因为 `no_active_zotero_library`。
+- 注意事项或潜在风险：64 条文献仍需在 Zotero 有活动文库后才能继续回退下载；当前不能将本批次表述为 924 篇全部下载完成。
+
+## 2026-08-19 — 防止单条 OA 补救异常中断整批下载
+
+- 本次任务目标：处理 924 篇文献批次在最终有界 OA 补救阶段因单个 DOI 异常退出的问题，继续完成剩余条目和交付报告。
+- 新增、修改或删除的文件：修改 `paper_automation/oa_recovery.py`；追加本 `CHANGELOG.md`；未修改原始文献清单或既有 PDF。
+- 具体修改内容：在 OA 补救 worker 内捕获单条 DOI 的异常，将其记录为 `recovery_error`，由后续 fallback 阶梯继续处理，其余 DOI 不受影响。
+- 修改原因：此前并行 future 的单条 `ValueError` 会直接中断整个 OA 补救阶段，使批次状态虽无 `pending` 但无法正常生成最终报告。
+- 生成的输出文件：后续继续写入 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026` 的报告、交付目录和 OA 补救清单。
+- 如何检查是否成功：先运行语法检查，再使用现有 run-dir 执行有界 OA 补救；成功标准是进程正常退出、生成最终报告和 fallback 清单，且 924 条任务状态可核对。
+- 注意事项或潜在风险：`recovery_error` 不代表 PDF 下载成功；该条仍进入后续未解决/fallback 统计，不会被伪报为已下载。
+
+## 2026-08-18 15:59:28 +08:00 — 按用户要求恢复原始 PDF 下载策略
+
+- 本次任务目标：仅加速 DOI→PII 解析；PDF 下载必须继续遵循原 `paper-download` skill 和项目默认节流策略。
+- 新增、修改或删除的文件：修改 `sd_scraper.py`，撤回上一条临时 PDF 节流/补充材料环境覆盖；追加本 `CHANGELOG.md`；未删除已下载 PDF，未修改原始 Markdown 清单。
+- 具体修改内容：保留 `PAPER_SCRAPER_RESOLVE_WORKERS=4` 的解析并行路径；移除 PDF 间隔、休息频率和补充材料的环境覆盖，后续恢复原默认 12–22 秒节流、每 8 篇休息 60 秒、补充材料默认开启和原有断点逻辑。
+- 修改原因：用户明确要求只优化解析阶段，不改变 PDF 下载方式。
+- 生成的输出文件：继续写入 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026`；停止前已有 5 篇主 PDF 保留。
+- 如何检查是否成功：停止了仍在解析的临时进程；代码语法检查和定向测试已通过；下一次恢复命令只设置解析 worker，不设置 PDF 加速变量。
+- 注意事项或潜在风险：解析并行仍可能触发 DOI 服务限速；PDF 阶段不做额外提速，按原 skill 的机构访问、节流和断点规则执行。
+
+## 2026-08-18 15:52:00 +08:00 — 加速 ScienceDirect PDF 批量下载
+
+- 本次任务目标：缩短 924 篇文献批次的主 PDF 下载等待时间，继续使用已有断点安全恢复。
+- 新增、修改或删除的文件：修改 `sd_scraper.py`；追加本 `CHANGELOG.md`；未删除或覆盖已下载 PDF，未修改原始 Markdown 清单。
+- 具体修改内容：增加 `PAPER_SCRAPER_PDF_INTER_MIN`、`PAPER_SCRAPER_PDF_INTER_MAX`、`PAPER_SCRAPER_PDF_BREAK_EVERY`、`PAPER_SCRAPER_PDF_BREAK_SECONDS` 节流环境变量；增加 `PAPER_SCRAPER_DOWNLOAD_SUPPLEMENTS` 开关。默认值保持原有保守策略不变；本批次恢复时采用短节流并关闭补充材料下载，只继续获取主 PDF。
+- 修改原因：默认 12–22 秒/篇且抓取补充材料导致长批次等待时间过长；主任务目标是论文 PDF，关闭补充材料可减少额外请求和写盘。
+- 生成的输出文件：继续写入 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026\reports\sciencedirect\pdfs` 及其断点文件。
+- 如何检查是否成功：已安全停止原进程；停止前 5 篇主 PDF 已完成并写入断点；修改后需通过语法检查和定向测试，再用 `retry-failed --retry-all-failed` 断点恢复。
+- 注意事项或潜在风险：降低等待可能触发 ScienceDirect 限速；若出现 `blocked:rate_limit` 或连续失败，应立即恢复默认节流或将 worker/请求频率降档。补充材料不会从已有目录删除，只是不再为后续文章请求。
+
+## 2026-08-18 15:36:40 +08:00 — 加速 924 篇文献下载的 DOI→PII 解析
+
+- 本次任务目标：在不并行写入同一批次状态或 PDF 目录的前提下，加速 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026` 的 ScienceDirect DOI→PII 解析。
+- 新增、修改或删除的文件：修改 `sd_scraper.py`；追加本 `CHANGELOG.md`；未修改原始 Markdown 清单、批次输入表或既有 PDF。
+- 具体修改内容：新增受环境变量 `PAPER_SCRAPER_RESOLVE_WORKERS` 控制的并行解析路径；每个 worker 使用独立 HTTP session，仅并行 DOI 重定向与 PII 提取；后续 PDF 下载仍由单一 ScienceDirect 阶段串行执行，避免共享 CDP、浏览器 profile、批次状态和最终交付目录。
+- 修改原因：原串行解析约 8–10 条/30 秒，924 篇任务等待时间过长；采用受控并行降低 DOI→PII 阶段耗时，同时保留单一 PDF 发布路径。
+- 生成的输出文件：继续写入 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026`；本批次启动时使用 `PAPER_SCRAPER_RESOLVE_WORKERS=4`。
+- 如何检查是否成功：`python -m py_compile sd_scraper.py` 通过；`python -m unittest tests.test_doi_batch_utils tests.test_sd_institutional_skill` 共 75 项通过。切换加速前串行阶段已安全停止，未产生 PDF。
+- 注意事项或潜在风险：并行请求可能触发 DOI/ScienceDirect 限速；若出现大量访问失败，应将 worker 数降至 2 或恢复默认 1。只有 DOI→PII 解析并行，PDF 下载仍遵守项目原有节流和断点规则。
+
 ## 2026-07-21 — MDPI gold-OA download (Akamai interstitial)
 
 - **OA downloader**: for MDPI (`mdpi.com` / `10.3390/`), use `curl_cffi` Chrome TLS impersonation, browser-like `Referer`, URL variants (strip `version=`, article `/pdf` paths), and solve Akamai interstitial (`bm-verify` + trivial JS `pow`) before re-fetching the PDF.
@@ -1623,4 +1733,27 @@ Release date: 2026-07-12
 - `zotero_bridge_plugin/*` 0.2.0
 - `skills/paper-download/SKILL.md`, `README.md`, `README_zh.md`
 - `tests/test_failure_routing_and_intake_filters.py`
+
+## 2026-08-20 16:46:49 +08:00 — 更新用户下载清单中的两条人工补入记录
+
+- 修改日期和时间：2026-08-20 16:46:49 +08:00。
+- 本次任务目标：将 `结果\pdf` 中已经重命名的两篇人工补入 PDF 反映到用户下载清单。
+- 新增、修改或删除的文件：更新 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026\结果\下载清单.csv` 中 `paper-0776` 和 `paper-0784` 两行；未新增重复记录；追加本 `CHANGELOG.md`。
+- 具体修改内容：两条记录的状态和下载来源改为 `外部补入`，补充作者字段，清空失败原因，并将结果文件路径更新为 `结果/pdf/` 下的两个新文件名；保持 CSV UTF-8 BOM、12 列和原有记录顺序。
+- 修改原因：使用户可见的下载清单与结果目录中实际存在的 PDF 及当前命名一致。
+- 生成的输出文件：更新后的 `结果\下载清单.csv`。
+- 如何检查是否成功：CSV 共 925 条记录、目标 DOI 各 1 条、无非空 DOI 重复、两条 PDF 路径均存在，`task_id` 分别为 `paper-0776` 和 `paper-0784`。
+- 注意事项或潜在风险：`reports\final_manifest.csv` 仍保留原始批次审计状态；本次仅更新用户可见清单，用 `外部补入` 标示这两篇 PDF 来自人工补入。
+
+## 2026-08-20 17:18:18 +08:00 — 将 paper-download 收敛为五项用户交付包
+
+- 修改日期和时间：2026-08-20 17:18:18 +08:00。
+- 本次任务目标：按照用户确定的交付方案，统一 `paper-download` 的用户可见结果目录，并保持现有下载清单 CSV 格式兼容。
+- 新增、修改或删除的文件：修改 `paper_automation/batch_workflow.py`、`paper_automation/delivery_refresh.py`、`paper_batch.py`、`skills/paper-download/SKILL.md`、`README.md`、`README_zh.md`、`tests/test_batch_optimizations.py`、`tests/test_batch_workflow.py`、`tests/test_skills_packaging.py` 和本 `CHANGELOG.md`；通过 `install_codex_skills.ps1` 同步 `C:\Users\wkguopro\.codex\skills\paper-download\`。保留 `paper_automation/oa_recovery.py`、`sd_scraper.py` 等与本任务无关的既有修改。
+- 具体修改内容：用户交付固定为 `结果\` 下的原始输入清单、`下载清单.csv`、`pdf\`、`md\`，仅在实际存在补充材料时增加 `补充材料\`；正文 PDF 统一进入 `结果\pdf\`，补充材料按论文文件名分组，`md\` 始终创建但不在本 skill 内转换。重发布保留人工 PDF、补充材料和 MD；旧结构中直接位于 `结果\` 的 PDF 可迁移到 `结果\pdf\`；`refresh-delivery` 扫描新旧 PDF 位置并将人工 PDF 映射回失败 DOI；重命名对照表归入 `reports\`。
+- 下载清单格式：继续使用现有 UTF-8-SIG、逗号分隔和 12 列顺序 `序号,状态,DOI,题名,作者,年份,期刊,下载来源,结果文件,补充材料,失败原因,task_id`。仅将路径字段改为真实新结构中的 `结果/pdf/<文件名>.pdf` 和 `结果/补充材料/<论文目录>`。
+- 生成的输出文件：用户交付清单为 `<批次目录>\结果\下载清单.csv`；正文 PDF 目录为 `<批次目录>\结果\pdf\`；后续 Markdown 目录为 `<批次目录>\结果\md\`；内部 `pdfs\`、`reports\`、`working\` 继续保留。
+- 如何运行：后续统一运行 `paper_batch.py start`；已有批次可运行 `paper_batch.py delivery --run-dir "<run-dir>"` 重建交付包，人工补入 PDF 后运行 `paper_batch.py refresh-delivery --run-dir "<run-dir>"` 刷新命名、映射和清单。安装脚本为 `powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1 -SkillsRoot "C:\Users\wkguopro\.codex\skills"`。
+- 如何检查是否成功：定向优化/打包测试 39 项通过；批次工作流与补充材料测试 160 项通过（2 项因 Windows 符号链接权限跳过）；Python 语法检查和 `git diff --check` 通过；源 skill 与用户目录安装副本 SHA-256 一致。全量 420 项中 417 项通过、2 项跳过、3 项因仓库已有 `dist\*.xpi` 产物触发旧的“禁止内置 XPI”测试失败，未删除该用户/项目产物。
+- 注意事项或潜在风险：`结果\` 顶层只承诺五项交付内容；批次根目录中的缓存和报告仍是内部审计文件，不作为用户交付物。正文下载路由、Zotero 桥接、PDF 命名规则和失败恢复流程未改变。
 

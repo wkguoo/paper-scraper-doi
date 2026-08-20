@@ -127,8 +127,14 @@ Optional: `--wait-seconds N` on `start` to poll in-process; `--no-auto-zotero`
 to queue later; `--enable-manual-retry` for the legacy one-shot login/CAPTCHA
 path (then `resume` once if `manual_retry.csv` has rows).
 
-Final PDFs are in `pdfs\`, reports are in `reports\`, and handoff files remain
-in `working\`. See the
+For the unified batch, user-facing files are in `结果\`: the original input,
+`下载清单.csv`, `pdf\`, and an always-present empty `md\`; `补充材料\` is
+created only when supplementary files were actually downloaded. The inventory
+keeps the existing UTF-8-SIG CSV format and 12 columns
+(`序号,状态,DOI,题名,作者,年份,期刊,下载来源,结果文件,补充材料,失败原因,task_id`),
+with batch-root-relative paths such as `结果/pdf/paper.pdf` and
+`结果/补充材料/paper`. Internal cache, reports, and handoff files remain in
+`pdfs\`, `reports\`, and `working\`. See the
 [Zotero bridge beginner guide](docs/zotero_bridge_beginner_guide.md). The XPI
 remains approval-gated: test only in a Zotero test profile first.
 
@@ -141,7 +147,9 @@ or `PAPER_SCRAPER_BROWSER_EXE` override always wins.
 
 **Unified batch** (`paper_batch.py`) writes one timestamped run directory with
 normalized input, stage reports, `manual_retry.csv` / `zotero_fallback.csv`,
-final manifests, and `pdfs\`.
+final manifests, internal `pdfs\` cache, and the user delivery package under
+`结果\`. Re-publishing preserves user-added PDF, supplement, and Markdown
+files; old PDFs directly under `结果\` are migrated into `结果/pdf\`.
 
 Legacy ScienceDirect-only runs may still create folders with reports such as:
 

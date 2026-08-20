@@ -1,6 +1,8 @@
 """Tests for download speed/routing optimizations (opts 1–5, 9–10)."""
 from __future__ import annotations
 
+import csv
+import io
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -191,9 +193,116 @@ class MergeSafeDeliveryA1Tests(unittest.TestCase):
 
             # No success rows — orphan must survive republish.
             publish_user_delivery(paths, [])
-            kept = list((paths.root / USER_DELIVERY_DIR_NAME).glob("*.pdf"))
+            kept = list((paths.root / USER_DELIVERY_DIR_NAME / "pdf").glob("*.pdf"))
             self.assertEqual(len(kept), 1)
             self.assertEqual(kept[0].read_bytes(), b"%PDF-1.4 orphan content unique-xyz")
+            self.assertFalse(list((paths.root / USER_DELIVERY_DIR_NAME).glob("*.pdf")))
+
+
+class UserDeliveryPackageTests(unittest.TestCase):
+    def _success_row(self, paths, source: Path) -> dict[str, str]:
+        return {
+            "task_id": "paper-0001",
+            "doi": "10.1000/example",
+            "title": "Example paper",
+            "authors": "Example",
+            "year": "2024",
+            "status": "oa_downloaded",
+            "source": "oa",
+            "file": str(source),
+            "reason": "",
+        }
+
+    def test_user_delivery_has_four_items_without_supplements_and_copies_input(self) -> None:
+        from paper_automation.batch_workflow import (
+            USER_DELIVERY_DIR_NAME,
+            USER_INVENTORY_FIELDS,
+            USER_INVENTORY_NAME,
+            _snapshot_input_source,
+            create_batch_paths,
+            publish_user_delivery,
+        )
+
+        with TemporaryDirectory() as tmp:
+            paths = create_batch_paths(tmp, run_name="package_no_supplement", fixed=True)
+            source_input = Path(tmp) / "papers.md"
+            source_input.write_bytes("# DOI list\n10.1000/example\n".encode("utf-8"))
+            _snapshot_input_source(paths, input_text=None, input_path=source_input)
+            source_pdf = paths.pdfs / "2024-Example-Example-paper.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4 package-test")
+
+            publish_user_delivery(paths, [self._success_row(paths, source_pdf)])
+            delivery = paths.root / USER_DELIVERY_DIR_NAME
+            self.assertEqual(
+                {path.name for path in delivery.iterdir()},
+                {source_input.name, USER_INVENTORY_NAME, "pdf", "md"},
+            )
+            self.assertEqual(
+                (delivery / "pdf" / source_pdf.name).read_bytes(),
+                source_pdf.read_bytes(),
+            )
+            self.assertFalse((delivery / "补充材料").exists())
+            inventory_path = delivery / USER_INVENTORY_NAME
+            raw_inventory = inventory_path.read_bytes()
+            self.assertTrue(raw_inventory.startswith(b"\xef\xbb\xbf"))
+            reader = csv.DictReader(io.StringIO(raw_inventory.decode("utf-8-sig")))
+            self.assertEqual(reader.fieldnames, USER_INVENTORY_FIELDS)
+            inventory_rows = list(reader)
+            self.assertEqual(inventory_rows[0]["结果文件"], "结果/pdf/2024-Example-Example-paper.pdf")
+            self.assertEqual(inventory_rows[0]["补充材料"], "")
+
+    def test_user_delivery_groups_supplements_in_one_directory(self) -> None:
+        from paper_automation.batch_workflow import (
+            USER_DELIVERY_DIR_NAME,
+            create_batch_paths,
+            publish_user_delivery,
+        )
+
+        with TemporaryDirectory() as tmp:
+            paths = create_batch_paths(tmp, run_name="package_supplement", fixed=True)
+            source_pdf = paths.pdfs / "2024-Example-Example-paper.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4 supplement-test")
+            supplement = paths.reports / "sciencedirect" / "supplements" / source_pdf.stem
+            supplement.mkdir(parents=True)
+            (supplement / "S01-data.xlsx").write_bytes(b"supplement")
+
+            publish_user_delivery(paths, [self._success_row(paths, source_pdf)])
+            delivery = paths.root / USER_DELIVERY_DIR_NAME
+            target = delivery / "补充材料" / source_pdf.stem / "S01-data.xlsx"
+            self.assertEqual(target.read_bytes(), b"supplement")
+            self.assertNotIn("_supplements", {path.name for path in delivery.iterdir()})
+            inventory = (delivery / "下载清单.csv").read_text(encoding="utf-8-sig")
+            self.assertIn(f"结果/补充材料/{source_pdf.stem}", inventory)
+
+    def test_republish_preserves_md_supplements_and_manual_pdf(self) -> None:
+        from paper_automation.batch_workflow import (
+            USER_DELIVERY_DIR_NAME,
+            _snapshot_input_source,
+            create_batch_paths,
+            publish_user_delivery,
+        )
+
+        with TemporaryDirectory() as tmp:
+            paths = create_batch_paths(tmp, run_name="package_preserve", fixed=True)
+            source_input = Path(tmp) / "papers.csv"
+            source_input.write_text("doi\n10.1000/example\n", encoding="utf-8")
+            _snapshot_input_source(paths, input_text=None, input_path=source_input)
+            source_pdf = paths.pdfs / "2024-Example-Example-paper.pdf"
+            source_pdf.write_bytes(b"%PDF-1.4 preserve-test")
+            row = self._success_row(paths, source_pdf)
+            publish_user_delivery(paths, [row])
+
+            delivery = paths.root / USER_DELIVERY_DIR_NAME
+            (delivery / "md" / "nested").mkdir(parents=True)
+            (delivery / "md" / "nested" / "paper.md").write_text("# keep", encoding="utf-8")
+            (delivery / "补充材料" / "manual").mkdir(parents=True)
+            (delivery / "补充材料" / "manual" / "notes.txt").write_text("keep", encoding="utf-8")
+            (delivery / "pdf" / "manual.pdf").write_bytes(b"%PDF-1.4 manual")
+
+            publish_user_delivery(paths, [row])
+            self.assertEqual((delivery / "md" / "nested" / "paper.md").read_text(encoding="utf-8"), "# keep")
+            self.assertEqual((delivery / "补充材料" / "manual" / "notes.txt").read_text(encoding="utf-8"), "keep")
+            self.assertEqual((delivery / "pdf" / "manual.pdf").read_bytes(), b"%PDF-1.4 manual")
 
 
 class RefreshDeliveryA3Tests(unittest.TestCase):
@@ -257,6 +366,65 @@ class RefreshDeliveryA3Tests(unittest.TestCase):
             self.assertTrue((paths.root / USER_DELIVERY_DIR_NAME).exists())
             inv = result.inventory_path.read_text(encoding="utf-8-sig")
             self.assertIn("外部补入", inv)
+
+    def test_refresh_scans_pdf_subdirectory_and_maps_failed_doi(self) -> None:
+        from paper_automation.batch_workflow import (
+            USER_DELIVERY_DIR_NAME,
+            create_batch_paths,
+            load_batch_state,
+            save_batch_state,
+        )
+        from paper_automation.delivery_refresh import refresh_delivery
+
+        with TemporaryDirectory() as tmp:
+            paths = create_batch_paths(tmp, run_name="a3_pdf_subdir", fixed=True)
+            pdf_dir = paths.root / USER_DELIVERY_DIR_NAME / "pdf"
+            pdf_dir.mkdir(parents=True, exist_ok=True)
+            pdf = pdf_dir / "manual-drop.pdf"
+            pdf.write_bytes(b"%PDF-1.4 DOI 10.1000/xyz.123")
+            state = {
+                "version": 1,
+                "run_dir": str(paths.root),
+                "manual_retry_used": True,
+                "options": {
+                    "email": "",
+                    "cookies": "",
+                    "browser_exe": "",
+                    "login_wait_seconds": 0,
+                    "debug_port": 9333,
+                    "throttle_seconds": 1.0,
+                    "skip_manual_retry": True,
+                    "download_supplements": True,
+                    "smart_route": True,
+                    "session_break_seconds": 60.0,
+                    "session_break_every": 8,
+                    "resolve_title_metadata": False,
+                    "circuit_breaker_threshold": 3,
+                    "auto_oa_recovery": True,
+                    "iucr_short_try": True,
+                },
+                "rows": [
+                    {
+                        "task_id": "paper-0001",
+                        "doi": "10.1000/xyz.123",
+                        "title": "Manual drop",
+                        "status": "no_open_pdf",
+                        "source": "zotero",
+                        "file": "",
+                        "reason": "no_available_pdf",
+                    }
+                ],
+            }
+            save_batch_state(paths, state)
+
+            result = refresh_delivery(paths.root, apply_rename=False)
+            refreshed = load_batch_state(paths.root)["rows"][0]
+            self.assertEqual(refreshed["status"], "manual_imported")
+            self.assertEqual(result.mapped_to_row, 1)
+            self.assertTrue((paths.root / USER_DELIVERY_DIR_NAME / "pdf" / "manual-drop.pdf").is_file())
+            inventory = result.inventory_path.read_text(encoding="utf-8-sig")
+            self.assertIn("manual-drop.pdf", inventory)
+            self.assertEqual(inventory.count("paper-0001"), 1)
 
 
 if __name__ == "__main__":

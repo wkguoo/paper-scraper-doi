@@ -12,12 +12,13 @@ from doi_batch_utils import clean_doi, extract_doi_from_text
 
 from .batch_workflow import (
     SUCCESS_STATUSES,
-    USER_DELIVERY_DIR_NAME,
     batch_state_lock,
     load_batch_state,
     paths_from_run_dir,
     publish_user_delivery,
     save_batch_state,
+    user_delivery_dir,
+    user_pdf_dir,
 )
 from .file_manager import clean_title_for_filename, make_pdf_filename, sanitize_filename
 from .models import MetadataResult
@@ -148,14 +149,15 @@ def refresh_delivery(
     email: str = "",
     apply_rename: bool = True,
 ) -> DeliveryRefreshResult:
-    """Scan ``结果/``, rename nonstandard PDFs, map orphans to failed rows, rewrite inventory.
+    """Scan ``结果/pdf/`` (and legacy root PDFs), rename and map manual drops.
 
     Safe to run repeatedly. Uses content-hash matching against batch row files and
     existing delivery names. Manual drops without DOI stay as 外部补入 after publish.
     """
     paths = paths_from_run_dir(run_dir)
-    delivery = paths.root / USER_DELIVERY_DIR_NAME
+    delivery = user_delivery_dir(paths)
     delivery.mkdir(parents=True, exist_ok=True)
+    user_pdf_dir(paths).mkdir(parents=True, exist_ok=True)
 
     with batch_state_lock(paths.root):
         state = load_batch_state(paths.root)
@@ -168,6 +170,8 @@ def refresh_delivery(
             if not file_value:
                 continue
             src = Path(file_value)
+            if not src.is_absolute():
+                src = paths.root / src
             if not src.is_file() or src.is_symlink():
                 continue
             try:
@@ -175,11 +179,19 @@ def refresh_delivery(
             except OSError:
                 continue
 
-        pdfs = sorted(
-            p
-            for p in delivery.iterdir()
-            if p.is_file() and not p.is_symlink() and p.suffix.lower() == ".pdf"
-        )
+        pdfs: list[Path] = []
+        for pdf_root in (user_pdf_dir(paths), delivery):
+            if not pdf_root.is_dir():
+                continue
+            for candidate in pdf_root.iterdir():
+                if (
+                    candidate.is_file()
+                    and not candidate.is_symlink()
+                    and candidate.suffix.lower() == ".pdf"
+                    and candidate not in pdfs
+                ):
+                    pdfs.append(candidate)
+        pdfs.sort(key=lambda path: str(path).casefold())
 
         rename_log: list[dict[str, str]] = []
         renamed = 0
@@ -322,7 +334,7 @@ def refresh_delivery(
         state = load_batch_state(paths.root)
         inventory_path = publish_user_delivery(paths, state["rows"])
 
-    map_path = paths.root / RENAME_MAP_NAME
+    map_path = paths.reports / RENAME_MAP_NAME
     _write_csv(map_path, RENAME_MAP_FIELDS, rename_log)
 
     return DeliveryRefreshResult(

@@ -114,9 +114,13 @@ FINAL_REPORT_FILENAMES = (
     "batch_status.csv",
     "batch_status.json",
 )
-# User-facing delivery (keep this simple — one inventory + one results folder).
+# User-facing delivery (keep this simple — one input, one inventory, and three
+# predictable folders; reports/cache remain internal to the run directory).
 USER_DELIVERY_DIR_NAME = "结果"
 USER_INVENTORY_NAME = "下载清单.csv"
+USER_PDF_DIR_NAME = "pdf"
+USER_MD_DIR_NAME = "md"
+USER_SUPPLEMENT_DIR_NAME = "补充材料"
 USER_INVENTORY_FIELDS = [
     "序号",
     "状态",
@@ -133,6 +137,37 @@ USER_INVENTORY_FIELDS = [
 ]
 _STAGE_SUCCESS_STATUSES = {"downloaded", "oa_downloaded", "institutional_downloaded"}
 _INSTITUTIONAL_SOURCES = {"sciencedirect", "non_elsevier", "institutional"}
+_INPUT_SNAPSHOT_DIR_NAME = "input_source"
+
+
+def user_delivery_dir(paths: BatchPaths) -> Path:
+    """Return the only user-facing delivery directory for a batch."""
+
+    return paths.root / USER_DELIVERY_DIR_NAME
+
+
+def user_inventory_path(paths: BatchPaths) -> Path:
+    """Return the user-facing inventory path inside ``结果``."""
+
+    return user_delivery_dir(paths) / USER_INVENTORY_NAME
+
+
+def user_pdf_dir(paths: BatchPaths) -> Path:
+    """Return the user-facing article-PDF directory."""
+
+    return user_delivery_dir(paths) / USER_PDF_DIR_NAME
+
+
+def user_md_dir(paths: BatchPaths) -> Path:
+    """Return the reserved directory for later PDF-to-Markdown conversion."""
+
+    return user_delivery_dir(paths) / USER_MD_DIR_NAME
+
+
+def user_supplement_dir(paths: BatchPaths) -> Path:
+    """Return the optional user-facing supplementary-material directory."""
+
+    return user_delivery_dir(paths) / USER_SUPPLEMENT_DIR_NAME
 
 
 @dataclass(frozen=True)
@@ -948,8 +983,47 @@ def normalize_input(
         raise ValueError("empty_input")
     for index, row in enumerate(rows, start=1):
         row["task_id"] = f"paper-{index:04d}"
+    _snapshot_input_source(paths, input_text=input_text, input_path=input_path)
     _write_csv_rows(paths.normalized_input, rows)
     return rows
+
+
+def _snapshot_input_source(
+    paths: BatchPaths,
+    *,
+    input_text: str | None,
+    input_path: str | Path | None,
+) -> Path:
+    """Keep one immutable copy of the user input for the final delivery.
+
+    The original source is never edited.  A fixed batch can be resumed after
+    the original file has moved or been renamed because the snapshot lives in
+    the internal ``working`` directory and is copied into ``结果`` at publish
+    time.
+    """
+
+    snapshot_dir = paths.working / _INPUT_SNAPSHOT_DIR_NAME
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    if input_path is not None:
+        source = Path(input_path).expanduser().resolve()
+        if not source.is_file():
+            raise ValueError("input_file_missing")
+        destination = snapshot_dir / source.name
+        if destination.exists():
+            if destination.read_bytes() != source.read_bytes():
+                raise ValueError("input_snapshot_conflict")
+        else:
+            shutil.copy2(source, destination)
+        return destination
+
+    destination = snapshot_dir / "输入清单.txt"
+    payload = str(input_text or "")
+    if destination.exists():
+        if destination.read_text(encoding="utf-8") != payload:
+            raise ValueError("input_snapshot_conflict")
+    else:
+        destination.write_text(payload, encoding="utf-8", newline="")
+    return destination
 
 
 def _is_successful_status(status: object) -> bool:
@@ -1722,6 +1796,113 @@ def _safe_delivery_name(name: str, *, fallback: str) -> str:
     return cleaned[:180] or fallback
 
 
+def _safe_input_delivery_name(name: str) -> str:
+    """Keep the source input name while avoiding reserved delivery names."""
+
+    cleaned = _safe_delivery_name(name, fallback="输入清单.txt")
+    reserved = {
+        USER_INVENTORY_NAME.casefold(),
+        USER_PDF_DIR_NAME.casefold(),
+        USER_MD_DIR_NAME.casefold(),
+        USER_SUPPLEMENT_DIR_NAME.casefold(),
+    }
+    if cleaned.casefold() in reserved:
+        cleaned = f"输入清单_{cleaned}"
+    return cleaned
+
+
+def _iter_regular_files(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return sorted(
+        (
+            path
+            for path in root.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        ),
+        key=lambda path: str(path).casefold(),
+    )
+
+
+def _copy_input_to_delivery(
+    paths: BatchPaths,
+    delivery_target: Path,
+    staging_results: Path,
+    rows: list[dict],
+) -> Path:
+    """Copy exactly one input list into the user-facing result directory.
+
+    New runs use the immutable input snapshot.  Older runs are supported by
+    falling back to an existing non-PDF file in ``结果`` and finally the
+    normalized internal CSV.
+    """
+
+    snapshot_files = _iter_regular_files(paths.working / _INPUT_SNAPSHOT_DIR_NAME)
+    source: Path | None = snapshot_files[0] if snapshot_files else None
+    if source is None:
+        legacy_candidates = [
+            path
+            for path in (
+                delivery_target.iterdir() if delivery_target.is_dir() else []
+            )
+            if path.is_file()
+            and not path.is_symlink()
+            and path.name.casefold() != USER_INVENTORY_NAME.casefold()
+            and path.suffix.lower() != ".pdf"
+        ]
+        source = sorted(legacy_candidates, key=lambda path: path.name.casefold())[0] if legacy_candidates else None
+    if source is None and paths.normalized_input.is_file():
+        source = paths.normalized_input
+    if source is None:
+        # Synthetic/legacy states may not have retained their original input.
+        # Publish a reproducible normalized input rather than silently omitting
+        # the promised input-list slot.
+        destination = staging_results / "输入清单.csv"
+        _write_csv_rows(destination, rows)
+        return destination
+
+    preferred = (
+        "输入清单.csv"
+        if source == paths.normalized_input
+        else _safe_input_delivery_name(source.name)
+    )
+    destination = staging_results / preferred
+    shutil.copy2(source, destination)
+    return destination
+
+
+def _delivery_pdf_candidates(delivery_target: Path) -> list[Path]:
+    """Find current and legacy user-facing article PDFs without supplements."""
+
+    candidates: list[Path] = []
+    for root in (delivery_target / USER_PDF_DIR_NAME, delivery_target):
+        if not root.is_dir():
+            continue
+        for path in root.iterdir():
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and path.suffix.lower() == ".pdf"
+                and path not in candidates
+            ):
+                candidates.append(path)
+    return sorted(candidates, key=lambda path: path.name.casefold())
+
+
+def _copy_existing_user_tree(source: Path, destination: Path) -> bool:
+    """Copy regular files from a user-owned tree and report whether any exist."""
+
+    files = _iter_regular_files(source)
+    if not files:
+        return False
+    for source_file in files:
+        relative = source_file.relative_to(source)
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_file, target)
+    return True
+
+
 def _collect_supplement_dirs(row: dict, paths: BatchPaths) -> list[Path]:
     """Locate supplement folders written by stage downloaders for this paper."""
 
@@ -1747,6 +1928,7 @@ def _collect_supplement_dirs(row: dict, paths: BatchPaths) -> list[Path]:
         paths.reports / "non_elsevier_institutional" / "supplements",
         paths.pdfs / "supplements",
         paths.root / "supplements",
+        paths.root / USER_DELIVERY_DIR_NAME / USER_SUPPLEMENT_DIR_NAME,
     ]
     seen: set[str] = set()
     for root in search_roots:
@@ -1814,14 +1996,16 @@ def _file_sha256(path: Path, *, chunk: int = 1024 * 1024) -> str:
 
 
 def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
-    """Publish the only user-facing deliverables: 下载清单.csv + 结果/.
+    """Publish the five-item user package under ``结果``.
 
-    Internal reports/ and working/ remain for the pipeline; daily use only needs
-    these two paths at the run root.
+    The package contains the original input snapshot, ``下载清单.csv``,
+    ``pdf`` and ``md`` directories, plus ``补充材料`` only when files exist.
+    Internal ``pdfs``/``reports``/``working`` remain outside the package.
 
-    **A1 merge-safe:** existing PDFs in ``结果/`` that are not produced from
-    current success rows (manual drops / external imports) are preserved by
-    content hash and listed as ``外部补入``.
+    **A1 merge-safe:** existing PDFs, supplementary files, and Markdown files
+    in the user package are preserved by content copy when the batch is
+    republished. Legacy PDFs directly under ``结果`` are migrated into
+    ``结果/pdf``.
     """
 
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -1830,21 +2014,31 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
     )
     staging_results = staging_root / USER_DELIVERY_DIR_NAME
     staging_results.mkdir(parents=True, exist_ok=True)
+    staging_pdf_dir = staging_results / USER_PDF_DIR_NAME
+    staging_pdf_dir.mkdir(parents=True, exist_ok=True)
+    staging_md_dir = staging_results / USER_MD_DIR_NAME
+    staging_md_dir.mkdir(parents=True, exist_ok=True)
     inventory_rows: list[dict[str, str]] = []
     used_names: set[str] = set()
     staged_hashes: set[str] = set()
 
-    delivery_target = paths.root / USER_DELIVERY_DIR_NAME
-    # Snapshot orphans before replace so manual drops survive republish.
-    prior_orphans: list[Path] = []
-    if delivery_target.is_dir():
-        prior_orphans = [
-            p
-            for p in delivery_target.iterdir()
-            if p.is_file() and not p.is_symlink() and p.suffix.lower() == ".pdf"
-        ]
-
+    delivery_target = user_delivery_dir(paths)
+    prior_orphans = _delivery_pdf_candidates(delivery_target)
+    legacy_supplement_dirs = [
+        path
+        for path in (delivery_target.iterdir() if delivery_target.is_dir() else [])
+        if path.is_dir()
+        and not path.is_symlink()
+        and path.name.casefold().endswith("_supplements")
+    ]
+    supplement_staged = _copy_existing_user_tree(
+        delivery_target / USER_SUPPLEMENT_DIR_NAME,
+        staging_results / USER_SUPPLEMENT_DIR_NAME,
+    )
     try:
+        _copy_existing_user_tree(delivery_target / USER_MD_DIR_NAME, staging_md_dir)
+        _copy_input_to_delivery(paths, delivery_target, staging_results, rows)
+
         for index, row in enumerate(rows, start=1):
             status = str(row.get("status", "") or "").strip()
             label = _status_label_zh(status)
@@ -1859,6 +2053,8 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
             if label == "成功":
                 source_file = str(row.get("file", "") or "").strip()
                 source_path = Path(source_file).expanduser() if source_file else None
+                if source_path is not None and not source_path.is_absolute():
+                    source_path = paths.root / source_path
                 if source_path is not None and source_path.is_file() and not source_path.is_symlink():
                     preferred = _safe_delivery_name(
                         source_path.name if source_path.suffix.lower() == ".pdf" else f"{source_path.stem}.pdf",
@@ -1872,25 +2068,36 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
                         preferred = f"{Path(base).stem}_{counter}.pdf"
                         counter += 1
                     used_names.add(preferred.lower())
-                    target_pdf = staging_results / preferred
+                    target_pdf = staging_pdf_dir / preferred
                     shutil.copy2(source_path, target_pdf)
                     try:
                         staged_hashes.add(_file_sha256(target_pdf))
                     except OSError:
                         pass
-                    result_rel = f"{USER_DELIVERY_DIR_NAME}/{preferred}"
+                    result_rel = f"{USER_DELIVERY_DIR_NAME}/{USER_PDF_DIR_NAME}/{preferred}"
 
                     supplement_dirs = _collect_supplement_dirs(row, paths)
+                    preferred_supplement = (
+                        delivery_target
+                        / USER_SUPPLEMENT_DIR_NAME
+                        / Path(preferred).stem
+                    )
+                    legacy_supplement = delivery_target / f"{Path(preferred).stem}_supplements"
+                    supplement_dirs.extend(
+                        path
+                        for path in (preferred_supplement, legacy_supplement)
+                        if path.is_dir() and path not in supplement_dirs
+                    )
                     if supplement_dirs:
-                        suppl_folder_name = f"{Path(preferred).stem}_supplements"
-                        suppl_dest = staging_results / suppl_folder_name
+                        suppl_dest = staging_results / USER_SUPPLEMENT_DIR_NAME / Path(preferred).stem
                         copied_names: list[str] = []
                         for folder in supplement_dirs:
                             copied_names.extend(_copy_tree_files(folder, suppl_dest))
-                        if copied_names:
+                        if copied_names or _iter_regular_files(suppl_dest):
+                            supplement_staged = True
                             supplements_rel = (
-                                f"{USER_DELIVERY_DIR_NAME}/{suppl_folder_name}"
-                                f"（{len(copied_names)}个文件）"
+                                f"{USER_DELIVERY_DIR_NAME}/{USER_SUPPLEMENT_DIR_NAME}/"
+                                f"{Path(preferred).stem}"
                             )
                 else:
                     label = "失败"
@@ -1913,16 +2120,29 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
                 }
             )
 
+        # Preserve legacy per-paper supplement directories while migrating them
+        # into one global user-facing directory.
+        for legacy in legacy_supplement_dirs:
+            stem = legacy.name[: -len("_supplements")]
+            if _copy_existing_user_tree(
+                legacy,
+                staging_results / USER_SUPPLEMENT_DIR_NAME / stem,
+            ):
+                supplement_staged = True
+
         # A1: re-attach orphan PDFs not already staged by content hash.
         orphan_index = 0
-        for orphan in sorted(prior_orphans, key=lambda p: p.name.lower()):
+        for orphan in prior_orphans:
             try:
                 digest = _file_sha256(orphan)
             except OSError:
                 continue
             if digest in staged_hashes:
                 continue
-            preferred = _safe_delivery_name(orphan.name, fallback=f"external_{orphan_index + 1:04d}.pdf")
+            preferred = _safe_delivery_name(
+                orphan.name,
+                fallback=f"external_{orphan_index + 1:04d}.pdf",
+            )
             if not preferred.lower().endswith(".pdf"):
                 preferred = f"{preferred}.pdf"
             base = preferred
@@ -1931,7 +2151,7 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
                 preferred = f"{Path(base).stem}_{counter}.pdf"
                 counter += 1
             used_names.add(preferred.lower())
-            shutil.copy2(orphan, staging_results / preferred)
+            shutil.copy2(orphan, staging_pdf_dir / preferred)
             staged_hashes.add(digest)
             orphan_index += 1
             inventory_rows.append(
@@ -1944,20 +2164,21 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
                     "年份": "",
                     "期刊": "",
                     "下载来源": "外部补入",
-                    "结果文件": f"{USER_DELIVERY_DIR_NAME}/{preferred}",
+                    "结果文件": f"{USER_DELIVERY_DIR_NAME}/{USER_PDF_DIR_NAME}/{preferred}",
                     "补充材料": "",
                     "失败原因": "",
                     "task_id": "",
                 }
             )
 
-        inventory_staging = staging_root / USER_INVENTORY_NAME
+        if not supplement_staged:
+            shutil.rmtree(staging_results / USER_SUPPLEMENT_DIR_NAME, ignore_errors=True)
+
+        inventory_staging = staging_results / USER_INVENTORY_NAME
         _write_report_csv(inventory_staging, USER_INVENTORY_FIELDS, inventory_rows)
 
-        inventory_target = paths.root / USER_INVENTORY_NAME
         _replace_user_directory(delivery_target, staging_results)
-        os.replace(inventory_staging, inventory_target)
-        return inventory_target
+        return user_inventory_path(paths)
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
 
@@ -1987,9 +2208,9 @@ def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
         f"input_count: {len(manifest_rows)}",
         f"success_count: {success_count}",
         f"failure_count: {failure_count}",
-        f"user_inventory: {paths.root / USER_INVENTORY_NAME}",
-        f"user_results_directory: {paths.root / USER_DELIVERY_DIR_NAME}",
-        f"final_pdf_directory: {paths.pdfs}",
+        f"user_inventory: {user_inventory_path(paths)}",
+        f"user_results_directory: {user_delivery_dir(paths)}",
+        f"final_pdf_directory: {user_pdf_dir(paths)}",
         f"duplicate_terminal_rows_excluded: {duplicate_count}",
         "failure_status_counts:",
     ]
@@ -2009,8 +2230,8 @@ def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
         "total_count": len(manifest_rows),
         "success_count": success_count,
         "failed_count": failure_count,
-        "user_inventory": str(paths.root / USER_INVENTORY_NAME),
-        "user_results_directory": str(paths.root / USER_DELIVERY_DIR_NAME),
+        "user_inventory": str(user_inventory_path(paths)),
+        "user_results_directory": str(user_delivery_dir(paths)),
     }
     try:
         paths.reports.mkdir(parents=True, exist_ok=True)
@@ -2035,8 +2256,8 @@ def write_final_reports(paths: BatchPaths, rows: list[dict]) -> None:
                 _publish_report_set(paths, staging)
             finally:
                 _cleanup_report_transaction_dir(staging)
-            # User-facing package: one inventory + one results folder.
-            publish_user_delivery(paths, manifest_rows)
+        # User-facing package: one input, one inventory, and predictable folders.
+        publish_user_delivery(paths, manifest_rows)
     except Exception as exc:
         raise RuntimeError(f"final_report_write_failed:{type(exc).__name__}:{exc}") from exc
 
@@ -2415,8 +2636,8 @@ def run_post_download_ladder(
     result = _result_from_state(paths, state)
     print(
         f"[交付] 请查看: {paths.root}\n"
-        f"  - {paths.root / USER_INVENTORY_NAME}\n"
-        f"  - {paths.root / USER_DELIVERY_DIR_NAME}\\",
+        f"  - {user_inventory_path(paths)}\n"
+        f"  - {user_delivery_dir(paths)}\\",
         flush=True,
     )
     if result.zotero_fallback_count > 0:

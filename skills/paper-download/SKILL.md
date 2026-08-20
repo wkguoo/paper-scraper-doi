@@ -154,7 +154,7 @@ input or any project-generated pending CSV.
    automatically. Do not call `paper_batch.py finalize` on the normal bridge
    path and do not construct plugin results by hand.
 
-8. Report `<run-dir>\pdfs\` / user `结果\` as the final PDF directory and
+8. Report `<run-dir>\结果\pdf\` as the final user PDF directory and
    `<run-dir>\reports\` as the audit trail. Never report unresolved rows as
    complete. Local checks do not certify an attachment path: finalize revalidates PDF content and reparse-point safety
    before copying.
@@ -232,7 +232,8 @@ Optional second chance after `start`:
 
 ## PDF delivery naming (mandatory)
 
-Write every successful PDF into delivery `pdfs/` with the final name **at download/publish time**:
+Write every successful PDF into user delivery `结果/pdf/` with the final name
+**at download/publish time**:
 
 ```text
 年份-第一作者姓-题名.pdf
@@ -244,11 +245,48 @@ Example: `2001-Kim-Densification-behavior-of-titanium-alloy-powder.pdf`
 - If year/author/clean title are missing from the input, resolve by DOI (Crossref/OpenAlex/publisher metadata) **before** naming; do not leave `0000-Unknown-...` or `paper-000N.pdf` as the user-facing file when metadata can be resolved.
 - Do not rely on a separate post-download rename step for normal jobs. Report the year–author–title paths as the delivered PDFs.
 
-## Output tree
+## User delivery package
+
+The only user-facing package is `<run-dir>\结果\`. Keep its top level limited
+to the following four items, plus `补充材料\` only when at least one
+supplementary file was actually copied:
+
+```text
+结果\
+├── <original-input-name>     # original input copied byte-for-byte
+├── 下载清单.csv               # final user inventory
+├── pdf\                       # article PDFs only
+├── md\                        # always created; reserved for later PDF→MD
+└── 补充材料\                  # conditional; grouped by article filename stem
+```
+
+Rules for this package:
+
+- Preserve the input file's original basename and format. For direct text
+  input, create `输入清单.txt`; reserved-name collisions receive an
+  `输入清单_` prefix.
+- Keep article PDFs under `结果/pdf/` and use the mandatory
+  `年份-第一作者姓-题名.pdf` naming rule. Do not leave article PDFs directly
+  under `结果/`.
+- Keep supplementary files under `结果/补充材料/<article-stem>/`; omit the
+  top-level folder when no supplementary file exists. The inventory fields
+  `结果文件` and `补充材料` use batch-root-relative paths such as
+  `结果/pdf/paper.pdf`.
+- Always create `结果/md/`, but do not convert PDFs to Markdown in this skill.
+  A later `docling-pdf-md` task writes Markdown there.
+- Re-publishing or `refresh-delivery` must preserve user-added PDFs,
+  supplementary files, and Markdown files. Legacy PDFs directly under
+  `结果/` are migrated into `结果/pdf/` during the next publish.
+- `reports/`, `working/`, and the internal cache `pdfs/` remain under the run
+  root for recovery and audit. They are not user delivery items. Rename maps
+  belong under `reports/`, not `结果/`.
+
+## Internal output tree
 
 ```text
 results\paper_batch_YYYYMMDD_HHMMSS\
-├── pdfs\          # year-author-title.pdf only for successful deliveries
+├── 结果\          # only the user delivery package described above
+├── pdfs\          # internal download cache; not user delivery
 ├── reports\
 │   ├── final_manifest.csv
 │   ├── final_manifest.xlsx
@@ -271,10 +309,8 @@ Zotero fallback queue.
 
 The unified batch may still write separate OA, ScienceDirect, and institutional
 stage reports internally. Those are implementation details, not separate user
-workflows.
-
-The unified run may also produce `supplement_download_report.csv` and a
-`supplements\` directory when supplementary-material retrieval is enabled.
+workflows. `supplement_download_report.csv` remains an internal report; copied
+supplementary files are published only under `结果/补充材料/`.
 
 ## Safety
 

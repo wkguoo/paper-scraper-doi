@@ -313,7 +313,10 @@ class SkillPackagingTests(unittest.TestCase):
             with self.subTest(skill=skill_name):
                 text = (PROJECT_ROOT / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
                 self.assertIn("supplement_download_report.csv", text)
-                self.assertIn("supplements\\", text)
+                if skill_name == "paper-download":
+                    self.assertIn("结果/补充材料/", text)
+                else:
+                    self.assertIn("supplements\\", text)
                 if skill_name == "sciencedirect-doi-download":
                     self.assertIn("--no-download-supplements", text)
 
