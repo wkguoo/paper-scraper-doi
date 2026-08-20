@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## v1.0.0 — Stable unified batch and user delivery package
+
+Release date: 2026-08-20
+
+- 将统一批次交付收敛为 `结果\` 五项用户包：原始输入清单、`下载清单.csv`、`pdf\`、始终预留的 `md\`，以及仅在实际存在补充材料时创建的 `补充材料\`。
+- 正文 PDF 写入 `结果\pdf\`，内部 `pdfs\` / `reports\` / `working\` 只作缓存与审计；重发布保留人工补入的 PDF、Markdown 和补充材料。
+- `refresh-delivery` 扫描新旧 PDF 位置，映射失败 DOI，并把重命名对照表放到 `reports\`。
+- 有界 OA 补救在单条 DOI 异常时记录 `recovery_error`，不再中断整批。
+- ScienceDirect DOI→PII 可通过 `PAPER_SCRAPER_RESOLVE_WORKERS` 并行解析，PDF 下载仍串行。
+- 自 v0.2.0 起一并包含：DOI 预检、失败路由、MDPI gold-OA、自动 Zotero 回退、merge-safe 交付。
+- 本 release 提供源码，不包含 exe 或自动生成的 Windows UI 压缩包。
+
 ## 2026-08-20 16:41:04 +08:00 — 重命名结果\pdf 中新增的两篇论文
 
 - 本次任务目标：将 `D:\桌面\文献下载\in_situ_synchrotron_HEXRD_metals_2010-2026\结果\pdf` 中新增的两篇 PDF 按 `年份-第一作者-论文题名.pdf` 规范命名。
