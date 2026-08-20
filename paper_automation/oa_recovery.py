@@ -469,16 +469,26 @@ def run_limited_oa_recovery_on_batch(
 
     def _work(row: dict) -> RecoveryResult:
         doi = clean_doi(str(row.get("doi") or row.get("input_doi") or "")).lower()
-        result = recover_oa_limited(
-            doi,
-            budget_seconds=budget_seconds,
-            email=use_email,
-            output_dir=paths.pdfs,
-            timeout_per_request=timeout_per_request,
-            host_cache=host_cache,
-            http_json=http_json,
-            http_bytes=http_bytes,
-        )
+        try:
+            result = recover_oa_limited(
+                doi,
+                budget_seconds=budget_seconds,
+                email=use_email,
+                output_dir=paths.pdfs,
+                timeout_per_request=timeout_per_request,
+                host_cache=host_cache,
+                http_json=http_json,
+                http_bytes=http_bytes,
+            )
+        except Exception as exc:
+            # A malformed metadata field or an unexpected provider response must
+            # not abort the whole bounded recovery batch. Keep the row auditable
+            # and let the normal fallback ladder handle it after its siblings.
+            result = RecoveryResult(
+                doi=doi,
+                status="recovery_error",
+                reason=f"{type(exc).__name__}:{exc}",
+            )
         result.task_id = str(row.get("task_id") or "")
         return result
 
