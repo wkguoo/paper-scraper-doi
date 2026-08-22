@@ -68,6 +68,62 @@ the fallback order is Google Chrome, Edge Stable/Beta/Dev/Canary, then
 Playwright Chromium. An explicit `--browser-exe` or
 `PAPER_SCRAPER_BROWSER_EXE` override always takes precedence.
 
+## Elsevier API-first ScienceDirect route
+
+For a ScienceDirect DOI (normally `10.1016/*`), `paper_batch.py start`
+automatically uses this fixed order:
+
+1. Elsevier Article/Object API for the main PDF and requested supplements.
+2. Existing browser institutional access for only the DOI rows that did not
+   succeed through the API.
+3. Bounded OA recovery.
+4. Zotero fallback for the remaining DOI-bearing failures.
+
+This is an internal stage of the unified batch. Do not call
+`paper_automation/elsevier_api.py`, `sd_institutional_skill.py`, or a hand-made
+Elsevier request as a separate user download route.
+
+Configuration is process-environment only:
+
+- `ELSEVIER_API_KEY` enables the API stage. When missing, continue directly to
+  the browser path; absence of the key is not a terminal batch failure.
+- `ELSEVIER_INSTTOKEN` is optional. Never require it when API Key-only access
+  succeeds.
+- Never ask the user to paste either credential into chat. Check only whether
+  each variable is present. The application does not auto-load `.env` or
+  `.env.example`.
+- Never place credentials in URLs, logs, reports, commands, or input files; do
+  not disable TLS verification, fabricate a token, alter networking, solve a
+  CAPTCHA, or bypass publisher access controls.
+
+API success for a DOI must not create the browser downloader or read browser
+cookies. A successful main PDF remains successful if an individual supplement
+fails; record that attachment failure separately and do not launch the browser
+for it. `--no-download-supplements` disables supplements on both API and
+browser paths.
+
+Preserve the API status without treating it as the final browser result:
+`api_key_missing`, `unauthorized`, `not_entitled`, `not_found`,
+`rate_limited`, `no_main_pdf`, `invalid_pdf`, `network_error`, or `success`.
+After API 401 or 429, stop further API probes for that batch and route the
+remaining ScienceDirect rows to the browser. Keep browser/OA/Zotero failure
+classification authoritative for later recovery.
+
+Use `<run-dir>\reports\sciencedirect\elsevier_api_attempts.csv` for the
+sanitised API audit. It may contain DOI, safe statuses, HTTP status, boolean
+authentication mode, FULL XML/main-EID flags, PDF size/validity, and browser
+fallback state; it must not contain response bodies, full headers, credentials,
+or cookies. Successful PDFs and supplements still follow the delivery naming
+and directory rules below.
+
+For development acceptance, prefer a real API Key-only success through
+`paper_batch.py start`. If no known no-entitlement DOI or non-institutional
+network exists, do not probe random papers without bound. Run
+`.\.venv\Scripts\python.exe -m unittest tests.test_elsevier_api -v` for the
+403 → `not_entitled` → browser routing check, and record the unavailable live
+403 as `waived_environment_unavailable`; never present a simulated 403 as a
+publisher response.
+
 ## CSV reading contract
 
 Read `manual_retry.csv` and `zotero_fallback.csv` with Python `csv` semantics,
