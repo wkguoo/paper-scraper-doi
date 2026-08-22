@@ -160,6 +160,30 @@ Example title copied from a bibliography
 
 这个流程不会读取 `cookies.json`，不会使用机构登录。
 
+## Elsevier API 优先的 ScienceDirect 下载
+
+统一入口仍然是 `paper_batch.py start`。对 ScienceDirect DOI，正式下载时按下面的顺序执行：
+
+```text
+Elsevier Article/Object Retrieval API（正文 PDF + 补充材料）
+→ 现有浏览器机构访问
+→ 有限 OA 恢复
+→ Zotero 回退
+```
+
+API 配置只从当前 Python 进程的环境变量读取：
+
+- `ELSEVIER_API_KEY`：启用 API 主链路；缺失时不会报错终止，而是立即进入原有浏览器流程。
+- `ELSEVIER_INSTTOKEN`：可选。API Key 单独有权限时不需要机构令牌。
+
+建议通过 Windows“系统属性 → 环境变量”或组织批准的凭据注入方式设置，不要把真实值写进命令、Excel、日志或 Git。仓库里的 `.env.example` 只列出空变量名；程序**不会自动加载 `.env` 或 `.env.example`**。
+
+API 成功时，程序不会创建浏览器下载器，也不会读取 Cookie。API 返回 401、403、404、429、超时、无主 PDF 或伪 PDF 时，会把脱敏原因写入 `elsevier_api_attempts.csv`，然后仅把失败 DOI 交给浏览器；浏览器仍失败时，统一批处理继续执行有限 OA 和 Zotero。API Key、Institution Token、Cookie、响应正文和完整请求头不会写入审计表。
+
+真实 `403/not_entitled` 取决于机构订阅和当前网络环境。若没有非机构网络或已知无权限 DOI，不应伪造 Token、修改网络或无限尝试随机论文；可运行 `python -m unittest tests.test_elsevier_api -v` 验证 403 状态映射和浏览器后备路由，并在验收记录中明确标为“环境不可提供，用户同意跳过”，不能将模拟响应写成真实出版社 403。
+
+正文 PDF 在写入 `pdfs\` 时就使用 `年份-第一作者姓-题名.pdf`。API 补充材料写入 `supplements\<正文文件名stem>\`；个别附件失败不会把已成功的正文改成失败，也不会为附件失败单独启动浏览器。`--no-download-supplements` 会同时关闭 API 和浏览器的补充材料阶段。
+
 ## 统一批处理：项目优先，Zotero 仅处理失败项
 
 当 DOI 与题名混合列表需要先走项目已有流程、再把剩余失败项交给 Zotero 9 时，使用本地文件桥接。打开 Zotero 并启用“文献下载桥接”插件；正常路径不再使用直接 Zotero MCP 写入。
@@ -268,6 +292,7 @@ results\doi_batch_20260616_120000\
 | `doi_batch_resolved.xlsx` | ScienceDirect DOI/PII 正式解析后 | 成功解析到 ScienceDirect 文章页的记录。 |
 | `doi_batch_failed.csv` | 有空 DOI、重复 DOI、无效 DOI 或解析失败时 | 失败和需要复核的记录，不要忽略。 |
 | `pdf_download_report.csv` | 启用 PDF 下载时 | 最重要，逐篇看 PDF 是 `success`、`failed` 还是 `skipped`。 |
+| `elsevier_api_attempts.csv` | ScienceDirect 正式下载时 | 脱敏 API 审计：状态、HTTP 状态、鉴权配置布尔值、FULL XML/主 EID/PDF 有效性及是否进入浏览器；不含凭据或响应正文。 |
 | `run_summary.txt` | 每次任务 | 本次任务摘要和下一步建议。 |
 | `run_summary.json` | 每次任务 | 给 UI 或后续脚本读取的机器可读摘要。 |
 | `00_给研究生查看\` | 预检或正式任务 | 给课题组学生直接打开的入口，包含说明、论文索引和失败项下一步处理表。 |
@@ -301,6 +326,7 @@ D:\Literature\OA\
 | 不确定安装脚本会改哪里 | 先运行 `powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1 -DryRun`。 |
 | 没有弹出登录窗口 | 可能已经有可用 Cookie；也可能浏览器路径异常。先看日志，如果提示找不到浏览器，可优先安装 Edge，或设置 `PAPER_SCRAPER_BROWSER_EXE`。 |
 | 已登录但下载失败 | 打开 `pdf_download_report.csv` 看原因，常见是无机构权限、Cookie 过期、CAPTCHA、403 或限速。 |
+| 已设置 Elsevier API Key 但仍打开浏览器 | 查看 `elsevier_api_attempts.csv`；`not_entitled`、`unauthorized`、`rate_limited`、`no_main_pdf`、`invalid_pdf` 或网络错误都会安全回退。 |
 | `needs_review` 很多 | 输入信息太少。给每篇论文补 DOI、完整题名、期刊、年份、卷期页后重跑。 |
 | 补充材料状态是 `not_found` | 页面没有检测到可下载 supplement 链接，不代表正文 PDF 失败。 |
 | `run_summary.txt` 中文乱码 | 用支持 UTF-8 的编辑器打开，或优先看 CSV/XLSX 报告。 |
@@ -318,6 +344,7 @@ ScienceDirect 机构下载依赖你的机构权限。最稳妥的新手方式是
 - 不要提交下载的 PDF、补充材料或生成的结果表。
 - 不要分享 `results\_auth\` 或 `%TEMP%\chrome_dbg_profile`。
 - 不要把学校账号密码发给 Codex、脚本或任何人。
+- 不要把 `ELSEVIER_API_KEY` 或 `ELSEVIER_INSTTOKEN` 写入 `.env.example`、Excel、命令输出、问题截图或 Git；审计时只检查环境变量是否存在，不回显值。
 - 公共电脑或临时测试机器用完后，建议清理本机凭据状态：
 
 ```powershell

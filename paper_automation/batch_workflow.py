@@ -1101,6 +1101,13 @@ def _copy_successful_pdf(row: dict, paths: BatchPaths, *, email: str = "") -> di
 
         result = enrich_row_metadata_for_delivery(result, email=email)
         preferred_name = _filename_for_batch_row(result)
+        stage_name = _canonical_stage_pdf_name(source_path.name)
+        if _has_delivery_placeholders(preferred_name) and stage_name:
+            # The ScienceDirect adapter may have richer API/publisher metadata
+            # than the original DOI-only batch row.  Its file was already
+            # written with make_pdf_filename() and validated above, so preserve
+            # that canonical name instead of regressing to 0000-Unknown.
+            preferred_name = stage_name
         copied = copy_pdf_safely(source_path, paths.pdfs, preferred_name)
     except (OSError, ValueError) as exc:
         result.update(
@@ -1113,6 +1120,32 @@ def _copy_successful_pdf(row: dict, paths: BatchPaths, *, email: str = "") -> di
     result["file"] = str(copied)
     result["reason"] = ""
     return result
+
+
+def _has_delivery_placeholders(filename: str) -> bool:
+    lowered = str(filename or "").casefold()
+    return lowered.startswith("0000-") or "-unknown-" in lowered
+
+
+def _canonical_stage_pdf_name(filename: str) -> str:
+    """Accept only a safe 年份-作者-题名.pdf stage filename."""
+
+    name = str(filename or "").strip()
+    try:
+        safe_name = _validate_path_component(name, error="invalid_filename")
+    except ValueError:
+        return ""
+    if safe_name != name or Path(name).suffix.casefold() != ".pdf":
+        return ""
+    parts = Path(name).stem.split("-", 2)
+    if len(parts) != 3:
+        return ""
+    year, author, title = parts
+    if len(year) != 4 or not year.isdigit() or not year.startswith(("19", "20")):
+        return ""
+    if not author or author.casefold() == "unknown" or not title:
+        return ""
+    return name
 
 
 def _merge_stage_rows(
@@ -2009,8 +2042,12 @@ def publish_user_delivery(paths: BatchPaths, rows: list[dict]) -> Path:
     """
 
     paths.root.mkdir(parents=True, exist_ok=True)
+    # Stage beside the batch instead of inside it.  The published layout is
+    # unchanged, but this saves the run-directory component from every nested
+    # supplement path and avoids Windows MAX_PATH failures before the final
+    # same-volume atomic directory replace.
     staging_root = Path(
-        tempfile.mkdtemp(prefix=".user_delivery_staging_", dir=paths.root)
+        tempfile.mkdtemp(prefix=".delivery_", dir=paths.root.parent)
     )
     staging_results = staging_root / USER_DELIVERY_DIR_NAME
     staging_results.mkdir(parents=True, exist_ok=True)

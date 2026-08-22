@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import sys
 import tempfile
 import types
@@ -274,7 +275,11 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             root = Path(tmp)
             input_path = root / "papers.csv"
             input_path.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
-            with patch("sd_institutional_skill.make_scraper", side_effect=fake_make_scraper), patch(
+            with patch.dict(
+                os.environ,
+                {"ELSEVIER_API_KEY": "", "ELSEVIER_INSTTOKEN": ""},
+                clear=False,
+            ), patch("sd_institutional_skill.make_scraper", side_effect=fake_make_scraper), patch(
                 "sd_institutional_skill.cache_devtools_cookies",
                 return_value=0,
             ), patch("sd_institutional_skill.MetadataResolver.resolve_one", fake_resolve_one):
@@ -344,7 +349,11 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch("sd_institutional_skill.make_scraper", return_value=FakeScraper()), patch(
+            with patch.dict(
+                os.environ,
+                {"ELSEVIER_API_KEY": "", "ELSEVIER_INSTTOKEN": ""},
+                clear=False,
+            ), patch("sd_institutional_skill.make_scraper", return_value=FakeScraper()), patch(
                 "sd_institutional_skill.cache_devtools_cookies",
                 return_value=0,
             ):
