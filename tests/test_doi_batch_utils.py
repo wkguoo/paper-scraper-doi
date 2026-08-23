@@ -67,6 +67,56 @@ class DoiBatchUtilsTests(unittest.TestCase):
 
         self.assertEqual(args.browser_exe, r"C:\Edge\msedge.exe")
 
+    def test_sd_scraper_rejects_removed_search_modes_and_options(self) -> None:
+        import sd_scraper
+
+        parser = sd_scraper.build_parser()
+        for argv in (
+            ["-m", "keyword"],
+            ["-m", "journal"],
+            ["-m", "author"],
+            ["-m", "advanced"],
+            ["--interactive"],
+            ["-m", "doi_batch", "--input", "papers.csv", "--query", "alloy"],
+        ):
+            with self.subTest(argv=argv), self.assertRaises(SystemExit):
+                parser.parse_args(argv)
+
+    def test_sd_scraper_keeps_only_doi_batch_compatibility_surface(self) -> None:
+        import sd_institutional_skill
+        import sd_scraper
+
+        args = sd_scraper.build_parser().parse_args(["-m", "doi_batch", "--input", "papers.csv"])
+        self.assertEqual(args.mode, "doi_batch")
+        self.assertIs(sd_institutional_skill.ScienceDirectScraper, sd_scraper.ScienceDirectScraper)
+
+        for name in (
+            "resolve_doi_batch",
+            "download_pdfs_devtools",
+            "save_to_xlsx",
+            "save_to_csv",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(sd_scraper.ScienceDirectScraper, name))
+
+        for name in (
+            "search_by_keyword",
+            "search_by_journal",
+            "search_by_journal_keyword",
+            "search_by_author",
+            "search_by_issn",
+            "search_advanced",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(sd_scraper.ScienceDirectScraper, name))
+
+    def test_ui_source_has_no_literature_search_tab(self) -> None:
+        source = (PROJECT_ROOT / "paper_scraper_ui.py").read_text(encoding="utf-8")
+
+        self.assertNotIn('text="文献检索（兼容）"', source)
+        self.assertNotIn("def _build_search_tab", source)
+        self.assertNotIn("def _build_search_fields", source)
+
     def test_preview_reads_csv_with_chinese_doi_alias_and_cleans_url(self) -> None:
         from doi_batch_utils import preview_doi_input
 
@@ -810,7 +860,7 @@ class CliBehaviorTests(unittest.TestCase):
 
 
 class UiBehaviorTests(unittest.TestCase):
-    def test_ui_defaults_to_doi_batch_cookie_json_workflow(self) -> None:
+    def test_ui_has_only_unified_batch_and_run_log_tabs(self) -> None:
         try:
             from tkinter import Tk
         except Exception as exc:
@@ -825,78 +875,89 @@ class UiBehaviorTests(unittest.TestCase):
         root.withdraw()
         try:
             app = PaperScraperUI(root)
-            self.assertEqual(app.mode_var.get(), "doi_batch")
-            self.assertFalse(app.browser_cookies_var.get())
-            self.assertTrue(app.download_pdf_var.get())
-            self.assertTrue(app.download_supplements_var.get())
-            self.assertTrue(hasattr(app, "preview_tree"))
-            self.assertTrue(hasattr(app, "retry_failed_button"))
+            tab_names = [app.notebook.tab(tab_id, "text") for tab_id in app.notebook.tabs()]
+            self.assertEqual(tab_names, ["统一批次（推荐）", "运行日志"])
+            for removed_attribute in (
+                "doi_tab",
+                "oa_tab",
+                "cookies_file_var",
+                "oa_email_var",
+                "input_file_var",
+                "oa_input_file_var",
+                "preview_tree",
+            ):
+                self.assertFalse(hasattr(app, removed_attribute), removed_attribute)
         finally:
             root.destroy()
 
-    def test_ui_sciencedirect_supplement_command_defaults_and_disable_flag(self) -> None:
-        from paper_scraper_ui import PaperScraperUI
+    def test_ui_ignores_legacy_email_and_cookie_settings(self) -> None:
+        try:
+            from tkinter import Tk
+        except Exception as exc:
+            self.skipTest(f"tkinter unavailable: {exc}")
+
+        import paper_scraper_ui as ui_module
 
         with tempfile.TemporaryDirectory() as tmp:
-            root_dir = Path(tmp)
-            input_path = root_dir / "papers.csv"
-            input_path.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
+            settings_path = Path(tmp) / "_ui_settings.json"
+            settings_path.write_text(
+                json.dumps({
+                    "oa_email": "legacy@example.com",
+                    "cookies_file": "C:/legacy/cookies.json",
+                    "active_tab": 3,
+                }),
+                encoding="utf-8",
+            )
+            original_settings_file = ui_module.SETTINGS_FILE
+            ui_module.SETTINGS_FILE = settings_path
+            try:
+                try:
+                    root = Tk()
+                except Exception as exc:
+                    self.skipTest(f"cannot start Tk root: {exc}")
+                root.withdraw()
+                try:
+                    app = ui_module.PaperScraperUI(root)
+                    command = app._build_command(materialize_paste=False)
+                    tab_names = [app.notebook.tab(tab_id, "text") for tab_id in app.notebook.tabs()]
+                finally:
+                    root.destroy()
+            finally:
+                ui_module.SETTINGS_FILE = original_settings_file
 
-            app = PaperScraperUI.__new__(PaperScraperUI)
-            app.workflow_var = _FakeVar("sciencedirect")
-            app.mode_var = _FakeVar("doi_batch")
-            app.input_file_var = _FakeVar(str(input_path))
-            app.output_var = _FakeVar(str(root_dir / "results"))
-            app.doi_column_var = _FakeVar("")
-            app.sheet_var = _FakeVar("")
-            app.filename_var = _FakeVar("")
-            app.resume_from_var = _FakeVar("")
-            app.cookies_file_var = _FakeVar("")
-            app.browser_cookies_var = _FakeVar(False)
-            app.open_login_var = _FakeVar(False)
-            app.download_pdf_var = _FakeVar(True)
-            app.download_supplements_var = _FakeVar(True)
-            app._get_pasted_text = lambda: ""
+        self.assertEqual(tab_names, ["统一批次（推荐）", "运行日志"])
+        self.assertNotIn("--email", command)
+        self.assertNotIn("--cookies", command)
+        self.assertFalse(hasattr(app, "oa_email_var"))
+        self.assertFalse(hasattr(app, "cookies_file_var"))
 
-            default_cmd = app._build_command(materialize_paste=False)
-            app.download_supplements_var.set(False)
-            disabled_cmd = app._build_command(materialize_paste=False)
-            app.download_pdf_var.set(False)
-            no_pdf_cmd = app._build_command(materialize_paste=False)
+    def test_backend_cli_still_accepts_email_and_cookie_options(self) -> None:
+        import paper_batch
+        import sd_scraper
 
-        self.assertIn("--download-pdfs", default_cmd)
-        self.assertNotIn("--no-download-supplements", default_cmd)
-        self.assertIn("--download-pdfs", disabled_cmd)
-        self.assertIn("--no-download-supplements", disabled_cmd)
-        self.assertNotIn("--download-pdfs", no_pdf_cmd)
-        self.assertNotIn("--no-download-supplements", no_pdf_cmd)
+        batch_args = paper_batch.build_parser().parse_args([
+            "start",
+            "--text",
+            "10.1016/j.actamat.2024.119999",
+            "--email",
+            "researcher@example.com",
+            "--cookies",
+            "cookies.json",
+        ])
+        sd_args = sd_scraper.build_parser().parse_args([
+            "-m",
+            "doi_batch",
+            "--input",
+            "papers.csv",
+            "--cookies",
+            "cookies.json",
+        ])
 
-    def test_ui_beginner_preflight_command_uses_institutional_skill_without_download(self) -> None:
-        from paper_scraper_ui import PaperScraperUI, SD_SKILL_SCRIPT
+        self.assertEqual(batch_args.email, "researcher@example.com")
+        self.assertEqual(batch_args.cookies, "cookies.json")
+        self.assertEqual(sd_args.cookies, "cookies.json")
 
-        with tempfile.TemporaryDirectory() as tmp:
-            root_dir = Path(tmp)
-            input_path = root_dir / "papers.csv"
-            input_path.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
-
-            app = PaperScraperUI.__new__(PaperScraperUI)
-            app.input_file_var = _FakeVar(str(input_path))
-            app.output_var = _FakeVar(str(root_dir / "results"))
-            app.doi_column_var = _FakeVar("")
-            app.sheet_var = _FakeVar("")
-            app._get_pasted_text = lambda: ""
-
-            cmd = app._build_beginner_preflight_command(materialize_paste=False)
-
-        self.assertEqual(cmd[2], str(SD_SKILL_SCRIPT))
-        self.assertIn("--beginner", cmd)
-        self.assertIn("--preflight", cmd)
-        self.assertNotIn("--auto-web-search", cmd)
-        self.assertIn("--input", cmd)
-        self.assertNotIn("--download-pdfs", cmd)
-        self.assertNotIn("--cookies", cmd)
-
-    def test_ui_json_summary_captures_student_handoff_paths_and_preflight_input(self) -> None:
+    def test_ui_json_summary_captures_student_handoff_paths(self) -> None:
         from paper_scraper_ui import PaperScraperUI
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -907,13 +968,10 @@ class UiBehaviorTests(unittest.TestCase):
             paper_index.write_text("序号,DOI\n", encoding="utf-8")
             failure_next = student_dir / "失败项_下一步处理.csv"
             failure_next.write_text("类别,DOI\n", encoding="utf-8")
-            merged_input = out / "merged_doi_input.csv"
-            merged_input.write_text("doi\n10.1016/j.actamat.2024.119999\n", encoding="utf-8")
             json_summary = out / "run_summary.json"
             json_summary.write_text(
                 json.dumps({
                     "output_dir": str(out),
-                    "input_path": str(merged_input),
                     "total_doi": 1,
                     "resolved_count": 0,
                     "resolve_failed_count": 0,
@@ -933,7 +991,6 @@ class UiBehaviorTests(unittest.TestCase):
             app.last_failed_report_path = None
             app.last_pdf_report_path = None
             app.last_events_path = None
-            app.last_retry_input_path = None
             app.last_summary_json_path = json_summary
             app.last_summary_path = None
             app.last_run_output_dir = None
@@ -941,44 +998,17 @@ class UiBehaviorTests(unittest.TestCase):
             app.open_failed_report_button = _FakeButton()
             app.open_pdf_report_button = _FakeButton()
             app.open_summary_button = _FakeButton()
-            app.retry_failed_button = _FakeButton()
             app.open_student_handoff_button = _FakeButton()
             app.open_failure_next_steps_button = _FakeButton()
-            app.use_preflight_input_button = _FakeButton()
             app._load_failure_table = lambda: None
 
             app._refresh_result_summary()
 
         self.assertEqual(app.last_student_handoff_dir, student_dir)
         self.assertEqual(app.last_failure_next_steps_path, failure_next)
-        self.assertEqual(app.last_preflight_merged_input_path, merged_input)
         self.assertEqual(app.open_student_handoff_button.options["state"], "normal")
         self.assertEqual(app.open_failure_next_steps_button.options["state"], "normal")
-        self.assertEqual(app.use_preflight_input_button.options["state"], "normal")
         self.assertIn("研究生入口", app.result_summary_var.get())
-
-    def test_ui_pdf_toggle_disables_supplement_checkbox_and_preserves_value(self) -> None:
-        from paper_scraper_ui import PaperScraperUI
-
-        app = PaperScraperUI.__new__(PaperScraperUI)
-        app.download_pdf_var = _FakeVar(True)
-        app.download_supplements_var = _FakeVar(False)
-        app.download_supplements_checkbuttons = [_FakeStateWidget(), _FakeStateWidget()]
-
-        app.download_pdf_var.set(False)
-        app._sync_download_supplements_state()
-        off_states = [widget.state() for widget in app.download_supplements_checkbuttons]
-        preserved_while_disabled = app.download_supplements_var.get()
-
-        app.download_pdf_var.set(True)
-        app._sync_download_supplements_state()
-        on_states = [widget.state() for widget in app.download_supplements_checkbuttons]
-        preserved_after_reenable = app.download_supplements_var.get()
-
-        self.assertTrue(all("disabled" in state for state in off_states))
-        self.assertFalse(preserved_while_disabled)
-        self.assertTrue(all("disabled" not in state for state in on_states))
-        self.assertFalse(preserved_after_reenable)
 
     def test_ui_result_summary_displays_supplement_counts_from_json_and_text(self) -> None:
         from paper_scraper_ui import PaperScraperUI
@@ -1041,13 +1071,13 @@ class UiBehaviorTests(unittest.TestCase):
 
             app = PaperScraperUI.__new__(PaperScraperUI)
             app.result_summary_var = _FakeVar("")
-            app.workflow_var = _FakeVar("sciencedirect")
             app.last_run_output_dir = None
             app.last_failed_report_path = None
             app.last_pdf_report_path = None
             app.last_events_path = None
-            app.last_retry_input_path = None
             app.last_summary_path = None
+            app._load_failure_table = lambda: None
+            app._update_result_buttons = lambda: None
 
             app.last_summary_json_path = json_summary_path
             app._refresh_result_summary()
@@ -1076,51 +1106,6 @@ class UiBehaviorTests(unittest.TestCase):
             "supplement_report_path": "",
         }))
 
-    def test_ui_legal_oa_mode_builds_paper_skill_command(self) -> None:
-        try:
-            from tkinter import Tk
-        except Exception as exc:
-            self.skipTest(f"tkinter unavailable: {exc}")
-
-        from paper_scraper_ui import PaperScraperUI
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root_dir = Path(tmp)
-            input_path = root_dir / "papers.md"
-            input_path.write_text("DOI: 10.1038/example\n", encoding="utf-8")
-
-            try:
-                root = Tk()
-            except Exception as exc:
-                self.skipTest(f"cannot start Tk root: {exc}")
-            root.withdraw()
-            try:
-                app = PaperScraperUI(root)
-                app.workflow_var.set("legal_oa")
-                app.oa_input_file_var.set(str(input_path))
-                app.output_var.set(str(root_dir / "out"))
-                app.oa_email_var.set("researcher@example.com")
-                app.oa_limit_var.set("5")
-                app.oa_dry_run_var.set(True)
-                cmd = app._build_command(materialize_paste=False)
-                summary = app.summary_var.get()
-            finally:
-                root.destroy()
-
-        self.assertTrue(any(part.endswith("paper_skill.py") for part in cmd))
-        self.assertIn("--input", cmd)
-        self.assertIn(str(input_path), cmd)
-        self.assertIn("--out", cmd)
-        self.assertIn(str(root_dir / "out"), cmd)
-        self.assertIn("--email", cmd)
-        self.assertIn("researcher@example.com", cmd)
-        self.assertIn("--limit", cmd)
-        self.assertIn("5", cmd)
-        self.assertIn("--dry-run", cmd)
-        self.assertNotIn("--cookies", cmd)
-        self.assertNotIn("--browser-cookies", cmd)
-        self.assertIn("OA 资源辅助获取", summary)
-
     def test_ui_paper_batch_start_resume_zotero_commands(self) -> None:
         try:
             from tkinter import Tk
@@ -1135,9 +1120,6 @@ class UiBehaviorTests(unittest.TestCase):
             input_path.write_bytes(b"PK\x03\x04placeholder")
             run_dir = root_dir / "paper_batch_demo"
             run_dir.mkdir()
-            cookie_path = root_dir / "cookies.json"
-            cookie_path.write_text("[]", encoding="utf-8")
-
             try:
                 root = Tk()
             except Exception as exc:
@@ -1145,12 +1127,9 @@ class UiBehaviorTests(unittest.TestCase):
             root.withdraw()
             try:
                 app = PaperScraperUI(root)
-                app.workflow_var.set("paper_batch")
                 app.batch_action_var.set("start")
                 app.batch_input_file_var.set(str(input_path))
                 app.output_var.set(str(root_dir / "out"))
-                app.oa_email_var.set("researcher@example.com")
-                app.cookies_file_var.set(str(cookie_path))
                 app.batch_login_wait_var.set("120")
                 start_cmd = app._build_command(materialize_paste=False)
                 app._refresh_task_summary()
@@ -1175,9 +1154,8 @@ class UiBehaviorTests(unittest.TestCase):
         self.assertIn("--input", start_cmd)
         self.assertIn(str(input_path), start_cmd)
         self.assertIn("--out", start_cmd)
-        self.assertIn("--email", start_cmd)
-        self.assertIn("researcher@example.com", start_cmd)
-        self.assertIn("--cookies", start_cmd)
+        self.assertNotIn("--email", start_cmd)
+        self.assertNotIn("--cookies", start_cmd)
         self.assertIn("--login-wait-seconds", start_cmd)
         self.assertIn("120", start_cmd)
         self.assertIn("统一批次 start", start_summary)
@@ -1261,10 +1239,8 @@ class UiBehaviorTests(unittest.TestCase):
                 messagebox.showinfo = lambda *args, **kwargs: None
                 messagebox.showerror = lambda *args, **kwargs: None
                 app = PaperScraperUI(root)
-                app.workflow_var.set("sciencedirect")
-                app.mode_var.set("doi_batch")
-                app.input_file_var.set(str(out / "papers.csv"))
-                app.resume_from_var.set(str(out))
+                app.batch_action_var.set("resume")
+                app.batch_run_dir_var.set(str(out))
                 cmd = app._build_command(materialize_paste=False)
                 app.last_run_output_dir = out
                 app.last_events_path = event_path
@@ -1275,12 +1251,6 @@ class UiBehaviorTests(unittest.TestCase):
                 app._poll_run_events_once()
                 app._refresh_result_summary()
                 app._load_failure_table()
-                first_item = app.failure_tree.get_children()[0]
-                app.failure_tree.selection_set(first_item)
-                app.create_retry_input_from_reports(selected_only=True)
-
-                retry_path = Path(app.input_file_var.get())
-                retry_text = retry_path.read_text(encoding="utf-8-sig")
                 failure_count = len(app.failure_tree.get_children())
                 current_task = app.current_task_var.get()
                 result_summary = app.result_summary_var.get()
@@ -1289,144 +1259,12 @@ class UiBehaviorTests(unittest.TestCase):
                 messagebox.showerror = original_error
                 root.destroy()
 
-        self.assertIn("--resume-from", cmd)
+        self.assertEqual(cmd[3], "resume")
+        self.assertIn("--run-dir", cmd)
         self.assertIn(str(out), cmd)
         self.assertIn("PDF failed", current_task)
         self.assertIn("PDF 失败: 1", result_summary)
         self.assertEqual(failure_count, 2)
-        self.assertIn("10.1016/j.pdfailed.2024.2", retry_text)
-
-    def test_ui_smart_wizard_prepares_resume_login_and_auto_retry(self) -> None:
-        try:
-            from tkinter import Tk, messagebox
-        except Exception as exc:
-            self.skipTest(f"tkinter unavailable: {exc}")
-
-        from paper_scraper_ui import PaperScraperUI
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root_dir = Path(tmp)
-            input_path = root_dir / "papers.csv"
-            input_path.write_text(
-                "title,doi\n"
-                "A,10.1016/j.done.2024.1\n"
-                "B,10.1016/j.failed.2024.2\n"
-                "C,\n",
-                encoding="utf-8",
-            )
-            history = root_dir / "results" / "doi_batch_old"
-            history.mkdir(parents=True)
-            (history / "run_summary.json").write_text(
-                json.dumps({"input_path": str(root_dir / "old" / "papers.csv"), "total_doi": 2}),
-                encoding="utf-8",
-            )
-            with (history / "pdf_download_report.csv").open("w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
-                writer.writeheader()
-                writer.writerow({"doi": "10.1016/j.done.2024.1", "title": "A", "status": "success"})
-            bad_cookie = root_dir / "cookies.json"
-            bad_cookie.write_text(
-                json.dumps([{"domain": ".example.com", "name": "session", "value": "SECRET_COOKIE_VALUE"}]),
-                encoding="utf-8",
-            )
-
-            try:
-                tk_root = Tk()
-            except Exception as exc:
-                self.skipTest(f"cannot start Tk root: {exc}")
-            tk_root.withdraw()
-            original_askyesno = messagebox.askyesno
-            original_info = messagebox.showinfo
-            original_error = messagebox.showerror
-            try:
-                messagebox.askyesno = lambda *args, **kwargs: True
-                messagebox.showinfo = lambda *args, **kwargs: None
-                messagebox.showerror = lambda *args, **kwargs: None
-                app = PaperScraperUI(tk_root)
-                app.workflow_var.set("sciencedirect")
-                app.mode_var.set("doi_batch")
-                app.input_file_var.set(str(input_path))
-                app.output_var.set(str(root_dir / "results"))
-                app.cookies_file_var.set(str(bad_cookie))
-                app.download_pdf_var.set(True)
-                calls: list[bool] = []
-                app.run_scraper = lambda auto_retry_input=False: calls.append(bool(auto_retry_input))  # type: ignore[method-assign]
-
-                app.run_smart_doi_wizard()
-                cmd = app._build_command(materialize_paste=False, auto_retry_input=True)
-                summary = app.last_smart_wizard_summary
-            finally:
-                messagebox.askyesno = original_askyesno
-                messagebox.showinfo = original_info
-                messagebox.showerror = original_error
-                tk_root.destroy()
-
-        self.assertTrue(hasattr(app, "smart_run_button"))
-        self.assertEqual(calls, [True])
-        self.assertIn("--auto-retry-input", cmd)
-        self.assertIn("--resume-from", cmd)
-        self.assertEqual(app.resume_from_var.get(), str(history))
-        self.assertTrue(app.open_login_var.get())
-        self.assertIn("有效 DOI: 2", summary)
-        self.assertIn("断点恢复: " + str(history), summary)
-        self.assertNotIn("SECRET_COOKIE_VALUE", summary)
-
-    def test_ui_auto_retry_after_completion_fills_input_without_rerun(self) -> None:
-        try:
-            from tkinter import Tk, messagebox
-        except Exception as exc:
-            self.skipTest(f"tkinter unavailable: {exc}")
-
-        from paper_scraper_ui import PaperScraperUI
-
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp)
-            pdf_report = out / "pdf_download_report.csv"
-            with pdf_report.open("w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=["doi", "pii", "title", "status", "file", "reason"])
-                writer.writeheader()
-                writer.writerow({
-                    "doi": "10.1016/j.pdfailed.2024.1",
-                    "title": "PDF failed",
-                    "status": "failed",
-                    "reason": "未捕获PDF",
-                })
-            failed_report = out / "doi_batch_failed.csv"
-            with failed_report.open("w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.DictWriter(f, fieldnames=["row_number", "doi", "title", "reason"])
-                writer.writeheader()
-                writer.writerow({"row_number": "3", "doi": "", "title": "Empty", "reason": "DOI 为空"})
-
-            try:
-                tk_root = Tk()
-            except Exception as exc:
-                self.skipTest(f"cannot start Tk root: {exc}")
-            tk_root.withdraw()
-            original_info = messagebox.showinfo
-            original_error = messagebox.showerror
-            try:
-                messagebox.showinfo = lambda *args, **kwargs: None
-                messagebox.showerror = lambda *args, **kwargs: None
-                app = PaperScraperUI(tk_root)
-                app.last_run_output_dir = out
-                app.last_pdf_report_path = pdf_report
-                app.last_failed_report_path = failed_report
-                app.auto_retry_after_run = True
-
-                app._handle_auto_retry_after_completion()
-
-                retry_path = Path(app.input_file_var.get())
-                retry_exists = retry_path.exists()
-                retry_text = retry_path.read_text(encoding="utf-8-sig")
-                summary = app.result_summary_var.get()
-            finally:
-                messagebox.showinfo = original_info
-                messagebox.showerror = original_error
-                tk_root.destroy()
-
-        self.assertTrue(retry_exists)
-        self.assertIn("10.1016/j.pdfailed.2024.1", retry_text)
-        self.assertIn("已生成重试输入", summary)
 
 
 if __name__ == "__main__":

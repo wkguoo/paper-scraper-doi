@@ -13,10 +13,10 @@ Recommended entry / default product entry for agents and users: `paper_batch.py`
 | User intent | Use | Do not use as primary |
 | --- | --- | --- |
 | DOI metadata preflight only (no PDF) | `preflight_doi_metadata.py` (parallel Crossref) | in-batch `start` DOI preflight (`doi_preflight.py`) |
-| New literature list (any publisher mix) | `paper_batch.py start --no-doi-preflight` after parallel Crossref when the list already has DOIs | `paper_skill.py`, `sd_scraper.py`, `sd_scraper_en.py` |
+| New literature list (any publisher mix) | `paper_batch.py start --no-doi-preflight` after parallel Crossref when the list already has DOIs | `paper_skill.py`, `sd_scraper.py` |
 | Continue / collect Zotero results | `paper_batch.py zotero --run-dir` | direct Zotero MCP for normal runs |
 | Optional one-shot login/CAPTCHA retry (compat) | `paper_batch.py resume --run-dir` only with `--enable-manual-retry` batches | restart `start` unnecessarily |
-| GUI | UI tab **统一批次（推荐）** | UI “兼容” tabs unless user asks for legacy SD/OA-only |
+| GUI | UI tab **统一批次（推荐）**; use **运行日志** to inspect progress | Expect DOI/OA compatibility tabs or GUI email/Cookie fields |
 
 Skills `sciencedirect-doi-download` and `legal-oa-paper-download` are **internal
 compatibility references**; they are not the default install and must not be

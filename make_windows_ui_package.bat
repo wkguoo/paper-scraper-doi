@@ -18,7 +18,6 @@ call :copy_required "paper_scraper_ui.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "start_paper_scraper_ui.bat" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "paper_batch.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_scraper.py" "%PACKAGE_DIR%\" || exit /b 1
-call :copy_required "sd_scraper_en.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "sd_institutional_skill.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "institutional_paper_skill.py" "%PACKAGE_DIR%\" || exit /b 1

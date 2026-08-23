@@ -22,14 +22,14 @@
 
 **默认行为（减少手动）：** DOI 预检开启；机构失败后有 OA 信号才做有界 OA 补救；失败 DOI 自动排队 Zotero 并等待结果（约 600s）；Zotero 桥接插件 **0.2.0+** 默认自动确认（无需点弹窗）。可用 `--no-doi-preflight` / `--no-auto-zotero` / pref `extensions.zoteroPaperDownloadBridge.autoConfirm=false` 关闭。
 
-**不要**把 `paper_skill.py`、`sd_institutional_skill.py`、`sd_scraper.py`、`sd_scraper_en.py` 当作新任务的首选入口；它们不走统一批次状态，失败项也进不了同一份 Zotero 回退清单。
+**不要**把 `paper_skill.py`、`sd_institutional_skill.py`、`sd_scraper.py` 当作新任务的首选入口；它们不走统一批次状态，失败项也进不了同一份 Zotero 回退清单。
 
 ## 兼容 / 高级入口（非默认）
 
 | 入口 | 角色 |
 | --- | --- |
-| UI 的「DOI 批量下载 / 文献检索 / OA 资源辅助获取」 | 旧版专用路径，仅兼容维护 |
-| `sd_scraper.py` / `sd_scraper_en.py` | 旧版 ScienceDirect 中英文 CLI |
+| UI 的「DOI 批量下载 / OA 资源辅助获取」 | 旧版专用路径，仅兼容维护 |
+| `sd_scraper.py` | 旧版 ScienceDirect DOI 批量下载兼容 CLI |
 | `sd_institutional_skill.py` / `paper_skill.py` / `institutional_paper_skill.py` | 统一流程内部适配器 |
 | `sciencedirect-doi-download` / `legal-oa-paper-download` skill | 内部说明；默认不安装 |
 
@@ -243,7 +243,7 @@ API 成功时，程序不会创建浏览器下载器，也不会读取 Cookie。
 start_paper_scraper_ui.bat
 ```
 
-首次启动会自动创建 `.venv` 并安装依赖。打开后**默认在「统一批次（推荐）」页**；其它页签标明「兼容」，仅在你明确需要旧版 ScienceDirect 专用或 OA 专用流程时使用。
+首次启动会自动创建 `.venv` 并安装依赖。界面只保留「统一批次（推荐）」与「运行日志」两个页签。邮箱与 Cookie JSON 不在 GUI 中填写；高级用户仍可通过 `paper_batch.py`、`sd_scraper.py` 等命令行入口使用相应参数和兼容能力。
 
 机构 PDF 可用 Cookie Editor 导出的 `cookies.json`。更详细说明见 [WINDOWS_UI_README.md](WINDOWS_UI_README.md)。
 
@@ -384,7 +384,7 @@ git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist
 修改 Python 代码前，至少运行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
+.\.venv\Scripts\python.exe -m compileall paper_batch.py preflight_doi_metadata.py paper_scraper_ui.py sd_scraper.py windows_paths.py sd_institutional_skill.py institutional_paper_skill.py paper_skill.py paper_automation
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 

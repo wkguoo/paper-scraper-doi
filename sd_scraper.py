@@ -1,28 +1,17 @@
 #!/usr/bin/env python
 """
-ScienceDirect 论文抓取工具 v2.0
-================================
+ScienceDirect DOI 批量下载兼容工具
+==================================
 使用 curl_cffi 与用户已授权的浏览器会话访问 ScienceDirect。
-支持多种搜索方式，结果保存为 CSV / JSON，无翻译步骤。
+仅保留 DOI 批量解析、机构授权下载、补充材料和断点续跑能力。
 
-支持的搜索模式
---------------
-  keyword        — 按关键词搜索
-  journal        — 按期刊名浏览
-  journal_keyword— 在指定期刊内按关键词搜索
-  author         — 按作者搜索
-  issn           — 按期刊 ISSN 搜索
-  advanced       — 高级搜索（组合多个条件）
+兼容命令
+--------
+  python sd_scraper.py -m doi_batch --input papers.xlsx --browser-cookies --download-pdfs
 
-快速上手（命令行）
-------------------
-  python sd_scraper.py -m keyword -q "machine learning" -n 100 --browser-cookies
-  python sd_scraper.py -m journal  -j "Energy" -n 50 --browser-cookies
-  python sd_scraper.py -m journal_keyword -j "Renewable Energy" -q "solar cell" -n 50 --browser-cookies
-
-交互式向导
+新任务入口
 ----------
-  python sd_scraper.py
+  python paper_batch.py start --input papers.xlsx --out results
 
 依赖安装
 --------
@@ -40,7 +29,7 @@ import random
 import argparse
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 try:
     from curl_cffi import requests as curl_requests
@@ -468,14 +457,11 @@ def _dt_capture_pdf(ws_url: str, url: str, timeout: int = 35, fetch_patterns=Non
 
 class ScienceDirectScraper:
     BASE_URL = "https://www.sciencedirect.com"
-    SEARCH_API = "https://www.sciencedirect.com/search/api"
 
     def __init__(self, cookies_file=None, use_browser_cookies=False, delay_range=(2, 5), browser_exe=None):
         self.session = _new_curl_session(impersonate="chrome124", allow_missing=True)
         self.delay_range = delay_range
-        self._search_token = None
         self._cookie_dict = {}     # 机构 cookie（来自 Chrome/文件，用于 PDF 下载）
-        self._session_cookies = {} # 搜索 session cookie（来自服务器，用于搜索 API）
 
         self.browser_exe = browser_exe
         self.CHROME_BIN = browser_bin(browser_exe)
@@ -582,293 +568,6 @@ class ScienceDirectScraper:
 
     def _delay(self):
         time.sleep(random.uniform(*self.delay_range))
-
-    def _fetch_search_token(self, params: dict):
-        """
-        用干净 session 访问搜索页面，获取：
-        1. 服务器下发的 session cookie（EUID、csrf_token 等）
-        2. searchToken（嵌入在页面 INITIAL_STATE 中）
-
-        注意：不带浏览器 cookie，避免旧 MIAMISESSION 与新 session 冲突。
-        服务器 cookie 单独存入 _session_cookies，搜索时只用这些。
-        机构 cookie（_cookie_dict）仅在 PDF 下载时附加。
-        """
-        url = self.BASE_URL + "/search?" + urlencode(params)
-        try:
-            # 不带任何 Cookie 头，让服务器建立干净 session
-            resp = self.session.get(url, timeout=25,
-                                    headers={"Cookie": ""})
-            if resp.status_code != 200:
-                print(f"  [警告] 获取搜索页面失败 HTTP {resp.status_code}")
-                return None
-
-            # 收集服务器下发的 cookie
-            self._session_cookies = {}
-            for k, v in resp.headers.items():
-                if k.lower() == "set-cookie":
-                    part = v.split(";")[0]
-                    if "=" in part:
-                        name, val = part.split("=", 1)
-                        self._session_cookies[name.strip()] = val.strip()
-            # 更新请求头：只用 session cookie（干净）
-            self.session.headers["Cookie"] = "; ".join(
-                f"{k}={v}" for k, v in self._session_cookies.items()
-            )
-
-            m = re.search(r'"searchToken":"([^"]+)"', resp.text)
-            if m:
-                self._search_token = m.group(1)
-                return self._search_token
-            else:
-                print("  [警告] 页面中未找到 searchToken")
-                return None
-        except Exception as e:
-            print(f"  [网络错误] {e}")
-            return None
-
-    def _search(self, params: dict, max_count: int = 100):
-        """
-        两步搜索流程：
-        Step 1: 访问搜索页 HTML → 获取 csrf_token cookie + searchToken
-        Step 2: 用 token 调 /search/api 获取 JSON 数据，支持分页
-        """
-        results = []
-        offset = 0
-        per_page = 25
-        total_known = None
-
-        # Step 1: 获取 token（只需首次）
-        token_params = {k: v for k, v in params.items()}
-        token_params["offset"] = 0
-        token_params["show"] = per_page
-        token = self._fetch_search_token(token_params)
-        if not token:
-            print("  [错误] 无法获取搜索凭证，请检查网络或 cookie")
-            return results
-
-        self._delay()
-
-        # Step 2: 分页调用 API
-        _token_retries = 0
-        while len(results) < max_count:
-            api_params = {k: v for k, v in params.items()}
-            api_params["offset"] = offset
-            api_params["show"] = per_page
-            api_params["t"] = token
-            api_params["hostname"] = "www.sciencedirect.com"
-
-            api_url = self.SEARCH_API + "?" + urlencode(api_params)
-
-            try:
-                resp = self.session.get(
-                    api_url,
-                    timeout=20,
-                    headers={
-                        "Accept": "application/json, text/javascript, */*; q=0.01",
-                        "Referer": self.BASE_URL + "/search?" + urlencode(params),
-                        "X-Requested-With": "XMLHttpRequest",
-                    },
-                )
-                if resp.status_code == 401:
-                    if _token_retries >= 2:
-                        print("  [错误] Token 多次刷新后仍无效，停止")
-                        break
-                    _token_retries += 1
-                    wait = 5 * _token_retries
-                    print(f"  [信息] Token 失效，等待 {wait}s 后重新获取...")
-                    time.sleep(wait)
-                    token_params["offset"] = offset
-                    token = self._fetch_search_token(token_params)
-                    if not token:
-                        print("  [错误] 无法刷新 Token")
-                        break
-                    continue
-                if resp.status_code == 429:
-                    print("  [限速] 请求过于频繁，等待 30s...")
-                    time.sleep(30)
-                    continue
-                if resp.status_code != 200:
-                    print(f"  [HTTP {resp.status_code}] API 请求失败")
-                    break
-                _token_retries = 0  # 成功后重置
-                data = resp.json()
-            except json.JSONDecodeError:
-                print("  [错误] 返回内容不是 JSON，可能遇到访问限制")
-                break
-            except Exception as e:
-                print(f"  [网络错误] {e}")
-                break
-
-            items = data.get("searchResults", [])
-            if total_known is None:
-                total_known = int(data.get("resultsFound", data.get("totalResults", 0)))
-                actual_max = min(max_count, total_known) if total_known else max_count
-                if total_known:
-                    print(f"  共找到 {total_known} 篇，计划抓取 {actual_max} 篇")
-                else:
-                    print(f"  本页返回 {len(items)} 篇")
-
-            if not items:
-                if total_known == 0:
-                    print("  没有匹配的结果")
-                else:
-                    print("  没有更多结果了")
-                break
-
-            for item in items:
-                if len(results) >= max_count:
-                    break
-                article = self._parse_article(item)
-                results.append(article)
-                idx = len(results)
-                actual_max = min(max_count, total_known or max_count)
-                title_preview = (article["title"] or "（无标题）")[:60]
-                print(f"  [{idx}/{actual_max}] {title_preview}")
-
-            offset += per_page
-            if total_known and offset >= total_known:
-                break
-            if len(results) >= max_count:
-                break
-
-            self._delay()
-
-        return results
-
-    def _parse_article(self, item: dict) -> dict:
-        """解析单条搜索结果。"""
-        authors_raw = item.get("authors", [])
-        if isinstance(authors_raw, list):
-            names = []
-            for a in authors_raw:
-                if isinstance(a, dict):
-                    name = a.get("name", "")
-                    if not name:
-                        name = f"{a.get('givenName', '')} {a.get('surname', '')}".strip()
-                    if name:
-                        names.append(name)
-                elif isinstance(a, str):
-                    names.append(a)
-            authors_str = "; ".join(names)
-        elif isinstance(authors_raw, dict):
-            author_list = authors_raw.get("authorList", [])
-            authors_str = "; ".join(
-                f"{a.get('givenName', '')} {a.get('surname', '')}".strip()
-                for a in author_list
-            )
-        else:
-            authors_str = ""
-
-        doi = item.get("doi") or item.get("prism:doi", "")
-        link = item.get("link", "")
-        if not link:
-            link = f"https://doi.org/{doi}" if doi else ""
-        elif not link.startswith("http"):
-            link = self.BASE_URL + link
-
-        # 日期：API 返回 sortDate（ISO 格式）或 publicationDateDisplay
-        sort_date = item.get("sortDate", "")
-        date_str = sort_date[:10] if sort_date else ""   # 取 YYYY-MM-DD
-        year = date_str[:4] if date_str else ""
-
-        # 卷号：volumeIssue 如 "Volume 414"
-        volume_issue = item.get("volumeIssue", "")
-        volume = volume_issue.replace("Volume ", "").strip() if volume_issue else ""
-
-        # PDF 下载链接（需机构权限）
-        pdf_info = item.get("pdf", {}) or {}
-        pdf_link = pdf_info.get("downloadLink", "")
-        if pdf_link and not pdf_link.startswith("http"):
-            pdf_link = self.BASE_URL + pdf_link
-        pii = item.get("pii", "")
-
-        # 期刊名去掉 HTML 标签
-        journal_raw = item.get("sourceTitle", "") or item.get("publicationName", "")
-        journal_name = re.sub(r"<[^>]+>", "", journal_raw)
-
-        return {
-            "title":        item.get("title", ""),
-            "authors":      authors_str,
-            "journal":      journal_name,
-            "volume":       volume,
-            "issue":        item.get("issue", ""),
-            "year":         year,
-            "date":         date_str,
-            "doi":          doi,
-            "abstract":     item.get("abstract", ""),
-            "article_type": item.get("articleType", ""),
-            "open_access":  bool(item.get("openAccess") or item.get("openArchive")),
-            "url":          link,
-            "pdf_url":      pdf_link,
-            "pii":          pii,
-        }
-
-    # ── 搜索模式 ─────────────────────────────────────────────────────────────
-
-    def search_by_keyword(self, query, count=100, sort_by="relevance",
-                          date_range=None, article_type=None):
-        """按关键词搜索（支持布尔运算符 AND / OR / NOT）。"""
-        print(f"\n[关键词搜索]  关键词: {query}")
-        params = {"qs": query, "sortBy": sort_by}
-        if date_range:
-            params["date"] = date_range
-        if article_type:
-            params["articleTypes"] = article_type
-        return self._search(params, max_count=count)
-
-    def search_by_journal(self, journal_name, count=100, sort_by="date",
-                          date_range=None):
-        """按期刊名称浏览。"""
-        print(f"\n[期刊浏览]  期刊: {journal_name}")
-        params = {"pub": journal_name, "sortBy": sort_by}
-        if date_range:
-            params["date"] = date_range
-        return self._search(params, max_count=count)
-
-    def search_by_journal_keyword(self, journal_name, query, count=100,
-                                  sort_by="relevance", date_range=None):
-        """在指定期刊内按关键词搜索。"""
-        print(f"\n[期刊+关键词]  期刊: {journal_name}  关键词: {query}")
-        params = {"pub": journal_name, "qs": query, "sortBy": sort_by}
-        if date_range:
-            params["date"] = date_range
-        return self._search(params, max_count=count)
-
-    def search_by_author(self, author_name, count=100, sort_by="date"):
-        """按作者姓名搜索。"""
-        print(f"\n[作者搜索]  作者: {author_name}")
-        params = {"au": author_name, "sortBy": sort_by}
-        return self._search(params, max_count=count)
-
-    def search_by_issn(self, issn, count=100, sort_by="date", date_range=None):
-        """按期刊 ISSN 搜索。"""
-        print(f"\n[ISSN 搜索]  ISSN: {issn}")
-        params = {"issn": issn, "sortBy": sort_by}
-        if date_range:
-            params["date"] = date_range
-        return self._search(params, max_count=count)
-
-    def search_advanced(self, query=None, journal=None, author=None,
-                        issn=None, date_range=None, article_type=None,
-                        open_access_only=False, count=100, sort_by="relevance"):
-        """高级搜索：组合多个条件。"""
-        print("\n[高级搜索]")
-        params = {"sortBy": sort_by}
-        if query:
-            params["qs"] = query;       print(f"  关键词:   {query}")
-        if journal:
-            params["pub"] = journal;    print(f"  期刊:     {journal}")
-        if author:
-            params["au"] = author;      print(f"  作者:     {author}")
-        if issn:
-            params["issn"] = issn;      print(f"  ISSN:     {issn}")
-        if date_range:
-            params["date"] = date_range; print(f"  时间范围: {date_range}")
-        if article_type:
-            params["articleTypes"] = article_type; print(f"  文章类型: {article_type}")
-        if open_access_only:
-            params["openAccess"] = "true"; print("  仅开放获取: 是")
-        return self._search(params, max_count=count)
 
     # ── 保存结果 ─────────────────────────────────────────────────────────────
 
@@ -1305,7 +1004,6 @@ class ScienceDirectScraper:
                 delay_range=self.delay_range,
             )
             scraper._cookie_dict.update(self._cookie_dict)
-            scraper._session_cookies.update(self._session_cookies)
             try:
                 scraper.session.headers.update(self.session.headers)
             except Exception:
@@ -1417,14 +1115,6 @@ class ScienceDirectScraper:
             writer.writeheader()
             writer.writerows(results)
         print(f"\n[CSV] 已保存 → {path}  （共 {len(results)} 篇）")
-        return path
-
-    def save_to_json(self, results, filename, output_dir):
-        os.makedirs(output_dir, exist_ok=True)
-        path = os.path.join(output_dir, filename)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-        print(f"[JSON] 已保存 → {path}  （共 {len(results)} 篇）")
         return path
 
     def save_to_xlsx(self, results, filename, output_dir):
@@ -2985,131 +2675,13 @@ class ScienceDirectScraper:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 交互式向导
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _input_int(prompt, default):
-    raw = input(f"{prompt} [默认 {default}]: ").strip()
-    try:
-        return int(raw) if raw else default
-    except ValueError:
-        return default
-
-def _input_optional(prompt):
-    raw = input(f"{prompt} [留空跳过]: ").strip()
-    return raw if raw else None
-
-def interactive_mode():
-    print("=" * 60)
-    print("  ScienceDirect 论文抓取工具 v2.0")
-    print("=" * 60)
-
-    # ── 机构 Cookie ───────────────────────────────────────────────
-    print("\n【机构账号 Cookie】")
-    print("  1. 自动从 Chrome 读取（推荐）")
-    print("  2. 手动指定 cookie 文件")
-    print("  3. 跳过，以游客身份运行")
-    cookie_choice = input("  请选择 [1/2/3，默认 1]: ").strip() or "1"
-
-    cookies_file = None
-    use_browser_cookies = False
-    if cookie_choice == "1":
-        use_browser_cookies = True
-    elif cookie_choice == "2":
-        cookies_file = _input_optional("  Cookie 文件路径（如 cookies.json）")
-
-    scraper = ScienceDirectScraper(cookies_file=cookies_file, use_browser_cookies=use_browser_cookies)
-
-    # ── 搜索模式 ──────────────────────────────────────────────────
-    print("\n【搜索模式】")
-    modes = {
-        "1": ("keyword",         "按关键词搜索"),
-        "2": ("journal",         "按期刊名称浏览"),
-        "3": ("journal_keyword", "在指定期刊内按关键词搜索"),
-        "4": ("author",          "按作者搜索"),
-        "5": ("issn",            "按期刊 ISSN 搜索"),
-        "6": ("advanced",        "高级搜索（组合多个条件）"),
-    }
-    for k, (_, desc) in modes.items():
-        print(f"  {k}. {desc}")
-    choice = input("  请选择 [1-6]: ").strip()
-    mode = modes.get(choice, ("keyword", ""))[0]
-
-    # ── 采集参数 ──────────────────────────────────────────────────
-    print("\n【搜索参数】")
-    query      = _input_optional("  关键词（如 machine learning）")
-    journal    = _input_optional("  期刊名称（如 Energy）")
-    author     = _input_optional("  作者（如 Zhang Wei）")
-    issn       = _input_optional("  期刊 ISSN（如 0360-5442）")
-    date_range = _input_optional("  年份范围（如 2020-2024）")
-    print("  文章类型: FLA=完整文章  REV=综述  SCO=短通讯  留空=全部")
-    article_type = _input_optional("  文章类型")
-    count      = _input_int("  最大抓取数量", 50)
-    sort_raw   = input("  排序方式 relevance/date [默认 relevance]: ").strip()
-    sort_by    = sort_raw if sort_raw in ("relevance", "date") else "relevance"
-
-    # ── 执行搜索 ──────────────────────────────────────────────────
-    results = []
-    if mode == "keyword":
-        results = scraper.search_by_keyword(query or "", count, sort_by, date_range, article_type)
-    elif mode == "journal":
-        results = scraper.search_by_journal(journal or "", count, sort_by, date_range)
-    elif mode == "journal_keyword":
-        results = scraper.search_by_journal_keyword(journal or "", query or "", count, sort_by, date_range)
-    elif mode == "author":
-        results = scraper.search_by_author(author or "", count, sort_by)
-    elif mode == "issn":
-        results = scraper.search_by_issn(issn or "", count, sort_by, date_range)
-    elif mode == "advanced":
-        results = scraper.search_advanced(query, journal, author, issn,
-                                          date_range, article_type,
-                                          count=count, sort_by=sort_by)
-
-    if not results:
-        print("\n未获取到任何结果，请检查参数或 cookie。")
-        return
-
-    # ── 保存格式 ──────────────────────────────────────────────────
-    print("\n【保存格式】")
-    fmt_raw = input("  格式 xlsx/csv/json/all [默认 xlsx]: ").strip().lower()
-    fmt = fmt_raw if fmt_raw in ("xlsx", "csv", "json", "all") else "xlsx"
-
-    print("\n【PDF 下载】")
-    print("  1. 下载 PDF（推荐）")
-    print("     读取你 Chrome 浏览器的 Cookie，并通过已授权会话下载")
-    print("     前提：Chrome 已通过机构账号（CARSI/深技大）登录 ScienceDirect")
-    print("  2. 跳过，只保存文献列表")
-    dl_choice = input("  请选择 [1/2，默认 2]: ").strip() or "2"
-    download_pdfs = (dl_choice == "1")
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    parts = [mode]
-    if query:   parts.append(query.replace(" ", "_")[:20])
-    if journal: parts.append(journal.replace(" ", "_")[:20])
-    base = "_".join(parts) + f"_{timestamp}"
-    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", base)
-
-    if fmt in ("xlsx", "all"):
-        scraper.save_to_xlsx(results, base + ".xlsx", output_dir)
-    if fmt in ("csv", "all"):
-        scraper.save_to_csv(results, base + ".csv", output_dir)
-    if fmt in ("json", "all"):
-        scraper.save_to_json(results, base + ".json", output_dir)
-    if download_pdfs:
-        download_result = scraper.download_pdfs_devtools(results, output_dir)
-        if isinstance(download_result, DownloadRunResult):
-            report_path = write_supplement_download_report(download_result.supplement_records, output_dir)
-            print(f"[报告] 补充材料下载明细已保存 -> {report_path}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # 命令行入口
 # ──────────────────────────────────────────────────────────────────────────────
 
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "ScienceDirect 论文抓取工具 v2.0（兼容入口）。"
+            "ScienceDirect DOI 批量下载工具（兼容入口）。"
             "新文献任务请优先使用 paper_batch.py 或 UI「统一批次（推荐）」。"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -3117,45 +2689,25 @@ def build_parser():
 推荐入口（默认产品路径）:
   python paper_batch.py start --input papers.xlsx --out results --email you@example.com
 
-本脚本为兼容 / 高级 ScienceDirect 专用 CLI。使用示例:
-  python sd_scraper.py --interactive
-  python sd_scraper.py --open-browser-login
-  python sd_scraper.py -m keyword -q "machine learning" -n 100 --browser-cookies --format xlsx --download-pdfs
-  python sd_scraper.py -m journal -j "Energy" -n 50 --browser-cookies --sort date --format xlsx
-  python sd_scraper.py -m journal_keyword -j "Renewable Energy" -q "solar cell" -n 50 --browser-cookies --download-pdfs
-  python sd_scraper.py -m author -a "Zhang Wei" -n 30 --browser-cookies --format all
-  python sd_scraper.py -m advanced -q "deep learning" --date 2021-2024 --type REV -n 50 --browser-cookies --download-pdfs
+本脚本仅保留旧版 ScienceDirect DOI 批量下载兼容命令:
   python sd_scraper.py -m doi_batch --input papers.xlsx --browser-cookies --download-pdfs
+  python sd_scraper.py --login-only
         """,
     )
-    parser.add_argument("--interactive", action="store_true", help="启动交互式向导")
     parser.add_argument("--open-browser-login", action="store_true",
                         help="先从终端打开真实浏览器，手动完成机构登录后再继续")
     parser.add_argument("--login-only", action="store_true",
-                        help="只打开浏览器并等待你登录，不执行搜索")
+                        help="只打开浏览器并等待你登录，不执行 DOI 下载")
     parser.add_argument("-m", "--mode",
-                        choices=["keyword", "journal", "journal_keyword",
-                                 "author", "issn", "advanced", "doi_batch"],
-                        help="搜索模式")
-    parser.add_argument("-q", "--query",   help="搜索关键词（支持 AND/OR/NOT）")
-    parser.add_argument("-j", "--journal", help="期刊名称")
-    parser.add_argument("-a", "--author",  help="作者姓名")
-    parser.add_argument("--issn",          help="期刊 ISSN")
-    parser.add_argument("-n", "--count",   type=int, default=50, help="最大抓取数量（默认 50）")
-    parser.add_argument("--date",          help="年份范围，如 2020-2024")
-    parser.add_argument("--sort",          choices=["relevance", "date"], default="relevance")
-    parser.add_argument("--type",  dest="article_type",
-                        choices=["FLA", "REV", "SCO", "EDB", "ERR", "COR"],
-                        help="文章类型: FLA 完整文章 / REV 综述 / SCO 短通讯")
-    parser.add_argument("--open-access",   action="store_true", help="仅抓取开放获取文章")
+                        choices=["doi_batch"],
+                        help="兼容模式（仅支持 doi_batch）")
     parser.add_argument("--browser-cookies", dest="browser_cookies", action="store_true",
                         help="自动从本机 Chrome 读取 cookie")
     parser.add_argument("--cookies",       help="Cookie JSON 文件路径")
     parser.add_argument("--browser-exe",
                         help="Browser executable path for institutional login/download (defaults to Chrome, then Edge)")
-    parser.add_argument("--format",        choices=["xlsx", "csv", "json", "all"], default="xlsx")
     parser.add_argument("--download-pdfs", action="store_true",
-                        help="在保存文献列表后，继续下载对应 PDF")
+                        help="解析 DOI 后继续下载对应 PDF")
     parser.add_argument(
         "--download-supplements",
         action="store_true",
@@ -3198,23 +2750,18 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.interactive or len(sys.argv) == 1:
-        interactive_mode()
+    if len(sys.argv) == 1:
+        parser.print_help()
         return
 
     if args.login_only and args.mode:
-        print("提示: --login-only 会忽略搜索参数，只负责打开浏览器供你登录。")
+        print("提示: --login-only 会忽略 DOI 下载参数，只负责打开浏览器供你登录。")
     if args.login_only and not args.open_browser_login:
         args.open_browser_login = True
 
     if not args.mode and not args.login_only:
         parser.print_help()
         return
-    if args.resume_from and args.mode != "doi_batch":
-        print("提示: --resume-from 仅支持 doi_batch 模式，当前模式将忽略该参数。")
-    if args.auto_retry_input and args.mode != "doi_batch":
-        print("提示: --auto-retry-input 仅支持 doi_batch 模式，当前模式将忽略该参数。")
-
     scraper = ScienceDirectScraper(
         cookies_file=args.cookies,
         use_browser_cookies=args.browser_cookies,
@@ -3227,8 +2774,8 @@ def main():
             return
         if args.login_only:
             print(f"\n{scraper.browser_name} will stay open and keep the current login state.")
-            print("接下来请直接运行真正的抓取命令，例如：")
-            print('python sd_scraper.py -m keyword -q "machine learning" -n 20 --browser-cookies --format xlsx --download-pdfs')
+            print("接下来可运行 DOI 批量下载命令，例如：")
+            print('python sd_scraper.py -m doi_batch --input papers.xlsx --browser-cookies --download-pdfs')
             return
 
     if args.mode == "doi_batch":
@@ -3422,83 +2969,6 @@ def main():
         print(f"[报告] JSON 摘要已保存 -> {summary_json_path}")
         return
 
-    results = []
-    if args.mode == "keyword":
-        if not args.query:
-            print("错误: keyword 模式需要 -q 参数"); return
-        results = scraper.search_by_keyword(
-            args.query, args.count, args.sort, args.date, args.article_type)
-    elif args.mode == "journal":
-        if not args.journal:
-            print("错误: journal 模式需要 -j 参数"); return
-        results = scraper.search_by_journal(
-            args.journal, args.count, args.sort, args.date)
-    elif args.mode == "journal_keyword":
-        if not args.journal or not args.query:
-            print("错误: journal_keyword 模式需要 -j 和 -q 参数"); return
-        results = scraper.search_by_journal_keyword(
-            args.journal, args.query, args.count, args.sort, args.date)
-    elif args.mode == "author":
-        if not args.author:
-            print("错误: author 模式需要 -a 参数"); return
-        results = scraper.search_by_author(args.author, args.count, args.sort)
-    elif args.mode == "issn":
-        if not args.issn:
-            print("错误: issn 模式需要 --issn 参数"); return
-        results = scraper.search_by_issn(
-            args.issn, args.count, args.sort, args.date)
-    elif args.mode == "advanced":
-        results = scraper.search_advanced(
-            query=args.query, journal=args.journal, author=args.author,
-            issn=args.issn, date_range=args.date, article_type=args.article_type,
-            open_access_only=args.open_access,
-            count=args.count, sort_by=args.sort)
-
-    if not results:
-        print("\n未获取到任何结果。")
-        return
-
-    if args.filename:
-        base = args.filename
-    else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        parts = [args.mode]
-        if args.query:   parts.append(args.query.replace(" ", "_")[:20])
-        if args.journal: parts.append(args.journal.replace(" ", "_")[:20])
-        base = "_".join(parts) + f"_{timestamp}"
-
-    output_dir = args.output or os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "results")
-
-    if args.format in ("xlsx", "all"):
-        scraper.save_to_xlsx(results, base + ".xlsx", output_dir)
-    if args.format in ("csv", "all"):
-        scraper.save_to_csv(results, base + ".csv", output_dir)
-    if args.format in ("json", "all"):
-        scraper.save_to_json(results, base + ".json", output_dir)
-    if args.download_pdfs:
-        want_supplements = (
-            False
-            if bool(getattr(args, "no_download_supplements", False))
-            else True
-            if getattr(args, "download_supplements", None) is None
-            else bool(args.download_supplements)
-        )
-        download_result = scraper.download_pdfs_devtools(
-            results,
-            output_dir,
-            download_supplements=want_supplements,
-            session_break_seconds=float(getattr(args, "session_break_seconds", 60.0) or 60.0),
-            session_break_every=int(getattr(args, "session_break_every", 8) or 8),
-            resume=True,
-        )
-        if download_result:
-            pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
-            pdf_report_path = write_pdf_download_report(pdf_records, output_dir)
-            print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")
-        if want_supplements and isinstance(download_result, DownloadRunResult):
-            report_path = write_supplement_download_report(download_result.supplement_records, output_dir)
-            print(f"[报告] 补充材料下载明细已保存 -> {report_path}")
 
 
 if __name__ == "__main__":

@@ -298,6 +298,7 @@ class SkillPackagingTests(unittest.TestCase):
         self.assertIn("python -m pip install -r requirements.txt", text)
         self.assertIn("python -m compileall", text)
         self.assertIn("python -m unittest discover -s tests -v", text)
+        self.assertNotIn("sd_scraper_en.py", text)
 
     def test_public_copy_avoids_high_risk_access_wording(self) -> None:
         scanned_paths = [
@@ -305,7 +306,6 @@ class SkillPackagingTests(unittest.TestCase):
             PROJECT_ROOT / "WINDOWS_UI_README.md",
             PROJECT_ROOT / "MANUAL_QA.md",
             PROJECT_ROOT / "sd_scraper.py",
-            PROJECT_ROOT / "sd_scraper_en.py",
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
             PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md",
             PROJECT_ROOT / "skills" / "legal-oa-paper-download" / "SKILL.md",
@@ -446,12 +446,15 @@ class SkillPackagingTests(unittest.TestCase):
         self.assertIn("推荐入口（新任务只用这些）", readme_zh)
         self.assertIn("兼容 / 高级入口", readme_zh)
         self.assertIn("统一批次（推荐）", ui_readme)
-        self.assertIn("DOI 批量下载（兼容）", ui_readme)
+        self.assertIn("运行日志", ui_readme)
         self.assertIn("Entry map (mandatory)", skill)
         self.assertIn("User-facing default", agents)
         self.assertIn('text="统一批次（推荐）"', ui_source)
-        self.assertIn('text="DOI 批量下载（兼容）"', ui_source)
-        self.assertIn('text="OA 资源辅助获取（兼容）"', ui_source)
+        self.assertIn('text="运行日志"', ui_source)
+        self.assertNotIn('text="DOI 批量下载（兼容）"', ui_source)
+        self.assertNotIn('text="OA 资源辅助获取（兼容）"', ui_source)
+        self.assertNotIn("--email", ui_source)
+        self.assertNotIn("--cookies", ui_source)
 
         # Must not tell users the DOI batch tab is still the default open page.
         self.assertNotIn("界面默认打开“DOI 批量下载”页", ui_readme)
@@ -474,7 +477,6 @@ class SkillPackagingTests(unittest.TestCase):
         expected_snippets = [
             'call :copy_required "paper_batch.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "institutional_paper_skill.py" "%PACKAGE_DIR%\\"',
-            'call :copy_required "sd_scraper_en.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "student_handoff.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "LICENSE" "%PACKAGE_DIR%\\"',
@@ -509,6 +511,7 @@ class SkillPackagingTests(unittest.TestCase):
         for snippet in expected_snippets:
             with self.subTest(snippet=snippet):
                 self.assertIn(snippet, text)
+        self.assertNotIn("sd_scraper_en.py", text)
         self.assertIn("如何导出机构Cookie.md", text)
         self.assertNotIn("濡備綍瀵煎嚭鏈烘瀯Cookie.md", text)
 
@@ -584,51 +587,22 @@ class BrowserProfileSafetyTests(unittest.TestCase):
         }))
         self.assertIn("--disable-extensions", sd_scraper.BROWSER_DEBUG_EXTRA_ARGS)
 
-    def test_english_debug_profile_copy_allowlist_excludes_sensitive_browser_state(self) -> None:
-        import sd_scraper_en
-
-        copied_files = set(sd_scraper_en.BROWSER_PROFILE_COPY_FILES)
-        copied_dirs = set(sd_scraper_en.BROWSER_PROFILE_COPY_DIRS)
-
-        self.assertEqual(copied_files, {
-            "Cookies",
-            "Cookies-journal",
-        })
-        self.assertEqual(copied_dirs, set())
-        self.assertTrue(copied_files.isdisjoint({
-            "Preferences",
-            "Secure Preferences",
-            "History",
-            "Visited Links",
-            "Web Data",
-            "Login Data",
-        }))
-        self.assertTrue(copied_dirs.isdisjoint({
-            "Extensions",
-            "Network",
-            "Local Storage",
-            "Session Storage",
-            "IndexedDB",
-            "SharedStorage",
-            "WebStorage",
-        }))
-        self.assertIn("--disable-extensions", sd_scraper_en.BROWSER_DEBUG_EXTRA_ARGS)
-
     def test_missing_curl_cffi_error_is_delayed_until_network_use(self) -> None:
         import sd_scraper
-        import sd_scraper_en
 
-        for module in (sd_scraper, sd_scraper_en):
-            original = module.HAS_CURL_CFFI
-            try:
-                module.HAS_CURL_CFFI = False
-                session = module._new_curl_session(impersonate="chrome124", allow_missing=True)
-                with self.assertRaisesRegex(RuntimeError, "curl_cffi"):
-                    session.get("https://example.com")
-                with self.assertRaisesRegex(RuntimeError, "curl_cffi"):
-                    module._new_curl_session(impersonate="chrome124")
-            finally:
-                module.HAS_CURL_CFFI = original
+        original = sd_scraper.HAS_CURL_CFFI
+        try:
+            sd_scraper.HAS_CURL_CFFI = False
+            session = sd_scraper._new_curl_session(impersonate="chrome124", allow_missing=True)
+            with self.assertRaisesRegex(RuntimeError, "curl_cffi"):
+                session.get("https://example.com")
+            with self.assertRaisesRegex(RuntimeError, "curl_cffi"):
+                sd_scraper._new_curl_session(impersonate="chrome124")
+        finally:
+            sd_scraper.HAS_CURL_CFFI = original
+
+    def test_english_legacy_scraper_is_removed(self) -> None:
+        self.assertFalse((PROJECT_ROOT / "sd_scraper_en.py").exists())
 
 
 if __name__ == "__main__":

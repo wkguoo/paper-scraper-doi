@@ -17,7 +17,7 @@ This project helps researchers turn DOI tables, copied bibliography text, and AI
 | Situation | Use | Notes |
 | --- | --- | --- |
 | Any mixed DOI / title / Excel / Markdown list | `paper_batch.py` | Default CLI: OA → institutional access → one manual retry → Zotero fallback |
-| Same workflow in a GUI | `start_paper_scraper_ui.bat` → tab **统一批次（推荐）** | Graphical shell around `paper_batch.py` |
+| Same workflow in a GUI | `start_paper_scraper_ui.bat` → tab **统一批次（推荐）** | Graphical shell around `paper_batch.py`; the other tab is **运行日志** |
 | Natural-language agent | Codex skill `$paper-download` | Install script installs only this skill |
 
 ```powershell
@@ -26,14 +26,13 @@ This project helps researchers turn DOI tables, copied bibliography text, and AI
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"   # remaining failures only
 ```
 
-Do **not** start new literature jobs with `paper_skill.py`, `sd_institutional_skill.py`, `sd_scraper.py`, or `sd_scraper_en.py` unless you intentionally want a compatibility path. Those scripts skip the shared batch state and Zotero fallback queue.
+Do **not** start new literature jobs with `paper_skill.py`, `sd_institutional_skill.py`, or `sd_scraper.py` unless you intentionally want a compatibility path. Those scripts skip the shared batch state and Zotero fallback queue.
 
 ## Compatibility / advanced entry points (not the default)
 
 | Entry | Role |
 | --- | --- |
-| UI tabs `DOI 批量下载` / `文献检索` / `OA 资源辅助获取` | Legacy GUI paths for ScienceDirect-only or OA-only tasks |
-| `sd_scraper.py` / `sd_scraper_en.py` | Legacy ScienceDirect search + DOI batch CLIs (CN / EN) |
+| `sd_scraper.py` | Legacy ScienceDirect DOI batch compatibility CLI |
 | `sd_institutional_skill.py` | Internal ScienceDirect intake/download adapter (also used by preflight) |
 | `paper_skill.py` | Internal OA-only adapter |
 | `institutional_paper_skill.py` | Internal non-Elsevier institutional adapter |
@@ -71,7 +70,7 @@ Check the **recommended** CLI:
 .\.venv\Scripts\python.exe paper_batch.py start --help
 ```
 
-Open the Windows UI (first tab is **统一批次（推荐）**):
+Open the Windows UI (it contains only **统一批次（推荐）** and **运行日志**):
 
 ```powershell
 .\start_paper_scraper_ui.bat
@@ -186,7 +185,7 @@ git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist
 Run the offline checks before committing Python or workflow changes:
 
 ```powershell
-.\.venv\Scripts\python.exe -m compileall paper_scraper_ui.py sd_scraper.py sd_scraper_en.py windows_paths.py sd_institutional_skill.py paper_skill.py paper_automation
+.\.venv\Scripts\python.exe -m compileall paper_batch.py preflight_doi_metadata.py paper_scraper_ui.py sd_scraper.py windows_paths.py sd_institutional_skill.py institutional_paper_skill.py paper_skill.py paper_automation
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
