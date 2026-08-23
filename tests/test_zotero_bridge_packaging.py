@@ -10,13 +10,13 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-BUILDER = PROJECT_ROOT / "build_zotero_bridge_xpi.ps1"
+BUILDER = PROJECT_ROOT / "scripts" / "build" / "build_zotero_bridge_xpi.ps1"
 PLUGIN_ROOT = PROJECT_ROOT / "zotero_bridge_plugin"
 
 
 class ZoteroBridgePackagingTests(unittest.TestCase):
     def builder_text(self) -> str:
-        self.assertTrue(BUILDER.is_file(), "missing build_zotero_bridge_xpi.ps1")
+        self.assertTrue(BUILDER.is_file(), "missing scripts/build/build_zotero_bridge_xpi.ps1")
         return BUILDER.read_text(encoding="utf-8")
 
     def test_builder_is_explicit_and_parameterized(self) -> None:
@@ -233,7 +233,7 @@ try {
         for relative in (
             "start_paper_scraper_ui.bat",
             "install_codex_skills.ps1",
-            "make_windows_ui_package.bat",
+            "scripts/build/make_windows_ui_package.bat",
         ):
             with self.subTest(path=relative):
                 text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
@@ -245,7 +245,7 @@ try {
         text = path.read_text(encoding="utf-8")
         for required in (
             "node --test .\\zotero_bridge_plugin\\tests\\*.test.cjs",
-            "build_zotero_bridge_xpi.ps1 -OutputDirectory .\\dist",
+            "scripts\\build\\build_zotero_bridge_xpi.ps1 -OutputDirectory .\\dist",
             "需明确批准",
             "本次不会执行",
             "不会自动安装",

@@ -27,7 +27,7 @@ node --test .\zotero_bridge_plugin\tests\*.test.cjs
 下面的命令会创建 XPI，属于需明确批准的打包步骤。本次不会执行该命令，也不会自动安装插件：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\build_zotero_bridge_xpi.ps1 -OutputDirectory .\dist
+powershell -ExecutionPolicy Bypass -File .\scripts\build\build_zotero_bridge_xpi.ps1 -OutputDirectory .\dist
 ```
 
 输入：`manifest.json`、`bootstrap.js`、`content/`、`locale/` 四项白名单源码。

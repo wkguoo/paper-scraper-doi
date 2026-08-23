@@ -1,7 +1,8 @@
 @echo off
 chcp 65001 >nul
 setlocal EnableExtensions
-cd /d "%~dp0"
+for %%I in ("%~dp0..\..") do set "PROJECT_ROOT=%%~fI"
+cd /d "%PROJECT_ROOT%"
 
 set "PACKAGE_DIR=dist\paper-scraper-ui-windows"
 if not exist "dist" mkdir "dist" || exit /b 1
@@ -29,14 +30,19 @@ call :copy_required "requirements.txt" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "LICENSE" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "THIRD_PARTY_NOTICES.md" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "README.md" "%PACKAGE_DIR%\" || exit /b 1
-call :copy_required "README_zh.md" "%PACKAGE_DIR%\" || exit /b 1
-call :copy_required "WINDOWS_UI_README.md" "%PACKAGE_DIR%\" || exit /b 1
-call :copy_required "MANUAL_QA.md" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "install_codex_skills.ps1" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_optional "如何导出机构Cookie.md" "%PACKAGE_DIR%\" || exit /b 1
 
 call :robocopy_required "paper_automation" "%PACKAGE_DIR%\paper_automation" || exit /b 1
 if not exist "%PACKAGE_DIR%\docs" mkdir "%PACKAGE_DIR%\docs" || exit /b 1
+if not exist "%PACKAGE_DIR%\docs\user-guide" mkdir "%PACKAGE_DIR%\docs\user-guide" || exit /b 1
+if not exist "%PACKAGE_DIR%\docs\development" mkdir "%PACKAGE_DIR%\docs\development" || exit /b 1
+if not exist "%PACKAGE_DIR%\.github" mkdir "%PACKAGE_DIR%\.github" || exit /b 1
+call :copy_required "docs\user-guide\en.md" "%PACKAGE_DIR%\docs\user-guide\" || exit /b 1
+call :copy_required "docs\user-guide\zh.md" "%PACKAGE_DIR%\docs\user-guide\" || exit /b 1
+call :copy_required "docs\user-guide\windows-ui.md" "%PACKAGE_DIR%\docs\user-guide\" || exit /b 1
+call :copy_required "docs\development\manual-qa.md" "%PACKAGE_DIR%\docs\development\" || exit /b 1
+call :copy_required ".github\SECURITY.md" "%PACKAGE_DIR%\.github\" || exit /b 1
 call :copy_required "docs\sciencedirect_skill_beginner_guide.md" "%PACKAGE_DIR%\docs\" || exit /b 1
 call :copy_required "docs\zotero_bridge_beginner_guide.md" "%PACKAGE_DIR%\docs\" || exit /b 1
 call :robocopy_required "skills" "%PACKAGE_DIR%\skills" || exit /b 1
@@ -49,6 +55,9 @@ call :verify_required "%PACKAGE_DIR%\paper_automation\batch_stages.py" || exit /
 call :verify_required "%PACKAGE_DIR%\paper_automation\zotero_bridge.py" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\paper_automation\institutional\workflow.py" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\paper_automation\institutional\adapters\common_publishers.py" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\docs\user-guide\zh.md" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\docs\development\manual-qa.md" || exit /b 1
+call :verify_required "%PACKAGE_DIR%\.github\SECURITY.md" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\docs\zotero_bridge_beginner_guide.md" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\skills\sciencedirect-doi-download\references" || exit /b 1
 call :verify_required "%PACKAGE_DIR%\skills\sciencedirect-doi-download\references\beginner-workflow.md" || exit /b 1

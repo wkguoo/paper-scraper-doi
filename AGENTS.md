@@ -6,7 +6,7 @@ This repository is a Windows-oriented paper download helper.
 
 **User-facing default:** `paper_batch.py` (CLI) and the UI tab **统一批次（推荐）** in `paper_scraper_ui.py`; the GUI contains only that entry tab plus **运行日志**. Codex agents should use skill `paper-download` only.
 
-**Internal / compatibility modules (not default user routes):** `sd_scraper.py` (legacy ScienceDirect DOI batch compatibility CLI), `sd_institutional_skill.py` (ScienceDirect intake/download adapter, also used for preflight), `paper_skill.py` (OA-only adapter), `institutional_paper_skill.py` (non-Elsevier institutional adapter), and skills `sciencedirect-doi-download` / `legal-oa-paper-download`. Shared libraries live under `paper_automation/` and `doi_batch_utils.py`. Path helpers: `windows_paths.py`. Packaging: `start_paper_scraper_ui.bat`, `install_codex_skills.ps1`, `make_windows_ui_package.bat`. Docs: `README.md`, `README_zh.md`, `WINDOWS_UI_README.md`, `MANUAL_QA.md`. Generated `results/`, `dist/`, PDFs, and cookies stay out of Git.
+**Internal / compatibility modules (not default user routes):** `sd_scraper.py` (legacy ScienceDirect DOI batch compatibility CLI), `sd_institutional_skill.py` (ScienceDirect intake/download adapter, also used for preflight), `paper_skill.py` (OA-only adapter), `institutional_paper_skill.py` (non-Elsevier institutional adapter), and skills `sciencedirect-doi-download` / `legal-oa-paper-download`. Shared libraries live under `paper_automation/` and `doi_batch_utils.py`. Path helpers: `windows_paths.py`. Packaging: `start_paper_scraper_ui.bat`, `install_codex_skills.ps1`, `scripts/build/make_windows_ui_package.bat`. Docs: `README.md`, `docs/user-guide/`, `docs/development/manual-qa.md`. Generated `results/`, `dist/`, PDFs, and cookies stay out of Git.
 
 ## Build, Test, and Development Commands
 
@@ -38,7 +38,7 @@ Legacy ScienceDirect-only CLI (compatibility, not the default product path):
 Package the Windows UI source bundle:
 
 ```powershell
-.\make_windows_ui_package.bat
+.\scripts\build\make_windows_ui_package.bat
 ```
 
 Before committing Python changes, at minimum run:
@@ -54,7 +54,7 @@ Use Python 3 with 4-space indentation, `snake_case` for functions and variables,
 
 ## Testing Guidelines
 
-There is an offline unittest suite under `tests/`. For new logic, add focused tests using `test_*.py` names, and document any required network or institutional-access assumptions. Avoid live ScienceDirect calls in default tests; prefer small local fixtures for DOI parsing, CSV/Excel handling, path behavior, report generation, and skill packaging. Real institutional login and PDF-download checks belong in `MANUAL_QA.md`.
+There is an offline unittest suite under `tests/`. For new logic, add focused tests using `test_*.py` names, and document any required network or institutional-access assumptions. Avoid live ScienceDirect calls in default tests; prefer small local fixtures for DOI parsing, CSV/Excel handling, path behavior, report generation, and skill packaging. Real institutional login and PDF-download checks belong in `docs/development/manual-qa.md`.
 
 ## Commit & Pull Request Guidelines
 

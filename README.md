@@ -1,6 +1,6 @@
 # Paper Scraper DOI
 
-[English](README.md) | [中文说明](README_zh.md)
+中文首页 | [English guide](docs/user-guide/en.md) | [完整中文指南](docs/user-guide/zh.md)
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
@@ -8,189 +8,117 @@
 ![Tests](https://github.com/wkguoo/paper-scraper-doi/actions/workflows/tests.yml/badge.svg)
 ![Release](https://img.shields.io/github/v/release/wkguoo/paper-scraper-doi?display_name=tag)
 
-Windows-friendly unified DOI batch workflow with authorized access, OA discovery, and Zotero fallback.
+面向 Windows 科研用户的论文批量下载助手：把 DOI、Excel、Markdown 或复制的文献列表整理成可复核任务，统一衔接公开 OA、授权机构访问和 Zotero 回退。
 
-This project helps researchers turn DOI tables, copied bibliography text, and AI-recommended paper lists into reviewable reports through **one user-facing batch workflow**. Lower-level OA, ScienceDirect, and publisher adapters are implementation details—not separate product entry points.
+> **默认入口只有一个：**新任务使用 `paper_batch.py`，或双击 `start_paper_scraper_ui.bat` 后进入 **统一批次（推荐）**。
 
-## Recommended entry points (use these)
+[下载最新版本](https://github.com/wkguoo/paper-scraper-doi/releases/latest) · [Windows UI 说明](docs/user-guide/windows-ui.md) · [Zotero 桥接指南](docs/zotero_bridge_beginner_guide.md)
 
-| Situation | Use | Notes |
-| --- | --- | --- |
-| Any mixed DOI / title / Excel / Markdown list | `paper_batch.py` | Default CLI: OA → institutional access → one manual retry → Zotero fallback |
-| Same workflow in a GUI | `start_paper_scraper_ui.bat` → tab **统一批次（推荐）** | Graphical shell around `paper_batch.py`; the other tab is **运行日志** |
-| Natural-language agent | Codex skill `$paper-download` | Install script installs only this skill |
+## 它能做什么
 
-```powershell
-.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
-.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"   # only if manual_retry has rows
-.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"   # remaining failures only
-```
+- 读取 TXT、Markdown、CSV、Excel 或直接粘贴的 DOI/题名列表。
+- 预检 DOI、去重并补全文献元数据，把不确定记录留给人工复核。
+- 在用户已有权限范围内尝试 OA、出版社/机构访问和有限 OA 恢复。
+- 将仍失败的 DOI 汇总到 Zotero 回退队列。
+- 按 `年份-第一作者姓-题名.pdf` 发布 PDF，并生成下载清单和审计报告。
 
-Do **not** start new literature jobs with `paper_skill.py`, `sd_institutional_skill.py`, or `sd_scraper.py` unless you intentionally want a compatibility path. Those scripts skip the shared batch state and Zotero fallback queue.
+本项目**不提供**数据库、学校或出版社访问权限，不代替用户输入账号密码，也不绕过 CAPTCHA 或访问控制。
 
-## Compatibility / advanced entry points (not the default)
+## 推荐入口
 
-| Entry | Role |
+| 场景 | 使用方式 |
 | --- | --- |
-| `sd_scraper.py` | Legacy ScienceDirect DOI batch compatibility CLI |
-| `sd_institutional_skill.py` | Internal ScienceDirect intake/download adapter (also used by preflight) |
-| `paper_skill.py` | Internal OA-only adapter |
-| `institutional_paper_skill.py` | Internal non-Elsevier institutional adapter |
-| Skills `sciencedirect-doi-download` / `legal-oa-paper-download` | Internal skill docs; not installed by default |
+| 图形界面 | 双击 `start_paper_scraper_ui.bat` |
+| 命令行批量任务 | `paper_batch.py start` |
+| 自然语言 / Codex | `$paper-download` |
 
-## What It Does
+兼容脚本 `sd_scraper.py`、`sd_institutional_skill.py`、`paper_skill.py` 和 `institutional_paper_skill.py` 仅用于旧流程或内部适配，不是新任务的默认入口。
 
-- Reads DOI lists from Excel, CSV, TXT, Markdown, or pasted text.
-- Runs a beginner preflight (when requested) to identify valid DOI rows, duplicates, invalid rows, and records that need manual review.
-- Through the **unified batch**, tries open-access discovery, then authorized publisher access, one manual retry, and optional Zotero fallback.
-- May download ScienceDirect supplementary materials when that stage runs with supplements enabled.
-- Installs the single Codex skill `paper-download` so agents follow the same unified route.
+## 快速开始
 
-## What It Does Not Do
-
-- It does not provide database, university, publisher, or ScienceDirect access.
-- It does not ask Codex or the script to enter your university account password.
-- It does not guarantee that title-only metadata matching is correct. Uncertain rows are kept in `needs_review`.
-
-中文说明：本项目不提供任何数据库、学校或出版社访问权限。完整中文说明见 [README_zh.md](README_zh.md)。
-
-## Quick Start
-
-Run these commands in PowerShell from the cloned repository:
+在 PowerShell 中进入仓库目录：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Check the **recommended** CLI:
-
-```powershell
-.\.venv\Scripts\python.exe paper_batch.py --help
-.\.venv\Scripts\python.exe paper_batch.py start --help
-```
-
-Open the Windows UI (it contains only **统一批次（推荐）** and **运行日志**):
+启动图形界面：
 
 ```powershell
 .\start_paper_scraper_ui.bat
 ```
 
-Install or refresh Codex Skills (only `paper-download`):
+或运行统一批次命令：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1 -DryRun
-powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1
+.\.venv\Scripts\python.exe paper_batch.py start `
+  --input "papers.xlsx" `
+  --out "results" `
+  --email "you@example.com"
 ```
 
-The dry run only shows the target skill path and planned changes. The install command copies only `paper-download` into the Codex skills directory and sets `PAPER_SCRAPER_DOI_ROOT`.
+输入优先使用“每行一个 DOI”的 TXT，或包含 `doi` 列的 CSV/XLSX。
+如果输入来自 AI 推荐或混杂参考文献文本，先让 `$paper-download` 使用 `--beginner --preflight` 生成复核清单，再开始正式下载。
 
-## Common Workflows
-
-### Beginner Preflight (optional before a formal download)
-
-For messy AI recommendation lists, preflight first (local intake review; no PDF download):
+## 默认流程
 
 ```text
-Use $paper-download to preflight these paper recommendations with --beginner --preflight.
-Save results to D:\Literature\ScienceDirect.
-
-1. A critical review of high entropy alloys and related concepts
-2. DOI: 10.1016/j.actamat.2016.08.081
-3. unclear recommendation about alloy fatigue without enough bibliographic information
+输入清单
+  → DOI 预检与去重
+  → OA / 授权机构访问
+  → 有限 OA 恢复
+  → Zotero 回退
+  → 结果/下载清单.csv + 结果/pdf/
 ```
 
-Check `doi_intake_preview.csv`, `merged_doi_input.csv`, and related reports, then run **`paper_batch.py start`** (or the UI unified-batch tab) on the confirmed list.
+原始输入和实验/研究资料不会被覆盖。运行缓存、报告和交付文件保存在新建的批次目录中。
 
-### Recommended: unified batch with Zotero fallback
+## 用户交付目录
 
-```powershell
-.\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
+```text
+结果/
+├── <原始输入文件>
+├── 下载清单.csv
+├── pdf/
+├── md/
+└── 补充材料/        # 仅实际下载到补充材料时创建
 ```
 
-Prefer a **DOI-only** list (TXT one DOI per line, or a table with a DOI column).
-Markdown is fine, but by default only explicit DOIs become tasks.
+内部的 `pdfs/`、`reports/` 和 `working/` 用于缓存、续跑和审计；日常查看只需进入 `结果/`。
 
-Default path: DOI preflight → OA (gold / OA-signal only) → institutional access →
-bounded OA recovery for OA-signal failures → **DOI-bearing failures go to
-`zotero_fallback.csv`** (no `resume` gate). `start` **auto-queues** Zotero and
-waits (default `--wait-seconds 600`). Keep Zotero open with bridge plugin
-**0.2.0+** (auto-confirm by default; no modal). Exit code 3 means still waiting
-for the plugin; after it finishes, rerun only if needed:
+## 文档导航
 
-```powershell
-.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
-```
+- [完整中文指南](docs/user-guide/zh.md)
+- [Complete English guide](docs/user-guide/en.md)
+- [Windows UI 使用说明](docs/user-guide/windows-ui.md)
+- [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)
+- [ScienceDirect Skill 新手指南](docs/sciencedirect_skill_beginner_guide.md)
+- [人工 QA 清单](docs/development/manual-qa.md)
+- [安全策略](.github/SECURITY.md)
 
-Optional: `--wait-seconds N` on `start` to poll in-process; `--no-auto-zotero`
-to queue later; `--enable-manual-retry` for the legacy one-shot login/CAPTCHA
-path (then `resume` once if `manual_retry.csv` has rows).
+<details>
+<summary>开发、测试与构建</summary>
 
-For the unified batch, user-facing files are in `结果\`: the original input,
-`下载清单.csv`, `pdf\`, and an always-present empty `md\`; `补充材料\` is
-created only when supplementary files were actually downloaded. The inventory
-keeps the existing UTF-8-SIG CSV format and 12 columns
-(`序号,状态,DOI,题名,作者,年份,期刊,下载来源,结果文件,补充材料,失败原因,task_id`),
-with batch-root-relative paths such as `结果/pdf/paper.pdf` and
-`结果/补充材料/paper`. Internal cache, reports, and handoff files remain in
-`pdfs\`, `reports\`, and `working\`. See the
-[Zotero bridge beginner guide](docs/zotero_bridge_beginner_guide.md). The XPI
-remains approval-gated: test only in a Zotero test profile first.
-
-For institutional login or verification, try the Codex in-app browser first.
-If it is unavailable, the external browser fallback prefers Google Chrome, then
-Edge Stable/Beta/Dev/Canary, then Playwright Chromium. An explicit `--browser-exe`
-or `PAPER_SCRAPER_BROWSER_EXE` override always wins.
-
-## Outputs
-
-**Unified batch** (`paper_batch.py`) writes one timestamped run directory with
-normalized input, stage reports, `manual_retry.csv` / `zotero_fallback.csv`,
-final manifests, internal `pdfs\` cache, and the user delivery package under
-`结果\`. Re-publishing preserves user-added PDF, supplement, and Markdown
-files; old PDFs directly under `结果\` are migrated into `结果/pdf\`.
-
-Legacy ScienceDirect-only runs may still create folders with reports such as:
-
-- `doi_intake_preview.csv`
-- `merged_doi_input.csv`
-- `doi_batch_resolved.xlsx`
-- `doi_batch_failed.csv`
-- `pdf_download_report.csv`
-- `supplement_download_report.csv`
-- `run_summary.txt`
-- `run_summary.json`
-- `00_给研究生查看\`
-- `pdfs\`
-- `supplements\`
-
-## Security Notes
-
-Treat institutional cookies and browser session state as credentials.
-
-- Do not commit or upload `cookie.json`, `cookies.json`, exported cookies, account passwords, PDFs, result tables, browser cache, or internal institution pages.
-- Do not paste cookies, passwords, PDFs, or institution screenshots into GitHub Issues.
-- Keep downloaded PDFs, `results\`, `pdfs\`, `.venv\`, and `dist\` out of Git and release assets.
-- See [SECURITY.md](SECURITY.md) before reporting security issues.
-
-Before publishing a fork or release package, check:
-
-```powershell
-git status --short
-git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist"
-```
-
-## Development
-
-Run the offline checks before committing Python or workflow changes:
+离线检查：
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall paper_batch.py preflight_doi_metadata.py paper_scraper_ui.py sd_scraper.py windows_paths.py sd_institutional_skill.py institutional_paper_skill.py paper_skill.py paper_automation
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Manual checks that require real institutional login, CAPTCHA, or PDF access are documented in [MANUAL_QA.md](MANUAL_QA.md).
+生成 Windows UI 源码包：
 
-## License
+```powershell
+.\scripts\build\make_windows_ui_package.bat
+```
 
-This project is licensed under the [MIT License](LICENSE), with copyright held by `wkguoo`. Notices for third-party code included in this repository are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+真实机构登录、CAPTCHA、PDF 与补充材料下载只在[人工 QA 清单](docs/development/manual-qa.md)中验证，不进入默认离线测试。
+
+</details>
+
+## 安全与许可
+
+不要提交 Cookie、密码、下载的 PDF、结果表、浏览器缓存、`.venv/` 或 `dist/`。发现安全问题时请先阅读[安全策略](.github/SECURITY.md)。
+
+项目采用 [MIT License](LICENSE)，版权归 `wkguoo` 所有；第三方代码许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -7,6 +7,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+!scripts/build/
+!scripts/build/*.bat
+!scripts/build/*.ps1
 .eggs/
 
 # Built Zotero plugin packages — keep out of the tree and git

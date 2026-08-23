@@ -84,7 +84,8 @@ if (-not $PSScriptRoot) {
     throw "This builder must be run from a saved build_zotero_bridge_xpi.ps1 file."
 }
 
-$pluginRootFull = Resolve-FullPath (Join-Path $PSScriptRoot "zotero_bridge_plugin")
+$projectRoot = Resolve-FullPath (Join-Path $PSScriptRoot "..\..")
+$pluginRootFull = Resolve-FullPath (Join-Path $projectRoot "zotero_bridge_plugin")
 $outputDirectoryFull = Resolve-FullPath $OutputDirectory
 Assert-NoReparsePointInPath -Path $pluginRootFull -Label "Plugin source path"
 Assert-NoReparsePointInPath -Path $outputDirectoryFull -Label "Output path"

@@ -66,4 +66,4 @@
 - 你实际用的配置里需要已安装「文献下载桥接」插件（主配置与测试配置可各装一份）。
 - 隔离验收仍可用 `Zotero test`（Zotero test profile）；日常请打开正式文库对应的 Zotero。
 
-详细人工验收项见 [MANUAL_QA.md](../MANUAL_QA.md)。
+详细人工验收项见 [人工 QA 清单](development/manual-qa.md)。

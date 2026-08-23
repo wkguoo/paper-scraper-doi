@@ -167,7 +167,7 @@ class SkillPackagingTests(unittest.TestCase):
     def test_zotero_bridge_beginner_docs(self) -> None:
         paths = (
             PROJECT_ROOT / "docs" / "zotero_bridge_beginner_guide.md",
-            PROJECT_ROOT / "README_zh.md",
+            PROJECT_ROOT / "docs" / "user-guide" / "zh.md",
         )
         required = (
             "paper_batch.py start",
@@ -283,8 +283,9 @@ class SkillPackagingTests(unittest.TestCase):
         public_paths = [
             PROJECT_ROOT / "LICENSE",
             PROJECT_ROOT / "README.md",
-            PROJECT_ROOT / "README_zh.md",
-            PROJECT_ROOT / "WINDOWS_UI_README.md",
+            PROJECT_ROOT / "docs" / "user-guide" / "en.md",
+            PROJECT_ROOT / "docs" / "user-guide" / "zh.md",
+            PROJECT_ROOT / "docs" / "user-guide" / "windows-ui.md",
         ]
 
         self.assertIn("Copyright (c) 2026 wkguoo", license_text)
@@ -311,8 +312,11 @@ class SkillPackagingTests(unittest.TestCase):
                     self.assertNotIn(phrase, text)
 
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        english_guide = (
+            PROJECT_ROOT / "docs" / "user-guide" / "en.md"
+        ).read_text(encoding="utf-8")
         self.assertIn("THIRD_PARTY_NOTICES.md", readme)
-        self.assertIn("does not provide database, university, publisher", readme)
+        self.assertIn("does not provide database, university, publisher", english_guide)
 
     def test_github_actions_windows_tests_workflow_exists(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "tests.yml"
@@ -328,8 +332,8 @@ class SkillPackagingTests(unittest.TestCase):
     def test_public_copy_avoids_high_risk_access_wording(self) -> None:
         scanned_paths = [
             PROJECT_ROOT / "README.md",
-            PROJECT_ROOT / "WINDOWS_UI_README.md",
-            PROJECT_ROOT / "MANUAL_QA.md",
+            PROJECT_ROOT / "docs" / "user-guide" / "windows-ui.md",
+            PROJECT_ROOT / "docs" / "development" / "manual-qa.md",
             PROJECT_ROOT / "sd_scraper.py",
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
             PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md",
@@ -355,8 +359,8 @@ class SkillPackagingTests(unittest.TestCase):
     def test_public_copy_uses_cautious_oa_wording(self) -> None:
         scanned_paths = [
             PROJECT_ROOT / "README.md",
-            PROJECT_ROOT / "README_zh.md",
-            PROJECT_ROOT / "WINDOWS_UI_README.md",
+            PROJECT_ROOT / "docs" / "user-guide" / "zh.md",
+            PROJECT_ROOT / "docs" / "user-guide" / "windows-ui.md",
             PROJECT_ROOT / "THIRD_PARTY_NOTICES.md",
             PROJECT_ROOT / "paper_scraper_ui.py",
             PROJECT_ROOT / "paper_skill.py",
@@ -415,7 +419,7 @@ class SkillPackagingTests(unittest.TestCase):
     def test_beginner_docs_preflight_before_download_not_dry_run(self) -> None:
         beginner_docs = [
             PROJECT_ROOT / "README.md",
-            PROJECT_ROOT / "README_zh.md",
+            PROJECT_ROOT / "docs" / "user-guide" / "zh.md",
             PROJECT_ROOT / "docs" / "sciencedirect_skill_beginner_guide.md",
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
             PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md",
@@ -446,16 +450,24 @@ class SkillPackagingTests(unittest.TestCase):
         """P0: product docs must funnel users to paper_batch, not legacy CLIs."""
 
         readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
-        readme_zh = (PROJECT_ROOT / "README_zh.md").read_text(encoding="utf-8")
-        ui_readme = (PROJECT_ROOT / "WINDOWS_UI_README.md").read_text(encoding="utf-8")
+        english_guide = (
+            PROJECT_ROOT / "docs" / "user-guide" / "en.md"
+        ).read_text(encoding="utf-8")
+        readme_zh = (
+            PROJECT_ROOT / "docs" / "user-guide" / "zh.md"
+        ).read_text(encoding="utf-8")
+        ui_readme = (
+            PROJECT_ROOT / "docs" / "user-guide" / "windows-ui.md"
+        ).read_text(encoding="utf-8")
         skill = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(encoding="utf-8")
         agents = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
         ui_source = (PROJECT_ROOT / "paper_scraper_ui.py").read_text(encoding="utf-8")
 
         for text, path_name in (
             (readme, "README.md"),
-            (readme_zh, "README_zh.md"),
-            (ui_readme, "WINDOWS_UI_README.md"),
+            (english_guide, "docs/user-guide/en.md"),
+            (readme_zh, "docs/user-guide/zh.md"),
+            (ui_readme, "docs/user-guide/windows-ui.md"),
             (skill, "skills/paper-download/SKILL.md"),
             (agents, "AGENTS.md"),
         ):
@@ -466,8 +478,9 @@ class SkillPackagingTests(unittest.TestCase):
                     r"(?i)(recommended entry|推荐入口|default product entry|默认入口|User-facing default|single entry point)",
                 )
 
-        self.assertIn("Recommended entry points", readme)
-        self.assertIn("Compatibility / advanced entry points", readme)
+        self.assertIn("推荐入口", readme)
+        self.assertIn("Recommended entry points", english_guide)
+        self.assertIn("Compatibility / advanced entry points", english_guide)
         self.assertIn("推荐入口（新任务只用这些）", readme_zh)
         self.assertIn("兼容 / 高级入口", readme_zh)
         self.assertIn("统一批次（推荐）", ui_readme)
@@ -508,8 +521,11 @@ class SkillPackagingTests(unittest.TestCase):
             'call :copy_required "THIRD_PARTY_NOTICES.md" "%PACKAGE_DIR%\\"',
             'call :copy_optional "如何导出机构Cookie.md" "%PACKAGE_DIR%\\"',
             'call :copy_required "README.md" "%PACKAGE_DIR%\\"',
-            'call :copy_required "README_zh.md" "%PACKAGE_DIR%\\"',
-            'call :copy_required "MANUAL_QA.md" "%PACKAGE_DIR%\\"',
+            'call :copy_required "docs\\user-guide\\en.md" "%PACKAGE_DIR%\\docs\\user-guide\\"',
+            'call :copy_required "docs\\user-guide\\zh.md" "%PACKAGE_DIR%\\docs\\user-guide\\"',
+            'call :copy_required "docs\\user-guide\\windows-ui.md" "%PACKAGE_DIR%\\docs\\user-guide\\"',
+            'call :copy_required "docs\\development\\manual-qa.md" "%PACKAGE_DIR%\\docs\\development\\"',
+            'call :copy_required ".github\\SECURITY.md" "%PACKAGE_DIR%\\.github\\"',
             'call :copy_required "install_codex_skills.ps1" "%PACKAGE_DIR%\\"',
             'call :copy_required "docs\\sciencedirect_skill_beginner_guide.md" "%PACKAGE_DIR%\\docs\\"',
             'call :copy_required "docs\\zotero_bridge_beginner_guide.md" "%PACKAGE_DIR%\\docs\\"',
@@ -565,7 +581,9 @@ class SkillPackagingTests(unittest.TestCase):
 
     @staticmethod
     def _package_script_text() -> str:
-        return (PROJECT_ROOT / "make_windows_ui_package.bat").read_text(encoding="utf-8")
+        return (
+            PROJECT_ROOT / "scripts" / "build" / "make_windows_ui_package.bat"
+        ).read_text(encoding="utf-8")
 
     @staticmethod
     def _frontmatter(text: str) -> dict[str, str]:

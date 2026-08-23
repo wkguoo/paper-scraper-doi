@@ -1,59 +1,51 @@
 # CHANGELOG
 
-## 2026-08-22 23:11（Asia/Shanghai）— ACTA 全量论文下载
+## 2026-08-22 23:44（Asia/Shanghai）— 新增 DOI 元数据并发预检
 
-- **任务目标：** 从 `D:\桌面\文献下载 - 副本\1-1\doi_summary下载用已去重.md` 读取 1789 个唯一 DOI，使用统一批次流程下载论文及补充材料到 `D:\桌面\文献下载\ACTA`。
-- **新增、修改或删除的文件：** 新建本变更记录；项目代码、配置和原始输入未修改；未删除文件。
-- **具体修改内容：** 启动前确认输入包含 1789 个唯一 DOI，且全部为 `10.1016/*`；目标目录为空；使用 `paper_batch.py start` 的固定批次、DOI 预检、Elsevier API 优先、机构访问、限时 OA 与自动 Zotero 兜底流程。
-- **修改原因：** 按项目规范为每个项目维护独立、可追溯的任务记录，并确保下载任务可中断续跑。
-- **生成的输出文件：** 执行中；预计生成 `D:\桌面\文献下载\ACTA\结果\`、`reports\`、`working\` 与内部 `pdfs\`。任务结束后追加实际结果。
-- **如何检查是否成功：** 对照 `结果\下载清单.csv`、`reports\final_manifest.csv`、`reports\failed.csv` 和 `reports\run_summary.txt`；校验成功 PDF 的文件头和命名规则。
-- **注意事项或潜在风险：** D 盘启动时剩余约 35.41 GB；低于 5 GB 时安全中止并保留批次状态。不会修改源 Markdown、自动打包或上传 Git，也不会绕过出版商访问控制。
+- **任务目标：** 提供只核验和补全 DOI 元数据、不下载 PDF 的独立命令行流程，为后续统一批次下载生成结构化输入。
+- **新增、修改或删除的文件：** 新增 `preflight_doi_metadata.py`、`tests/test_preflight_doi_metadata.py` 以及 `processed_data/` 下的元数据复核规则文件；追加本变更记录；未删除文件，未修改原始输入。
+- **具体修改内容：** 按项目约定解析 Markdown DOI 表格，并发请求 Crossref 核验 DOI、补全规范题名、作者、期刊和年份；支持原子写入断点文件，输出保留源字段、HTTP 状态、题名相似度和预检原因。
+- **修改原因：** 通用 Markdown intake 可能把多列表格内容误识别为混杂题名，且项目原先缺少“联网元数据预检但不下载”的独立 CLI。
+- **生成的输出文件：** 在用户指定的输出目录生成预检 CSV 和可续跑的 `.partial.csv` 断点文件；本流程不生成 PDF。
+- **如何检查是否成功：** 核对输出中的 `doi`、`title`、`authors`、`journal` 和 `year` 字段，确认文件使用 UTF-8-SIG 且题名无 HTML 或表格分隔符污染；运行 `python -m unittest tests.test_preflight_doi_metadata -v`、`python -m py_compile preflight_doi_metadata.py` 和 `git diff --check`。
+- **注意事项或潜在风险：** Crossref 返回的元数据可能不完整或与输入题名存在差异；此类记录必须保留明确的复核状态，不能据此编造或删除文献条目。
 
-### 2026-08-22 23:21 暂停记录
+## 2026-08-22 23:50（Asia/Shanghai）— 新增统一批次 API-only 模式
 
-- **执行结果：** 用户要求暂停后，已向唯一下载会话发送 `Ctrl+C` 并确认无残留 Python 下载进程。
-- **已生成文件：** `D:\桌面\文献下载\ACTA` 下已保留 `batch_state.json`、`working\`、`reports\sciencedirect\` 及 79 个阶段 PDF；尚未完成最终发布，因此 `结果\下载清单.csv` 和最终清单不能视为完成状态。
-- **流程调整：** 为提速曾在用户提出“尽量提速”后改用 `--no-doi-preflight`；有效唯一 DOI 仍为 1789。Elsevier API 成功约 79 篇后，其余 1710 条进入浏览器兜底解析，随后按用户要求暂停。
-- **检查结果：** D 盘剩余约 35.30 GB；下载进程数为 0；原始 Markdown 未修改；未自动打包、未上传 Git。
-- **注意事项：** 部分 Markdown 表格字段在内部 intake 中被识别为混杂题名。继续任务前应先确定结构化输入/元数据校正方案，并按 DOI 复核最终交付命名；不得把当前内部阶段文件误报为最终成果。
-
-## 2026-08-22 23:44（Asia/Shanghai）— ACTA 全量 DOI 元数据预检
-
-- **任务目标：** 暂不下载 PDF；对源 Markdown 中全部 1789 个 DOI 做联网元数据预检，生成结构化、可供后续 API 下载使用的文件。
-- **新增、修改或删除的文件：** 新增 `preflight_doi_metadata.py`、`tests/test_preflight_doi_metadata.py`、`processed_data/ACTA_preflight_review_overrides.csv`；追加本变更记录；未删除文件，未修改原始 Markdown。
-- **具体修改内容：** 按源表实际稳定的 15 字段解析 Markdown（表头额外声明但数据缺失的 `Notes` 不参与定位）；使用最多 4 个并发 Crossref 请求核验 DOI并补全规范题名、作者、期刊和年份；每 25 条原子写入断点；输出保留源字段、HTTP 状态、题名相似度和预检原因。主智能体与两个 Luna 子智能体分别复核源表结构、项目预检路径和两条作者字段缺失记录。
-- **修改原因：** 现有通用 Markdown intake 会把部分多列表格行识别成混杂题名，且项目没有“联网元数据预检但不下载”的独立 CLI；新增最小脚本以保证后续 API 输入规范、可追溯、可续跑。
-- **生成的输出文件：** `D:\桌面\文献下载\ACTA\预检\ACTA_DOI预检完成.csv`（自动版）、`ACTA_DOI预检完成_复核.csv`（初次复核版）、`ACTA_DOI预检完成_最终复核.csv`（最终使用版）及 `.partial.csv` 断点文件。原先暂停的 79 个阶段 PDF 保持不变。
-- **如何检查是否成功：** 最终使用版共 1789 行、1789 个唯一 DOI，与源表集合及顺序完全一致；`doi/title/authors/journal/year` 均无空值；UTF-8-SIG；无 HTML 标签或 `|` 题名污染；项目 `load_tabular_records()` 可读取 1789 条。离线测试 `python -m unittest tests.test_preflight_doi_metadata -v` 通过 2/2，`py_compile` 与 `git diff --check` 通过。
-- **预检状态：** `verified_crossref=1787`；`verified_publisher_title=1`；`verified_publisher_title_metadata_uncertain=1`。后两条的 Crossref/OpenAlex `creator` 为空，作者由 Elsevier FULL XML 官方题名补全；其中 DOI `10.1016/0036-9748(74)90036-2` 页码为 `xxx`，且与另一 Acta DOI 同题同作者，记录性质保留不确定性，但 DOI 本身有效且不删除。
-- **注意事项或潜在风险：** 本次只查询元数据，未恢复论文下载、未启动浏览器/Zotero、未修改或删除已有批次文件。后续若要求“API-only”，当前统一下载流程仍会在 API 失败后自动进入浏览器/OA/Zotero，需要在下一任务中显式设计并验证 API-only 门禁；不得直接用现有默认流程声称只走 API。
-
-## 2026-08-22 23:50（Asia/Shanghai）— ACTA API-only 下载启动
-
-- **任务目标：** 直接使用预检完成文件中的 1789 个 DOI 恢复下载，只允许 Elsevier API，不进入浏览器、机构网页、OA 或 Zotero 兜底。
+- **任务目标：** 为统一批次增加只使用 Elsevier API 的下载模式，禁止进入浏览器、机构网页、OA 或 Zotero 兜底流程。
 - **新增、修改或删除的文件：** 修改 `paper_batch.py`、`sd_institutional_skill.py`、`paper_automation/batch_stages.py`、`paper_automation/batch_workflow.py`、`paper_automation/failure_routing.py`；追加本变更记录；未删除文件，未修改原始 Markdown 或预检 CSV。
-- **具体修改内容：** 为统一批次新增 `--api-only` 门禁并保存到批次状态；API-only 时 Elsevier 阶段显式禁用浏览器兜底，批次阶段跳过非 Elsevier adapter、OA 恢复和 Zotero，且不生成待人工浏览器/Zotero 下载队列；保留 API 限流和熔断原因以便固定批次后续重试。
-- **修改原因：** 原默认流程在 API 失败后会自动进入多级兜底，不符合本次“API-only”约束。
-- **运行命令：** `paper_batch.py start --input "D:\桌面\文献下载\ACTA\预检\ACTA_DOI预检完成_最终复核.csv" --out "D:\桌面\文献下载\ACTA" --run-name "API下载" --api-only --no-doi-preflight --download-supplements --no-auto-zotero`。
-- **生成的输出文件：** 固定批次目录 `D:\桌面\文献下载\ACTA\API下载`；下载进行中，PDF 先写入批次阶段目录，完成后统一发布到 `结果\pdf` 并生成清单和报告。
-- **如何检查是否成功：** 离线语法检查通过；`tests.test_elsevier_api` 与 `tests.test_batch_optimizations` 共 39 项测试全部通过。运行中核对 API PDF 数量、文件头、最终清单、失败原因以及空的浏览器/Zotero 队列。
-- **注意事项或潜在风险：** API 限流或无权限条目会如实保留为失败，不使用其他来源补齐；D 盘低于 5 GB 时应安全中止。未自动打包、未上传 Git。
+- **具体修改内容：** 新增 `--api-only` 参数并将其保存到批次状态；启用后禁用浏览器兜底，跳过非 Elsevier adapter、OA 恢复和 Zotero 阶段，不生成浏览器或 Zotero 待处理队列，同时保留 API 限流、权限和熔断失败原因以支持后续重试。
+- **修改原因：** 默认统一批次会在 API 失败后进入多级兜底，无法满足严格限制数据来源的批次需求。
+- **生成的输出文件：** 成功下载的文件仍按统一批次规则发布到 `结果/pdf/`，并生成下载清单和审计报告；失败记录保留明确的 `api_only_*` 原因。
+- **如何检查是否成功：** 运行语法检查以及 `tests.test_elsevier_api`、`tests.test_batch_optimizations`；确认 API-only 批次不会启动浏览器、OA 或 Zotero 阶段，且待处理队列为空。
+- **注意事项或潜在风险：** API 限流、无权限、资源不存在或响应不是有效 PDF 时会如实保留失败，不会自动使用其他来源补齐。
 
-### 2026-08-23 03:20 完成与异常恢复记录
+## 2026-08-23 20:05（Asia/Shanghai）— 规范化项目变更记录
 
-- **执行结果：** 首轮 Elsevier API 下载成功 1778 条、失败 11 条；对全部 11 条失败执行一次 API-only 固定批次重试，恢复 4 条瞬时网络/504 失败。最终为 1789 条输入、1782 条成功、7 条失败。
-- **突发情况及处理：** 首轮下载后 `batch_state.json` 已完整记录 1778 成功和 11 失败，但主进程约 15 分钟未进入最终报告阶段。确认下载状态完整且 PDF 已落盘后，使用 `Ctrl+C` 安全终止停滞进程，再运行 `paper_batch.py delivery --run-dir "D:\桌面\文献下载\ACTA\API下载"` 从现有状态生成交付；未重新下载成功项。随后使用 `retry-failed --retry-all-failed --no-auto-zotero` 做一次 API-only 重试。
-- **生成的输出文件：** `D:\桌面\文献下载\ACTA\API下载\结果\pdf\` 共 1782 个 PDF；`结果\补充材料\` 共 405 个文件；`结果\下载清单.csv`、`reports\final_manifest.csv`、`reports\failed.csv` 和 `reports\run_summary.txt` 均已生成。
-- **验收结果：** 下载清单与最终清单均为 1789 条；成功 1782、失败 7；1782 个交付 PDF 全部具有有效 `%PDF-` 文件头，且文件名全部符合 `年份-第一作者姓-题名.pdf`，无 `Unknown` 或任务编号占位名；Zotero 队列为 0。
-- **剩余失败：** 5 条 Elsevier API 持续返回 HTTP 404；2 条持续返回 HTML 而非 PDF，均保留精确 `api_only_*` 原因。按用户限定未转浏览器、OA、机构网页或 Zotero。
-- **磁盘与风险：** 完成后 D 盘剩余约 21.30 GB，高于 5 GB 中止阈值。未修改源 Markdown/预检 CSV，未删除下载内容，未自动打包、未上传 Git。
+- **任务目标：** 清理项目级变更记录中的个人环境信息和与仓库代码变更无关的外部批次运行细节。
+- **新增、修改或删除的文件：** 仅修改 `CHANGELOG.md`；未新增或删除文件，未修改项目代码、原始输入和外部批次结果。
+- **具体修改内容：** 删除本机绝对路径、外部数据集名称、批次数量与下载结果、本机资源状态、进程操作过程和内部协作信息；将历史内容精简为 DOI 元数据并发预检与 API-only 模式两项可验证的项目变更。
+- **修改原因：** 项目级日志应只记录仓库功能、代码、测试、文档和配置变化，不应暴露个人环境或混入外部任务的运行日志。
+- **生成的输出文件：** 更新后的 `CHANGELOG.md`。
+- **如何检查是否成功：** 全文检查不存在盘符绝对路径、身份信息、凭据、个人环境状态或内部协作信息；确认剩余记录均能对应到项目文件或公共命令行行为，并运行 `git diff --check`。
+- **注意事项或潜在风险：** 本次仅清理项目日志，不移动或删除任何外部批次文件；批次级运行证据继续由对应运行目录中的状态和报告文件保存；未运行代码测试，未重新打包。
 
-### 2026-08-23 08:59 第二次失败项 API-only 重试
+## 2026-08-23 20:13（Asia/Shanghai）— 清理旧上游公开归属
 
-- **任务目标：** 按用户要求，对剩余 7 条失败 DOI 再尝试一次 Elsevier API 下载。
-- **执行方式：** 在固定批次 `D:\桌面\文献下载\ACTA\API下载` 上运行 `paper_batch.py retry-failed --retry-all-failed --no-auto-zotero`；沿用批次保存的 `api_only` 门禁，不启用浏览器、OA 或 Zotero。
-- **执行结果：** 7 条均未恢复；最终统计保持 1789 条输入、1782 条成功、7 条失败、1782 个交付 PDF。
-- **失败分类：** 5 条持续返回 `api_only_not_found:http_404`；2 条持续返回 `api_only_invalid_pdf:article_response_html`。失败原因与上次一致。
-- **检查方法：** 重新读取 `结果\下载清单.csv` 并核对 `结果\pdf` 实体数量；下载清单 1789 行、成功 1782、失败 7、PDF 1782。
-- **注意事项：** D 盘剩余约 21.22 GB；没有覆盖原始输入、没有删除文件、没有自动打包或上传 Git。
+- **任务目标：** 将当前项目的公开许可证和产品说明统一为 `wkguoo` 身份，同时为仍保留的第三方兼容代码集中保存最低限度的 MIT 许可声明。
+- **新增、修改或删除的文件：** 修改 `LICENSE`、`README.md`、`README_zh.md`、`WINDOWS_UI_README.md`、`make_windows_ui_package.bat` 和 `tests/test_skills_packaging.py`；新增 `THIRD_PARTY_NOTICES.md`；删除旧 `NOTICE`；追加本变更记录。
+- **具体修改内容：** 根许可证改为 `Copyright (c) 2026 wkguoo`；三份公开说明删除旧来源定位并增加当前项目许可证入口；第三方来源、版权和完整 MIT 文本集中迁入第三方许可文件；Windows 发布清单与离线测试同步采用新文件名，并增加公开文档无旧归属残留的断言。
+- **修改原因：** 项目功能与定位已经独立，旧公开文案会误导项目身份；仍继承的兼容代码需要继续随源码及发布包保留原许可文本。
+- **生成的输出文件：** 新增 `THIRD_PARTY_NOTICES.md`；未运行打包脚本，未生成或更新 `dist/`。
+- **如何检查是否成功：** 排除第三方许可文件后的全仓残留扫描无命中；`tests.test_skills_packaging` 26 项全部通过；项目规定的 `compileall` 通过；完整离线测试 458 项通过、2 项因 Windows 符号链接权限跳过；最终运行 `git diff --check`。
+- **注意事项或潜在风险：** 本次未重写继承代码，因此第三方 MIT 声明不能删除；Git 历史、既有发布版本与附件均未修改；未自动打包、提交、推送或发布。
+
+## 2026-08-23 20:36（Asia/Shanghai）— 精简 GitHub 首页并重组公开文档
+
+- **任务目标：** 执行仓库首页优化的 P0/P1 阶段，减少根目录公开文件数量，让新用户先看到统一批次入口，同时保留完整中英文说明、人工 QA、安全策略和构建能力。
+- **新增、修改或删除的文件：** 重写根 `README.md`；将原英文和中文长说明分别迁移为 `docs/user-guide/en.md`、`docs/user-guide/zh.md`；将 `WINDOWS_UI_README.md`、`MANUAL_QA.md`、`SECURITY.md` 分别迁移为 `docs/user-guide/windows-ui.md`、`docs/development/manual-qa.md`、`.github/SECURITY.md`；将两个构建脚本迁移到 `scripts/build/`；同步修改 `.gitignore`、`AGENTS.md`、`docs/zotero_bridge_beginner_guide.md`、`zotero_bridge_plugin/README.md` 及相关测试。
+- **具体修改内容：** 根 README 改为中文优先的精简产品首页，集中展示 Latest Release、唯一推荐入口、快速开始、默认流程、交付目录和文档导航；完整说明保留在分类目录中；构建脚本从新位置自动解析项目根目录，`.gitignore` 显式保留 `scripts/build/` 中的源码脚本，Windows 源码包继续包含中英文指南、安全策略和人工 QA；测试中的路径与首页断言同步更新。
+- **修改原因：** 原仓库根目录同时展示用户文档、开发文档、安全策略和构建脚本，首页层级不清晰；通过分类收纳减少视觉噪声，同时避免直接移动当前高度耦合的 Python 入口和兼容模块。
+- **生成的输出文件：** 未生成运行结果或发布包；仅调整源码仓库内的文档、脚本位置与测试。
+- **如何检查是否成功：** 项目规定的 `compileall` 通过；完整离线测试 458 项通过、2 项因 Windows 符号链接权限跳过；另有文档与构建路径专项测试 39 项通过；最终运行 `git diff --check` 并检查根目录文件清单。
+- **注意事项或潜在风险：** 旧的构建命令需要改用 `scripts/build/` 路径；本次未自动执行打包、提交或推送。GitHub Description、Website 和 Topics 因当前环境缺少可用的 `gh`/Token，且已登录浏览器的页面控件读取超时，尚未修改远程设置。

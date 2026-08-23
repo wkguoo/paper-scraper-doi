@@ -1,8 +1,8 @@
-# 中文说明
+# 论文下载助手：完整中文指南
 
-[English](README.md) | 中文说明
+[项目首页](../../README.md) | [English](en.md) | 中文完整指南
 
-# 论文下载助手：统一批量下载与 Zotero 回退
+## 统一批量下载与 Zotero 回退
 
 这是一个面向 Windows 的论文下载辅助工具。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。它可以配合 Codex Skills、图形界面或命令行，把 DOI 表格、AI 推荐文献列表、复制来的论文文本整理成可检查的报告，并下载 PDF。
 
@@ -220,7 +220,7 @@ API 成功时，程序不会创建浏览器下载器，也不会读取 Cookie。
 
 桥接队列固定在 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。多个分块仍是 one confirmation per batch。
 
-输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`。用户交付只看 `结果\`，其顶层固定为输入清单、`下载清单.csv`、`pdf\` 和 `md\`；实际下载到补充材料时才增加 `补充材料\`。批次根目录下的 `pdfs\`、`reports\`、`working\` 只用于缓存、续跑、失败恢复和审计。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。Zotero 桥接跟随**当前打开的实例**（不固定测试配置；隔离验收可用 `Zotero test` / Zotero test profile）。请在要用的配置中安装插件。详细步骤见 [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)。
+输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`。用户交付只看 `结果\`，其顶层固定为输入清单、`下载清单.csv`、`pdf\` 和 `md\`；实际下载到补充材料时才增加 `补充材料\`。批次根目录下的 `pdfs\`、`reports\`、`working\` 只用于缓存、续跑、失败恢复和审计。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。Zotero 桥接跟随**当前打开的实例**（不固定测试配置；隔离验收可用 `Zotero test` / Zotero test profile）。请在要用的配置中安装插件。详细步骤见 [Zotero 9 本地桥接新手指南](../zotero_bridge_beginner_guide.md)。
 
 统一批次的用户交付结构如下：
 
@@ -245,7 +245,7 @@ start_paper_scraper_ui.bat
 
 首次启动会自动创建 `.venv` 并安装依赖。界面只保留「统一批次（推荐）」与「运行日志」两个页签。邮箱与 Cookie JSON 不在 GUI 中填写；高级用户仍可通过 `paper_batch.py`、`sd_scraper.py` 等命令行入口使用相应参数和兼容能力。
 
-机构 PDF 可用 Cookie Editor 导出的 `cookies.json`。更详细说明见 [WINDOWS_UI_README.md](WINDOWS_UI_README.md)。
+机构 PDF 可用 Cookie Editor 导出的 `cookies.json`。更详细说明见 [Windows UI 使用说明](windows-ui.md)。
 
 ## 输入文件怎么准备
 
@@ -350,7 +350,7 @@ D:\Literature\OA\
 
 ScienceDirect 机构下载依赖你的机构权限。最稳妥的新手方式是用 Cookie Editor 从已经登录的 `sciencedirect.com` 导出 `cookies.json`，然后在 UI 或 CLI 里选择它。
 
-详细步骤见 [如何导出机构Cookie.md](如何导出机构Cookie.md)。
+详细步骤见发行包中可选的 `如何导出机构Cookie.md`。
 
 必须注意：
 
@@ -368,7 +368,7 @@ Remove-Item -Force ".\results\_auth\sciencedirect_cookies.json"
 
 ## 公开发布和打包注意事项
 
-如果你 fork 或二次发布本项目，请只发布 Git 仓库中被跟踪的源码，或使用 `make_windows_ui_package.bat` 生成的源码包。不要直接压缩自己的整个工作区，因为本地目录里可能包含机构 Cookie、PDF、运行报告、虚拟环境或浏览器缓存。
+如果你 fork 或二次发布本项目，请只发布 Git 仓库中被跟踪的源码，或使用 `scripts/build/make_windows_ui_package.bat` 生成的源码包。不要直接压缩自己的整个工作区，因为本地目录里可能包含机构 Cookie、PDF、运行报告、虚拟环境或浏览器缓存。
 
 发布前建议检查：
 
@@ -388,8 +388,8 @@ git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-真实机构登录、PDF 下载、CAPTCHA 和补充材料下载属于人工 QA，见 [MANUAL_QA.md](MANUAL_QA.md)。
+真实机构登录、PDF 下载、CAPTCHA 和补充材料下载属于人工 QA，见 [人工 QA 清单](../development/manual-qa.md)。
 
 ## 许可证
 
-本项目采用 [MIT License](LICENSE)，版权归 `wkguoo` 所有。仓库所含第三方代码的许可声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本项目采用 [MIT License](../../LICENSE)，版权归 `wkguoo` 所有。仓库所含第三方代码的许可声明见 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。

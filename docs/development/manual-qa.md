@@ -208,7 +208,7 @@ Expected:
 ## 10. Windows Package Verification
 
 ```powershell
-.\make_windows_ui_package.bat
+.\scripts\build\make_windows_ui_package.bat
 ```
 
 Expected:
@@ -218,7 +218,7 @@ Expected:
 - The package contains `student_handoff.py`.
 - The package contains `skills\sciencedirect-doi-download\references\beginner-workflow.md`.
 - The package contains `skills\sciencedirect-doi-download\references\failure-reasons.md`.
-- `docs\sciencedirect_skill_beginner_guide.md`, `README.md`, `README_zh.md`, `WINDOWS_UI_README.md`, and `MANUAL_QA.md` are included.
+- `README.md`, `docs\user-guide\en.md`, `docs\user-guide\zh.md`, `docs\user-guide\windows-ui.md`, and `docs\development\manual-qa.md` are included.
 
 ## 11. Unified Batch With Zotero Fallback
 
