@@ -310,7 +310,30 @@ def main(argv: list[str] | None = None) -> int:
             email=args.email,
             download_supplements=download_supplements,
         )
-        if api_phase.fallback_rows:
+        if api_phase.fallback_rows and args.api_only:
+            attempt_by_doi = {_doi_key(item.doi): item for item in api_phase.attempts}
+            browser_failures = []
+            for row in api_phase.fallback_rows:
+                attempt = attempt_by_doi.get(_doi_key(row.doi))
+                status = attempt.status if attempt is not None else "missing_api_attempt"
+                detail = attempt.reason if attempt is not None else "missing_api_attempt"
+                browser_failures.append(
+                    {
+                        "row_number": row.row_number,
+                        "doi": row.doi,
+                        "reason": f"api_only_{status}:{detail or status}",
+                    }
+                )
+                if attempt is not None:
+                    attempt.browser_fallback = False
+                    attempt.reason = f"api_only_no_fallback:{detail or status}"
+            cookie_message = "API-only：未读取 Cookie，未创建或启动浏览器。"
+            print(
+                f"[API-only] {len(api_phase.fallback_rows)} 条 API 未成功；"
+                "已记录失败，禁止浏览器兜底。",
+                flush=True,
+            )
+        elif api_phase.fallback_rows:
             browser_input_path = write_merged_input(
                 api_phase.fallback_rows,
                 run_dir / "elsevier_api_browser_fallback.csv",
@@ -514,6 +537,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--choose-out", action="store_true", help="Open a Windows folder picker for the output root when available")
     parser.add_argument("--dry-run", action="store_true", help="Resolve DOI metadata but do not download PDFs")
     parser.add_argument("--no-download-pdfs", action="store_true", help="Skip PDF downloads after DOI resolution")
+    parser.add_argument(
+        "--api-only",
+        action="store_true",
+        help="Use Elsevier API only; never create a browser fallback",
+    )
     parser.add_argument(
         "--download-supplements",
         action="store_true",

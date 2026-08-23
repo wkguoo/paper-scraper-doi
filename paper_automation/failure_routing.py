@@ -72,6 +72,8 @@ RETRY_REASON_TOKENS = (
     "network_pdf_not_captured",
     "browser_debug_port",
     "circuit_breaker",
+    "rate_limited",
+    "api_circuit_open",
 )
 
 RETRY_EXCLUDED_STATUSES = frozenset(

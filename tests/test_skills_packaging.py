@@ -115,6 +115,24 @@ class SkillPackagingTests(unittest.TestCase):
             with self.subTest(required=required):
                 self.assertIn(required, section)
 
+    def test_paper_download_skill_uses_parallel_crossref_preflight(self) -> None:
+        text = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        start = text.index("## Parallel Crossref DOI preflight (default metadata check)")
+        end = text.index("## Elsevier API-first ScienceDirect route", start)
+        section = text[start:end]
+        for required in (
+            "preflight_doi_metadata.py",
+            "--workers",
+            "verified_crossref",
+            "does **not** download PDFs",
+            "--no-doi-preflight",
+            "paper_automation.doi_preflight",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, section)
+
     def test_paper_download_skill_uses_zotero_bridge(self) -> None:
         skill_text = (
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md"

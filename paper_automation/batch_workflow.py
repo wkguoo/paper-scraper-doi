@@ -1304,7 +1304,17 @@ def _pending_rows(rows: list[dict], *, manual_retry_used: bool) -> tuple[list[di
     return manual_rows, fallback_rows
 
 
-def _write_pending_files(paths: BatchPaths, rows: list[dict], *, manual_retry_used: bool = False) -> None:
+def _write_pending_files(
+    paths: BatchPaths,
+    rows: list[dict],
+    *,
+    manual_retry_used: bool = False,
+    api_only: bool = False,
+) -> None:
+    if api_only:
+        _write_csv_rows(paths.manual_retry, [])
+        _write_csv_rows(paths.zotero_fallback, [])
+        return
     manual_rows, fallback_rows = _pending_rows(rows, manual_retry_used=manual_retry_used)
     _write_csv_rows(paths.manual_retry, manual_rows)
     _write_csv_rows(paths.zotero_fallback, fallback_rows)
@@ -1333,6 +1343,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "circuit_breaker_threshold",
         "auto_oa_recovery",
         "iucr_short_try",
+        "api_only",
     }
     if not isinstance(data, dict):
         raise ValueError("invalid_batch_options")
@@ -1348,6 +1359,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
     payload.setdefault("circuit_breaker_threshold", 3)
     payload.setdefault("auto_oa_recovery", True)
     payload.setdefault("iucr_short_try", True)
+    payload.setdefault("api_only", False)
     if set(payload) != expected_fields:
         # Ignore unknown keys from future versions; require all expected after defaults.
         payload = {key: payload[key] for key in expected_fields if key in payload}
@@ -1368,6 +1380,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
                 "circuit_breaker_threshold": 3,
                 "auto_oa_recovery": True,
                 "iucr_short_try": True,
+                "api_only": False,
             }[key])
         if set(payload) != expected_fields:
             raise ValueError("invalid_batch_options")
@@ -1382,6 +1395,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "resolve_title_metadata",
         "auto_oa_recovery",
         "iucr_short_try",
+        "api_only",
     ):
         if type(payload[flag]) is not bool:
             raise ValueError("invalid_batch_options")
@@ -1440,6 +1454,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "circuit_breaker_threshold": circuit_breaker_threshold,
         "auto_oa_recovery": payload["auto_oa_recovery"],
         "iucr_short_try": payload["iucr_short_try"],
+        "api_only": payload["api_only"],
     }
 
 
@@ -2321,10 +2336,12 @@ def _write_latest_state_outputs(
     latest = load_batch_state(paths.root)
     _validate_state(latest, expected_run_dir=paths.root)
     if pending_manual_retry_used is not None:
+        latest_options = _validate_options_data(latest.get("options"))
         _write_pending_files(
             paths,
             latest["rows"],
             manual_retry_used=pending_manual_retry_used,
+            api_only=bool(latest_options.get("api_only", False)),
         )
     write_final_reports(paths, latest["rows"])
     state.clear()
@@ -2413,10 +2430,14 @@ def finalize_batch(
 
 def _result_from_state(paths: BatchPaths, state: dict) -> BatchRunResult:
     rows = state["rows"]
-    manual_rows, fallback_rows = _pending_rows(
-        rows,
-        manual_retry_used=bool(state.get("manual_retry_used")),
-    )
+    options = _validate_options_data(state.get("options"))
+    if bool(options.get("api_only", False)):
+        manual_rows, fallback_rows = [], []
+    else:
+        manual_rows, fallback_rows = _pending_rows(
+            rows,
+            manual_retry_used=bool(state.get("manual_retry_used")),
+        )
     return BatchRunResult(
         paths=paths,
         total_count=len(rows),
@@ -2501,6 +2522,22 @@ class DefaultStageGateway:
 
         # ---- Phase 2: non-Elsevier (OA for gold / all remaining, then adapters) ----
         non_elsevier_pool = gold_oa + other_rows
+        if bool(getattr(options, "api_only", False)):
+            rejected = [
+                {
+                    "task_id": str(row.get("task_id", "")),
+                    "doi": str(row.get("doi", "")),
+                    "title": str(row.get("title", "")),
+                    "status": "failed",
+                    "file": "",
+                    "reason": "api_only_non_elsevier_doi",
+                    "source": "api_only",
+                }
+                for row in _pending_from(non_elsevier_pool)
+            ]
+            _apply_local(rejected)
+            print("[API-only] 已禁止浏览器、OA、非 Elsevier 机构适配器和 Zotero。", flush=True)
+            return updates
         non_elsevier_pending = _pending_from(non_elsevier_pool)
         if non_elsevier_pending:
             if smart_route:
@@ -2637,7 +2674,10 @@ def run_post_download_ladder(
     get the same failure ladder as a fresh start.
     """
     selected_options = options or _options_from_state(state)
-    if bool(getattr(selected_options, "auto_oa_recovery", True)):
+    api_only = bool(getattr(selected_options, "api_only", False))
+    if api_only:
+        print("[API-only] 跳过 OA 恢复与 Zotero 队列。", flush=True)
+    elif bool(getattr(selected_options, "auto_oa_recovery", True)):
         try:
             from .oa_recovery import run_limited_oa_recovery_on_batch
 

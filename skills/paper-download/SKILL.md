@@ -12,7 +12,8 @@ Recommended entry / default product entry for agents and users: `paper_batch.py`
 
 | User intent | Use | Do not use as primary |
 | --- | --- | --- |
-| New literature list (any publisher mix) | `paper_batch.py start` (DOI preflight + auto Zotero by default) | `paper_skill.py`, `sd_scraper.py`, `sd_scraper_en.py` |
+| DOI metadata preflight only (no PDF) | `preflight_doi_metadata.py` (parallel Crossref) | in-batch `start` DOI preflight (`doi_preflight.py`) |
+| New literature list (any publisher mix) | `paper_batch.py start --no-doi-preflight` after parallel Crossref when the list already has DOIs | `paper_skill.py`, `sd_scraper.py`, `sd_scraper_en.py` |
 | Continue / collect Zotero results | `paper_batch.py zotero --run-dir` | direct Zotero MCP for normal runs |
 | Optional one-shot login/CAPTCHA retry (compat) | `paper_batch.py resume --run-dir` only with `--enable-manual-retry` batches | restart `start` unnecessarily |
 | GUI | UI tab **统一批次（推荐）** | UI “兼容” tabs unless user asks for legacy SD/OA-only |
@@ -67,6 +68,41 @@ usable by the local project, let the external browser fallback run. On Windows
 the fallback order is Google Chrome, Edge Stable/Beta/Dev/Canary, then
 Playwright Chromium. An explicit `--browser-exe` or
 `PAPER_SCRAPER_BROWSER_EXE` override always takes precedence.
+
+## Parallel Crossref DOI preflight (default metadata check)
+
+Do **not** use the in-batch sequential DOI preflight inside `paper_batch.py start`
+(`paper_automation.doi_preflight`) as the primary metadata check. It is too
+slow on large DOI lists.
+
+For a project Markdown DOI table (15 data columns, unique contiguous indexes,
+one DOI per row), run parallel Crossref. It does **not** download PDFs:
+
+```powershell
+.\.venv\Scripts\python.exe preflight_doi_metadata.py --input "<list.md>" --output "<out-dir>\<stem>_预检.csv" --workers 8
+```
+
+- Concurrent Crossref `works/{DOI}` (`--workers` 1–8; use 8 for large lists).
+- Resume from `<output>.partial.csv` if interrupted. Refuses to overwrite an
+  existing `--output`.
+- Statuses: `verified_crossref`, `doi_not_found`, `doi_mismatch`,
+  `metadata_incomplete`, `rate_limited`, `api_error`. Title clash vs the source
+  table is `title_difference_review` on a verified row.
+- Exit `0` if every row is `verified_crossref`, else `2`.
+- First five CSV columns (`doi,title,authors,journal,year`) are download-ready.
+
+If the user only asked to preflight, stop after that CSV (plus optional
+verified / review splits). Do not start a PDF batch.
+
+Then download with `--no-doi-preflight` so `start` does not re-run sequential
+Crossref:
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py start --input "<verified-or-download-ready.csv>" --out "<output-root>" --no-doi-preflight
+```
+
+`--resolve-title-metadata` is a different, title-only path. Do not substitute
+sequential in-batch DOI preflight for this parallel catalog.
 
 ## Elsevier API-first ScienceDirect route
 
@@ -159,17 +195,20 @@ input or any project-generated pending CSV.
    headers and notes are dropped. Use `--resolve-title-metadata` only when the
    user explicitly wants title-only rows.
 
-2. Run the project workflow (default: DOI preflight on; no manual resume;
-   failures with DOI go to Zotero; `start` auto-queues the bridge and waits):
+2. For DOI lists, run `preflight_doi_metadata.py` first (see Parallel Crossref
+   DOI preflight). Then run the project download with **`--no-doi-preflight`**
+   (no manual resume; failures with DOI go to Zotero; `start` auto-queues the
+   bridge and waits):
 
    ```powershell
-   .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
+   .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --no-doi-preflight
    ```
 
    Keep Zotero 9 open with the bridge plugin **0.2.0+** enabled before or during
    `start`. Defaults: auto-Zotero + `--wait-seconds 600`. Use `--no-auto-zotero`
-   only if the user asks to queue later; `--no-doi-preflight` to skip Crossref
-   checks; `--enable-manual-retry` only for the old one-shot login/CAPTCHA path.
+   only if the user asks to queue later; `--enable-manual-retry` only for the
+   old one-shot login/CAPTCHA path. Do not leave in-batch sequential DOI
+   preflight on for large lists.
 
 3. Default batches write empty `manual_retry.csv`. Skip `resume` unless the
    user explicitly started with `--enable-manual-retry` and that file has data
@@ -357,7 +396,8 @@ results\paper_batch_YYYYMMDD_HHMMSS\
 
 ## Single user-facing route
 
-Always start a new literature task with `paper_batch.py start`. Do not expose
+Always start a new PDF download with `paper_batch.py start` (after parallel
+Crossref preflight when the list already has DOIs). Do not expose
 or select `paper_skill.py` or `sd_institutional_skill.py` as standalone user
 routes. They are internal adapters used by the unified batch implementation;
 direct execution would bypass the shared state, failure classification, and
