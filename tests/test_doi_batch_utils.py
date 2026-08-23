@@ -648,6 +648,14 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(summary_data["resolved_count"], 1)
         self.assertEqual(summary_data["pdf_success"], 1)
         self.assertEqual(summary_data["event_path"], str(event_path))
+        for removed_field in (
+            "student_readme_path",
+            "paper_index_path",
+            "paper_index_xlsx_path",
+            "failure_next_steps_path",
+            "library_index_path",
+        ):
+            self.assertNotIn(removed_field, summary_data)
 
     def test_resume_helpers_skip_only_pdf_success_and_merge_failure_rows(self) -> None:
         from doi_batch_utils import (
@@ -845,18 +853,22 @@ class CliBehaviorTests(unittest.TestCase):
             retry_files = list(run_dir.glob("retry_failed_doi_*.csv"))
             summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
             retry_text = retry_files[0].read_text(encoding="utf-8-sig") if retry_files else ""
-            paper_index_exists = Path(summary["paper_index_path"]).exists()
-            paper_index_xlsx_exists = Path(summary["paper_index_xlsx_path"]).exists()
-            failure_next_steps_exists = Path(summary["failure_next_steps_path"]).exists()
+            student_handoff_exists = (run_dir / "00_给研究生查看").exists()
 
         self.assertEqual(len(retry_files), 1)
         self.assertIn("10.1016/j.failed.2024.1", retry_text)
         self.assertNotIn("DOI 为空", retry_text)
         self.assertEqual(summary["retry_input_count"], 1)
         self.assertEqual(summary["retry_input_path"], str(retry_files[0]))
-        self.assertTrue(paper_index_exists)
-        self.assertTrue(paper_index_xlsx_exists)
-        self.assertTrue(failure_next_steps_exists)
+        self.assertFalse(student_handoff_exists)
+        for removed_field in (
+            "student_readme_path",
+            "paper_index_path",
+            "paper_index_xlsx_path",
+            "failure_next_steps_path",
+            "library_index_path",
+        ):
+            self.assertNotIn(removed_field, summary)
 
 
 class UiBehaviorTests(unittest.TestCase):
@@ -956,59 +968,6 @@ class UiBehaviorTests(unittest.TestCase):
         self.assertEqual(batch_args.email, "researcher@example.com")
         self.assertEqual(batch_args.cookies, "cookies.json")
         self.assertEqual(sd_args.cookies, "cookies.json")
-
-    def test_ui_json_summary_captures_student_handoff_paths(self) -> None:
-        from paper_scraper_ui import PaperScraperUI
-
-        with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp)
-            student_dir = out / "00_给研究生查看"
-            student_dir.mkdir()
-            paper_index = student_dir / "paper_index.csv"
-            paper_index.write_text("序号,DOI\n", encoding="utf-8")
-            failure_next = student_dir / "失败项_下一步处理.csv"
-            failure_next.write_text("类别,DOI\n", encoding="utf-8")
-            json_summary = out / "run_summary.json"
-            json_summary.write_text(
-                json.dumps({
-                    "output_dir": str(out),
-                    "total_doi": 1,
-                    "resolved_count": 0,
-                    "resolve_failed_count": 0,
-                    "failure_reasons": {},
-                    "pdf_success": 0,
-                    "pdf_failed": 0,
-                    "pdf_skipped": 1,
-                    "paper_index_path": str(paper_index),
-                    "failure_next_steps_path": str(failure_next),
-                    "student_readme_path": str(student_dir / "README_先看我.txt"),
-                }),
-                encoding="utf-8",
-            )
-
-            app = PaperScraperUI.__new__(PaperScraperUI)
-            app.result_summary_var = _FakeVar("")
-            app.last_failed_report_path = None
-            app.last_pdf_report_path = None
-            app.last_events_path = None
-            app.last_summary_json_path = json_summary
-            app.last_summary_path = None
-            app.last_run_output_dir = None
-            app.open_run_output_button = _FakeButton()
-            app.open_failed_report_button = _FakeButton()
-            app.open_pdf_report_button = _FakeButton()
-            app.open_summary_button = _FakeButton()
-            app.open_student_handoff_button = _FakeButton()
-            app.open_failure_next_steps_button = _FakeButton()
-            app._load_failure_table = lambda: None
-
-            app._refresh_result_summary()
-
-        self.assertEqual(app.last_student_handoff_dir, student_dir)
-        self.assertEqual(app.last_failure_next_steps_path, failure_next)
-        self.assertEqual(app.open_student_handoff_button.options["state"], "normal")
-        self.assertEqual(app.open_failure_next_steps_button.options["state"], "normal")
-        self.assertIn("研究生入口", app.result_summary_var.get())
 
     def test_ui_result_summary_displays_supplement_counts_from_json_and_text(self) -> None:
         from paper_scraper_ui import PaperScraperUI

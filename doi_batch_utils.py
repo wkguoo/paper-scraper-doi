@@ -151,11 +151,6 @@ class RunSummary:
     supplement_report_path: str = ""
     browser_message: str = ""
     download_next_steps: str = ""
-    student_readme_path: str = ""
-    paper_index_path: str = ""
-    paper_index_xlsx_path: str = ""
-    failure_next_steps_path: str = ""
-    library_index_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -647,11 +642,6 @@ def write_run_summary_json(
         "supplement_report_path": summary.supplement_report_path,
         "browser_message": summary.browser_message,
         "download_next_steps": summary.download_next_steps,
-        "student_readme_path": summary.student_readme_path,
-        "paper_index_path": summary.paper_index_path,
-        "paper_index_xlsx_path": summary.paper_index_xlsx_path,
-        "failure_next_steps_path": summary.failure_next_steps_path,
-        "library_index_path": summary.library_index_path,
         "event_path": str(event_path) if event_path else "",
         "written_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -707,14 +697,6 @@ def write_run_summary(summary: RunSummary) -> Path:
         f"- PDF 下载报告: {summary.pdf_report_path or '未生成'}",
         f"- Supplement 下载报告: {summary.supplement_report_path or '未生成'}",
     ])
-    if summary.paper_index_path or summary.student_readme_path:
-        lines.extend([
-            f"- 研究生索引 CSV: {summary.paper_index_path or '未生成'}",
-            f"- 研究生索引 XLSX: {summary.paper_index_xlsx_path or '未生成'}",
-            f"- 研究生说明: {summary.student_readme_path or '未生成'}",
-            f"- 失败下一步表: {summary.failure_next_steps_path or '未生成'}",
-            f"- Library index: {summary.library_index_path or '未生成'}",
-        ])
     if summary.retry_input_path:
         lines.append(f"- 重试输入表: {summary.retry_input_path}")
     if summary.cookie_message:

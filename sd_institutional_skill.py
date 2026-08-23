@@ -45,7 +45,6 @@ from paper_automation.parser import has_extra_bibliographic_signal, is_probable_
 from paper_automation.pdf_validation import is_pdf_bytes, is_valid_pdf
 from sd_scraper import ScienceDirectScraper
 from sd_supplements import SAFE_EXTENSIONS, SupplementCandidate, make_supplement_filename, supplement_status_counts
-from student_handoff import write_student_handoff
 
 
 SUPPORTED_INPUT_EXTENSIONS = {".xlsx", ".xlsm", ".csv", ".tsv", ".txt", ".md", ".markdown"}
@@ -188,13 +187,6 @@ def main(argv: list[str] | None = None) -> int:
     if intake.valid_count == 0:
         failed_path = write_intake_failed_report(intake.all_rows, run_dir / "doi_batch_failed.csv")
         pdf_report_path = write_pdf_download_report([], run_dir)
-        handoff_paths = write_student_handoff(
-            run_dir,
-            intake_preview_path=intake.preview_path,
-            merged_input_path=intake.merged_input_path,
-            failed_path=failed_path,
-            pdf_report_path=pdf_report_path,
-        )
         summary = RunSummary(
             input_path=str(intake.merged_input_path),
             output_dir=str(run_dir),
@@ -210,18 +202,12 @@ def main(argv: list[str] | None = None) -> int:
             cookie_message="",
             beginner_recommendations=build_beginner_recommendations(intake, preflight_only=preflight_only),
             supplement_requested=False,
-            student_readme_path=str(handoff_paths.readme_path),
-            paper_index_path=str(handoff_paths.paper_index_path),
-            paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
-            failure_next_steps_path=str(handoff_paths.failure_next_steps_path),
-            library_index_path=str(handoff_paths.library_index_path),
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary)
         print("[结束] 没有可处理的有效 DOI。", flush=True)
         print(f"- DOI failure report: {failed_path}", flush=True)
         print(f"- PDF report: {pdf_report_path}", flush=True)
-        print(f"- 研究生查看入口: {handoff_paths.student_dir}", flush=True)
         print(f"- Run summary: {summary_path}", flush=True)
         print(f"- Run summary JSON: {summary_json_path}", flush=True)
         return 1
@@ -239,14 +225,6 @@ def main(argv: list[str] | None = None) -> int:
             for row in intake.unique_rows
         ]
         pdf_report_path = write_pdf_download_report(preflight_pdf_records, run_dir)
-        handoff_paths = write_student_handoff(
-            run_dir,
-            pdf_records=preflight_pdf_records,
-            intake_preview_path=intake.preview_path,
-            merged_input_path=intake.merged_input_path,
-            failed_path=failed_path,
-            pdf_report_path=pdf_report_path,
-        )
         summary = RunSummary(
             input_path=str(intake.merged_input_path),
             output_dir=str(run_dir),
@@ -266,11 +244,6 @@ def main(argv: list[str] | None = None) -> int:
                 auto_web_search=args.auto_web_search,
             ),
             supplement_requested=False,
-            student_readme_path=str(handoff_paths.readme_path),
-            paper_index_path=str(handoff_paths.paper_index_path),
-            paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
-            failure_next_steps_path=str(handoff_paths.failure_next_steps_path),
-            library_index_path=str(handoff_paths.library_index_path),
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary)
@@ -279,7 +252,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"- 可进入后续解析的 DOI: {intake.valid_count}", flush=True)
         print(f"- 需复核/排除: {sum(intake_failure_reasons(intake.all_rows).values())}", flush=True)
         print(f"- PDF 明细: {pdf_report_path}", flush=True)
-        print(f"- 研究生查看入口: {handoff_paths.student_dir}", flush=True)
         print(f"- 任务摘要: {summary_path}", flush=True)
         print(f"- JSON 摘要: {summary_json_path}", flush=True)
         return 0
@@ -442,19 +414,6 @@ def main(argv: list[str] | None = None) -> int:
     pdf_report_path = write_pdf_download_report(pdf_records, run_dir)
     if download_supplements and results:
         supplement_report_path = str(write_supplement_download_report(supplement_records, run_dir))
-    handoff_paths = write_student_handoff(
-        run_dir,
-        resolved_records=results,
-        failed_records=failures,
-        pdf_records=pdf_records,
-        supplement_records=supplement_records,
-        intake_preview_path=intake.preview_path,
-        merged_input_path=intake.merged_input_path,
-        resolved_path=resolved_path,
-        failed_path=failed_path,
-        pdf_report_path=pdf_report_path,
-        supplement_report_path=supplement_report_path,
-    )
     summary = RunSummary(
         input_path=str(intake.merged_input_path),
         output_dir=str(run_dir),
@@ -483,11 +442,6 @@ def main(argv: list[str] | None = None) -> int:
         ),
         browser_message=getattr(scraper, "last_browser_message", "") if scraper is not None else "",
         download_next_steps=getattr(scraper, "last_download_next_steps", "") if scraper is not None else "",
-        student_readme_path=str(handoff_paths.readme_path),
-        paper_index_path=str(handoff_paths.paper_index_path),
-        paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
-        failure_next_steps_path=str(handoff_paths.failure_next_steps_path),
-        library_index_path=str(handoff_paths.library_index_path),
     )
     summary_path = write_run_summary(summary)
     summary_json_path = write_run_summary_json(summary)
@@ -506,7 +460,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"- Elsevier API 脱敏审计: {api_attempt_report_path}", flush=True)
     if supplement_report_path:
         print(f"- 补充材料明细: {supplement_report_path}", flush=True)
-    print(f"- 研究生查看入口: {handoff_paths.student_dir}", flush=True)
     print(f"- 任务摘要: {summary_path}", flush=True)
     print(f"- JSON 摘要: {summary_json_path}", flush=True)
     return 0

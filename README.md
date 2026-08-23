@@ -98,19 +98,13 @@ python -m venv .venv
 - [安全策略](.github/SECURITY.md)
 
 <details>
-<summary>开发、测试与构建</summary>
+<summary>开发与测试</summary>
 
 离线检查：
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall paper_batch.py preflight_doi_metadata.py paper_scraper_ui.py sd_scraper.py windows_paths.py sd_institutional_skill.py institutional_paper_skill.py paper_skill.py paper_automation
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-生成 Windows UI 源码包：
-
-```powershell
-.\scripts\build\make_windows_ui_package.bat
 ```
 
 真实机构登录、CAPTCHA、PDF 与补充材料下载只在[人工 QA 清单](docs/development/manual-qa.md)中验证，不进入默认离线测试。

@@ -19,7 +19,6 @@ Expected:
 
 - `doi_intake_preview.csv` is written with `valid`, `needs_review`, `duplicate`, `invalid`, or `empty` rows as appropriate.
 - `run_summary.txt` points to rows that need manual DOI/citation review.
-- `00_给研究生查看\README_先看我.txt`, `paper_index.csv`, `paper_index.xlsx`, and `失败项_下一步处理.csv` are written.
 - No PDF is downloaded.
 - No `supplement_download_report.csv` or `supplements\` directory is created during preflight.
 
@@ -33,7 +32,6 @@ Expected:
 
 - `doi_intake_preview.csv`, `merged_doi_input.csv`, `doi_batch_resolved.xlsx` or a clear failure report are written.
 - `pdf_download_report.csv` marks PDF rows as `not_requested`.
-- `00_给研究生查看\paper_index.csv` and `library_index.csv` are written and point to no fake PDF paths.
 - `--dry-run` is treated as ScienceDirect DOI metadata/PII resolution without PDF download, not as the first-pass workflow for messy beginner input.
 - No browser login window is required.
 
@@ -44,7 +42,6 @@ Open `start_paper_scraper_ui.bat`, paste a messy AI ScienceDirect recommendation
 Expected:
 
 - The UI shows recognized DOI rows and rows needing review before a formal run.
-- The `生成新手预检报告` action writes `00_给研究生查看\` and the result area can open it.
 - `使用预检合并表` fills `merged_doi_input.csv` back into the DOI input for the formal run.
 - No ScienceDirect login window is opened by this local preflight.
 - No PDF files, `supplement_download_report.csv`, or `supplements\` directory are created by the local preflight itself.
@@ -147,7 +144,6 @@ Expected:
   a valid entitled PDF.
 - The user completes institutional login in the browser; no password is pasted into Codex or the terminal.
 - `pdf_download_report.csv` records `success` and the PDF exists under `pdfs\`.
-- `00_给研究生查看\paper_index.xlsx` links to the downloaded PDF by relative path and does not duplicate the PDF.
 - `results\_auth\sciencedirect_cookies.json` may be created and must stay local.
 
 ## 7. ScienceDirect PDF And Supplementary Materials
@@ -164,7 +160,6 @@ Expected:
 - `supplement_download_report.csv` is written.
 - Supplementary files, when found and downloadable, are saved under `supplements\<article-stem>\`.
 - Supplement rows are linked to the article through DOI, PII, `article_file`, and `article_title`.
-- `00_给研究生查看\paper_index.csv/xlsx` summarizes supplement status and relative supplement paths.
 - If no supplementary files are detected, the report records `not_found` rather than creating placeholder files.
 
 Disable supplement downloading for comparison:
@@ -186,7 +181,6 @@ Use one DOI that is not available through the institution or is not an Elsevier/
 Expected:
 
 - The run writes `doi_batch_failed.csv` or a failed row in `pdf_download_report.csv`.
-- `00_给研究生查看\失败项_下一步处理.csv` classifies the row, for example as `非 ScienceDirect`, `无机构权限`, `验证码或限速`, or `可重试 PDF 失败`.
 - The tool does not create a fake PDF success row.
 - The final summary points to the failed report.
 - `elsevier_api_attempts.csv` records `not_entitled` (403) or another safe API
@@ -205,20 +199,6 @@ Expected:
   rows go directly to browser handling rather than consuming more API quota.
 - The user can inspect `pdf_download_report.csv` before retrying.
 
-## 10. Windows Package Verification
-
-```powershell
-.\scripts\build\make_windows_ui_package.bat
-```
-
-Expected:
-
-- The script exits successfully and creates `dist\paper-scraper-ui-windows`.
-- The package contains `sd_supplements.py`.
-- The package contains `student_handoff.py`.
-- The package contains `skills\sciencedirect-doi-download\references\beginner-workflow.md`.
-- The package contains `skills\sciencedirect-doi-download\references\failure-reasons.md`.
-- `README.md`, `docs\user-guide\en.md`, `docs\user-guide\zh.md`, `docs\user-guide\windows-ui.md`, and `docs\development\manual-qa.md` are included.
 
 ## 11. Unified Batch With Zotero Fallback
 

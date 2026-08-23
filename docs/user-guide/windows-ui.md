@@ -110,33 +110,22 @@ doi号
 
 ```text
 results\doi_batch_时间戳\
-├── 00_给研究生查看\
-│   ├── README_先看我.txt
-│   ├── paper_index.csv
-│   ├── paper_index.xlsx
-│   └── 失败项_下一步处理.csv
 ├── doi_batch_resolved.xlsx
 ├── doi_batch_failed.csv
 ├── pdf_download_report.csv
-├── library_index.csv
+├── run_summary.json
 ├── run_summary.txt
 └── pdfs\
 ```
 
-`00_给研究生查看` 是课题组交付入口：`paper_index.csv/xlsx` 汇总正文 PDF、补充材料、状态和失败原因，`失败项_下一步处理.csv` 按可操作类别给出下一步。`library_index.csv` 是同内容的根目录索引。`doi_batch_failed.csv` 用于查看哪些 DOI 没有解析；`pdf_download_report.csv` 逐篇记录 PDF 下载成功、失败或跳过；`run_summary.txt` 汇总本次任务和下一步建议。`supplement_download_report.csv` 和 `supplements\` 只在启用 PDF 下载并勾选“同时下载补充材料”时生成；补充材料状态 `not_found` 表示页面没有检测到 supplement 链接，不是正文 PDF 失败。
+`doi_batch_failed.csv` 用于查看哪些 DOI 没有解析；`pdf_download_report.csv` 逐篇记录 PDF 下载成功、失败或跳过；`run_summary.txt` 汇总本次任务和下一步建议，`run_summary.json` 供界面或后续脚本读取。`supplement_download_report.csv` 和 `supplements\` 只在启用 PDF 下载并勾选“同时下载补充材料”时生成；补充材料状态 `not_found` 表示页面没有检测到 supplement 链接，不是正文 PDF 失败。
 
-## 生成 Windows UI 源码包
+## 获取可分发源码
 
-运行：
+公开分享时使用 GitHub Releases 或仓库页面自动生成的 **Source code** 压缩包，也可以在目标电脑上直接克隆：
 
 ```powershell
-.\scripts\build\make_windows_ui_package.bat
+git clone https://github.com/wkguoo/paper-scraper-doi.git
 ```
 
-生成目录：
-
-```text
-dist\paper-scraper-ui-windows
-```
-
-不要直接压缩自己的整个项目工作区发布，因为工作区可能包含 `cookie.json`、`results\`、下载的 PDF、`.venv\`、`dist\` 或浏览器缓存。公开分享时优先使用 GitHub 源码包，或使用上面的打包脚本生成干净目录。
+不要直接压缩自己的整个项目工作区发布，因为工作区可能包含 `cookie.json`、`results\`、下载的 PDF、`.venv\`、`dist\` 或浏览器缓存。

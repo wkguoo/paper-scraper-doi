@@ -65,17 +65,16 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             self.assertTrue(failed_path.exists())
             self.assertTrue(pdf_report_path.exists())
             self.assertTrue(summary_path.exists())
-            self.assertTrue((student_dir / "README_先看我.txt").exists())
-            self.assertTrue((student_dir / "paper_index.csv").exists())
-            self.assertTrue((student_dir / "paper_index.xlsx").exists())
-            self.assertTrue((student_dir / "失败项_下一步处理.csv").exists())
+            self.assertFalse(student_dir.exists())
             summary_json = json.loads(summary_json_path.read_text(encoding="utf-8"))
-            assert_same_existing_path(self, summary_json["paper_index_path"], student_dir / "paper_index.csv")
-            assert_same_existing_path(
-                self,
-                summary_json["failure_next_steps_path"],
-                student_dir / "失败项_下一步处理.csv",
-            )
+            for removed_field in (
+                "student_readme_path",
+                "paper_index_path",
+                "paper_index_xlsx_path",
+                "failure_next_steps_path",
+                "library_index_path",
+            ):
+                self.assertNotIn(removed_field, summary_json)
             with failed_path.open("r", encoding="utf-8-sig") as f:
                 failed_rows = list(csv.DictReader(f))
             self.assertEqual(len(failed_rows), 1)
@@ -127,17 +126,21 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             summary_json = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
             pdf_report_text = (run_dir / "pdf_download_report.csv").read_text(encoding="utf-8-sig")
             student_dir = run_dir / "00_给研究生查看"
-            paper_index_exists = (student_dir / "paper_index.csv").exists()
-            failure_next_steps_exists = (student_dir / "失败项_下一步处理.csv").exists()
-            assert_same_existing_path(self, summary_json["paper_index_xlsx_path"], student_dir / "paper_index.xlsx")
 
         self.assertEqual(exit_code, 0)
         self.assertIn("review_hint", preview_text)
         self.assertIn("请补 DOI", preview_text)
         self.assertIn("小白下一步建议", summary_text)
         self.assertIn("preflight", pdf_report_text)
-        self.assertTrue(paper_index_exists)
-        self.assertTrue(failure_next_steps_exists)
+        self.assertFalse(student_dir.exists())
+        for removed_field in (
+            "student_readme_path",
+            "paper_index_path",
+            "paper_index_xlsx_path",
+            "failure_next_steps_path",
+            "library_index_path",
+        ):
+            self.assertNotIn(removed_field, summary_json)
 
     def test_build_intake_writes_preview_before_metadata_resolution(self) -> None:
         from sd_institutional_skill import build_intake
@@ -304,9 +307,7 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
             default_summary = json.loads((root / "default_supplements" / "run_summary.json").read_text(encoding="utf-8"))
             disabled_summary = json.loads((root / "disabled_supplements" / "run_summary.json").read_text(encoding="utf-8"))
             default_report_exists = (root / "default_supplements" / "supplement_download_report.csv").exists()
-            default_paper_index_exists = Path(default_summary["paper_index_path"]).exists()
-            default_paper_index_xlsx_exists = Path(default_summary["paper_index_xlsx_path"]).exists()
-            default_student_readme_exists = Path(default_summary["student_readme_path"]).exists()
+            default_student_handoff_exists = (root / "default_supplements" / "00_给研究生查看").exists()
 
         self.assertEqual(default_exit, 0)
         self.assertEqual(disabled_exit, 0)
@@ -314,9 +315,16 @@ class InstitutionalSkillIntakeTests(unittest.TestCase):
         self.assertTrue(default_report_exists)
         self.assertTrue(default_summary["supplement_requested"])
         self.assertEqual(default_summary["supplement_not_found"], 1)
-        self.assertTrue(default_paper_index_exists)
-        self.assertTrue(default_paper_index_xlsx_exists)
-        self.assertTrue(default_student_readme_exists)
+        self.assertFalse(default_student_handoff_exists)
+        for removed_field in (
+            "student_readme_path",
+            "paper_index_path",
+            "paper_index_xlsx_path",
+            "failure_next_steps_path",
+            "library_index_path",
+        ):
+            self.assertNotIn(removed_field, default_summary)
+            self.assertNotIn(removed_field, disabled_summary)
         self.assertFalse(disabled_summary["supplement_requested"])
         self.assertEqual(disabled_summary["supplement_report_path"], "")
         self.assertFalse((root / "disabled_supplements" / "supplement_download_report.csv").exists())

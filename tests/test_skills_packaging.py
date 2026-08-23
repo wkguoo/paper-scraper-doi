@@ -366,7 +366,6 @@ class SkillPackagingTests(unittest.TestCase):
             PROJECT_ROOT / "paper_skill.py",
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
             PROJECT_ROOT / "skills" / "legal-oa-paper-download" / "SKILL.md",
-            PROJECT_ROOT / "docs" / "superpowers" / "plans" / "2026-06-17-paper-skill.md",
         ]
         disallowed = [
             "合法 " + "OA " + "下载",
@@ -493,97 +492,11 @@ class SkillPackagingTests(unittest.TestCase):
         self.assertNotIn('text="OA 资源辅助获取（兼容）"', ui_source)
         self.assertNotIn("--email", ui_source)
         self.assertNotIn("--cookies", ui_source)
+        self.assertNotIn('text="打开研究生查看入口"', ui_source)
+        self.assertNotIn('text="打开失败下一步表"', ui_source)
 
         # Must not tell users the DOI batch tab is still the default open page.
         self.assertNotIn("界面默认打开“DOI 批量下载”页", ui_readme)
-
-    def test_windows_ui_package_script_rebuilds_clean_package_dir(self) -> None:
-        text = self._package_script_text()
-
-        self.assertIn('set "PACKAGE_DIR=dist\\paper-scraper-ui-windows"', text)
-        self.assertIn('if exist "%PACKAGE_DIR%" (', text)
-        self.assertIn('rmdir /S /Q "%PACKAGE_DIR%"', text)
-        self.assertIn('mkdir "%PACKAGE_DIR%"', text)
-        self.assertLess(
-            text.index('rmdir /S /Q "%PACKAGE_DIR%"'),
-            text.index('mkdir "%PACKAGE_DIR%"'),
-        )
-
-    def test_windows_ui_package_script_includes_expected_assets(self) -> None:
-        text = self._package_script_text()
-
-        expected_snippets = [
-            'call :copy_required "paper_batch.py" "%PACKAGE_DIR%\\"',
-            'call :copy_required "institutional_paper_skill.py" "%PACKAGE_DIR%\\"',
-            'call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\\"',
-            'call :copy_required "student_handoff.py" "%PACKAGE_DIR%\\"',
-            'call :copy_required "LICENSE" "%PACKAGE_DIR%\\"',
-            'call :copy_required "THIRD_PARTY_NOTICES.md" "%PACKAGE_DIR%\\"',
-            'call :copy_optional "如何导出机构Cookie.md" "%PACKAGE_DIR%\\"',
-            'call :copy_required "README.md" "%PACKAGE_DIR%\\"',
-            'call :copy_required "docs\\user-guide\\en.md" "%PACKAGE_DIR%\\docs\\user-guide\\"',
-            'call :copy_required "docs\\user-guide\\zh.md" "%PACKAGE_DIR%\\docs\\user-guide\\"',
-            'call :copy_required "docs\\user-guide\\windows-ui.md" "%PACKAGE_DIR%\\docs\\user-guide\\"',
-            'call :copy_required "docs\\development\\manual-qa.md" "%PACKAGE_DIR%\\docs\\development\\"',
-            'call :copy_required ".github\\SECURITY.md" "%PACKAGE_DIR%\\.github\\"',
-            'call :copy_required "install_codex_skills.ps1" "%PACKAGE_DIR%\\"',
-            'call :copy_required "docs\\sciencedirect_skill_beginner_guide.md" "%PACKAGE_DIR%\\docs\\"',
-            'call :copy_required "docs\\zotero_bridge_beginner_guide.md" "%PACKAGE_DIR%\\docs\\"',
-            'call :robocopy_required "paper_automation" "%PACKAGE_DIR%\\paper_automation"',
-            'call :robocopy_required "skills" "%PACKAGE_DIR%\\skills"',
-            'call :verify_required "%PACKAGE_DIR%\\paper_batch.py"',
-            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\pdf_validation.py"',
-            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\batch_workflow.py"',
-            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\batch_stages.py"',
-            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\zotero_bridge.py"',
-            'call :verify_required "%PACKAGE_DIR%\\paper_automation\\institutional\\workflow.py"',
-            'call :verify_required "%PACKAGE_DIR%\\skills\\sciencedirect-doi-download\\references"',
-            'call :verify_required "%PACKAGE_DIR%\\skills\\paper-download\\SKILL.md"',
-            (
-                'call :verify_required "%PACKAGE_DIR%\\skills\\sciencedirect-doi-download'
-                '\\references\\beginner-workflow.md"'
-            ),
-            (
-                'call :verify_required "%PACKAGE_DIR%\\skills\\sciencedirect-doi-download'
-                '\\references\\failure-reasons.md"'
-            ),
-        ]
-
-        for snippet in expected_snippets:
-            with self.subTest(snippet=snippet):
-                self.assertIn(snippet, text)
-        self.assertNotIn("sd_scraper_en.py", text)
-        self.assertIn("如何导出机构Cookie.md", text)
-        self.assertNotIn("濡備綍瀵煎嚭鏈烘瀯Cookie.md", text)
-
-    def test_windows_ui_package_script_excludes_internal_and_cache_artifacts(self) -> None:
-        text = self._package_script_text()
-
-        self.assertIn('/XD "__pycache__"', text)
-        self.assertIn('/XF "*.pyc"', text)
-        self.assertNotIn('xcopy /E /I /Y "docs"', text)
-        self.assertNotIn('robocopy "docs"', text)
-        self.assertNotIn("docs\\superpowers", text)
-
-    def test_windows_ui_package_script_fails_on_incomplete_package(self) -> None:
-        text = self._package_script_text()
-
-        self.assertIn(":copy_required", text)
-        self.assertIn(":copy_optional", text)
-        self.assertIn(":robocopy_required", text)
-        self.assertIn(":verify_required", text)
-        self.assertIn('rmdir /S /Q "%PACKAGE_DIR%"', text)
-        self.assertIn('if exist "%PACKAGE_DIR%" (', text)
-        self.assertIn("|| exit /b 1", text)
-        self.assertIn("if errorlevel 1", text)
-        self.assertIn('set "ROBOCOPY_EXIT=%ERRORLEVEL%"', text)
-        self.assertIn("if %ROBOCOPY_EXIT% GEQ 8", text)
-
-    @staticmethod
-    def _package_script_text() -> str:
-        return (
-            PROJECT_ROOT / "scripts" / "build" / "make_windows_ui_package.bat"
-        ).read_text(encoding="utf-8")
 
     @staticmethod
     def _frontmatter(text: str) -> dict[str, str]:

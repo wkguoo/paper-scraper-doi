@@ -197,11 +197,8 @@ preflight 输出重点看这些文件：
 | `doi_intake_preview.csv` | 输入预览表。看每一行来自哪里、识别到什么 DOI、是否重复、是否需要人工复核。 |
 | `merged_doi_input.csv` | 后续正式解析可使用的 DOI 表。重复 DOI 只保留一次。 |
 | `doi_batch_failed.csv` | preflight 发现的空 DOI、重复项、无效项或需要复核的记录。 |
-| `00_给研究生查看\README_先看我.txt` | 给学生的阅读说明，说明索引、相对路径和失败处理顺序。 |
-| `00_给研究生查看\paper_index.csv` / `paper_index.xlsx` | 研究生查看入口。preflight 阶段会标出哪些记录尚未请求下载。 |
-| `00_给研究生查看\失败项_下一步处理.csv` | 把 `needs_review`、重复、无 DOI 等问题整理成可操作类别。 |
 | `run_summary.txt` | 本次任务摘要。包括成功数、失败数、下一步建议。 |
-| `run_summary.json` | 给 UI 或脚本读取的机器可读摘要，包含研究生查看入口路径。 |
+| `run_summary.json` | 给 UI 或脚本读取的机器可读摘要。 |
 
 正式解析和 PDF 下载才会额外关注这些输出：
 
@@ -210,7 +207,6 @@ preflight 输出重点看这些文件：
 | `doi_batch_resolved.xlsx` | 正式解析时生成，保存成功解析到 ScienceDirect PII 的论文。 |
 | `pdf_download_report.csv` | 启用 PDF 下载时生成，逐篇记录成功、失败、跳过原因和文件名。 |
 | `pdfs\` | 下载成功的 PDF 文件。 |
-| `library_index.csv` | 与 `00_给研究生查看\paper_index.csv` 同内容，放在任务根目录，便于脚本继续处理。 |
 | `supplement_download_report.csv` | 只有启用 PDF 下载且启用补充材料下载时生成，逐个记录附件成功、失败、跳过或未发现原因。 |
 | `supplements\` | 只有启用 PDF 下载且启用补充材料下载时生成，按文章文件名前缀建立子目录保存对应补充材料。 |
 
@@ -218,11 +214,10 @@ preflight 输出重点看这些文件：
 
 最重要的是这些入口：
 
-1. `00_给研究生查看\paper_index.xlsx`：给学生优先打开的总索引，正文 PDF 和补充材料都用相对路径指向原文件，不复制文件。
-2. `00_给研究生查看\失败项_下一步处理.csv`：失败后先看这里，按原因处理后再重试。
-3. `doi_intake_preview.csv`：检查输入识别是否正确。
-4. `pdf_download_report.csv`：检查 PDF 是否真的下载成功。
-5. `supplement_download_report.csv`：如果正式下载时启用了附件，检查补充材料是否找到并下载成功。
+1. `doi_intake_preview.csv`：检查输入识别是否正确。
+2. `doi_batch_failed.csv`：查看未识别、重复或需要人工复核的记录。
+3. `pdf_download_report.csv`：检查 PDF 是否真的下载成功。
+4. `supplement_download_report.csv`：如果正式下载时启用了附件，检查补充材料是否找到并下载成功。
 
 ## 6. `doi_intake_preview.csv` 里的状态是什么意思
 
@@ -262,7 +257,7 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 
 ### 7.2 已登录，但下载失败
 
-先打开 `00_给研究生查看\失败项_下一步处理.csv` 和 `pdf_download_report.csv` 看失败原因。常见原因：
+先打开 `doi_batch_failed.csv` 和 `pdf_download_report.csv` 看失败原因。常见原因：
 
 1. 学校没有订阅该论文全文。
 2. ScienceDirect 返回 403 或限速。
@@ -318,10 +313,9 @@ $env:PAPER_SCRAPER_BROWSER_EXE = "D:\Path\To\msedge.exe"
 ```
 
 5. 下载后检查 `pdf_download_report.csv`，不要只看 `pdfs` 文件夹。
-6. 把 `00_给研究生查看` 作为交付给学生的入口；它不会复制 PDF，而是用相对路径指向 `pdfs\` 和 `supplements\`。
-7. 把失败报告留着，方便后续手工补下载或请老师判断是否有必要找馆际互借。
-8. 不要把 `results\_auth\sciencedirect_cookies.json` 或导出的 `cookies.json` 发给别人。
-9. 如果是在公共电脑或临时测试机器上使用，测试后可以清理本机凭据状态：
+6. 把失败报告留着，方便后续手工补下载或请老师判断是否有必要找馆际互借。
+7. 不要把 `results\_auth\sciencedirect_cookies.json` 或导出的 `cookies.json` 发给别人。
+8. 如果是在公共电脑或临时测试机器上使用，测试后可以清理本机凭据状态：
 
 ```powershell
 Remove-Item -Recurse -Force (Join-Path $env:TEMP "chrome_dbg_profile")

@@ -25,7 +25,6 @@ class ZoteroBridgePackagingTests(unittest.TestCase):
         self.assertIn("[string]$OutputDirectory", text)
         self.assertIn("[switch]$Force", text)
         self.assertIn("ConvertFrom-Json", text)
-        self.assertNotIn("make_windows_ui_package.bat", text)
 
     def test_builder_rejects_output_inside_plugin_source(self) -> None:
         text = self.builder_text()
@@ -229,11 +228,10 @@ try {
         self.assertIn("[System.IO.File]::Replace($temporaryXpi, $finalXpi, $null)", text)
         self.assertNotIn("Remove-Item -LiteralPath $finalXpi", text)
 
-    def test_builder_is_not_called_by_start_install_or_existing_packaging_scripts(self) -> None:
+    def test_builder_is_not_called_by_start_or_install_scripts(self) -> None:
         for relative in (
             "start_paper_scraper_ui.bat",
             "install_codex_skills.ps1",
-            "scripts/build/make_windows_ui_package.bat",
         ):
             with self.subTest(path=relative):
                 text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")

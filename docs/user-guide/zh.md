@@ -143,7 +143,7 @@ Save results to D:\Literature\ScienceDirect.
 3. unclear recommendation about alloy fatigue without enough bibliographic information
 ```
 
-preflight 只做输入识别、去重和复核提示，不下载 PDF，也不会生成补充材料目录。它会重点生成 `doi_intake_preview.csv`、`merged_doi_input.csv`、`doi_batch_failed.csv`、`run_summary.txt` 和 `00_给研究生查看\`，检查确认后再把 `merged_doi_input.csv` 交给 Codex 正式下载。
+preflight 只做输入识别、去重和复核提示，不下载 PDF，也不会生成补充材料目录。它会重点生成 `doi_intake_preview.csv`、`merged_doi_input.csv`、`doi_batch_failed.csv`、`run_summary.txt` 和 `run_summary.json`，检查确认后再把 `merged_doi_input.csv` 交给 Codex 正式下载。
 
 ### 示例 3：查找公开开放获取 PDF 候选资源
 
@@ -283,14 +283,8 @@ ScienceDirect 批量任务会在输出目录下生成一个时间戳子目录，
 
 ```text
 results\doi_batch_20260616_120000\
-├── 00_给研究生查看\
-│   ├── README_先看我.txt
-│   ├── paper_index.csv
-│   ├── paper_index.xlsx
-│   └── 失败项_下一步处理.csv
 ├── doi_batch_resolved.xlsx
 ├── doi_batch_failed.csv
-├── library_index.csv
 ├── pdf_download_report.csv
 ├── run_summary.json
 ├── run_summary.txt
@@ -309,13 +303,11 @@ results\doi_batch_20260616_120000\
 | `elsevier_api_attempts.csv` | ScienceDirect 正式下载时 | 脱敏 API 审计：状态、HTTP 状态、鉴权配置布尔值、FULL XML/主 EID/PDF 有效性及是否进入浏览器；不含凭据或响应正文。 |
 | `run_summary.txt` | 每次任务 | 本次任务摘要和下一步建议。 |
 | `run_summary.json` | 每次任务 | 给 UI 或后续脚本读取的机器可读摘要。 |
-| `00_给研究生查看\` | 预检或正式任务 | 给课题组学生直接打开的入口，包含说明、论文索引和失败项下一步处理表。 |
-| `library_index.csv` | 正式下载或索引生成时 | 与学生入口索引同类的信息，放在任务根目录便于脚本继续处理。 |
 | `pdfs\` | PDF 下载成功时 | 下载好的正文 PDF。 |
 | `supplement_download_report.csv` | PDF 下载且启用补充材料下载时 | 逐个记录补充材料状态。 |
 | `supplements\` | 找到并下载补充材料时 | 保存补充材料附件。 |
 
-`00_给研究生查看\paper_index.csv/xlsx` 和 `library_index.csv` 用相对路径指向正文 PDF 与补充材料，不复制下载文件。补充材料状态 `not_found` 表示页面没有检测到可下载 supplement 链接，不代表正文 PDF 失败。
+补充材料状态 `not_found` 表示页面没有检测到可下载 supplement 链接，不代表正文 PDF 失败。
 
 OA 资源辅助获取流程会生成类似：
 
@@ -368,7 +360,7 @@ Remove-Item -Force ".\results\_auth\sciencedirect_cookies.json"
 
 ## 公开发布和打包注意事项
 
-如果你 fork 或二次发布本项目，请只发布 Git 仓库中被跟踪的源码，或使用 `scripts/build/make_windows_ui_package.bat` 生成的源码包。不要直接压缩自己的整个工作区，因为本地目录里可能包含机构 Cookie、PDF、运行报告、虚拟环境或浏览器缓存。
+如果你 fork 或二次发布本项目，请使用 GitHub 仓库页面自动生成的 **Source code** 压缩包，或在目标电脑上运行 `git clone https://github.com/wkguoo/paper-scraper-doi.git`。不要直接压缩自己的整个工作区，因为本地目录里可能包含机构 Cookie、PDF、运行报告、虚拟环境或浏览器缓存。
 
 发布前建议检查：
 

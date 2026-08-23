@@ -68,9 +68,6 @@ class PaperScraperUI:
         self.last_summary_path: Path | None = None
         self.last_summary_json_path: Path | None = None
         self.last_events_path: Path | None = None
-        self.last_student_handoff_dir: Path | None = None
-        self.last_paper_index_path: Path | None = None
-        self.last_failure_next_steps_path: Path | None = None
         self.last_event_count = 0
 
         self._build_ui()
@@ -314,20 +311,6 @@ class PaperScraperUI:
         self.open_pdf_report_button.grid(row=1, column=2, sticky="ew", padx=(0, 6), pady=(8, 0))
         self.open_summary_button = ttk.Button(result, text="打开任务摘要", command=self.open_run_summary, state="disabled")
         self.open_summary_button.grid(row=1, column=3, sticky="ew", pady=(8, 0))
-        self.open_student_handoff_button = ttk.Button(
-            result,
-            text="打开研究生查看入口",
-            command=self.open_student_handoff,
-            state="disabled",
-        )
-        self.open_student_handoff_button.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(0, 6), pady=(8, 0))
-        self.open_failure_next_steps_button = ttk.Button(
-            result,
-            text="打开失败下一步表",
-            command=self.open_failure_next_steps,
-            state="disabled",
-        )
-        self.open_failure_next_steps_button.grid(row=2, column=2, columnspan=2, sticky="ew", padx=(0, 6), pady=(8, 0))
 
         failure = ttk.LabelFrame(frame, text="失败项", padding=10)
         failure.grid(row=6, column=0, sticky="ew", pady=(0, 8))
@@ -716,9 +699,6 @@ class PaperScraperUI:
         self.last_summary_path = None
         self.last_summary_json_path = None
         self.last_events_path = None
-        self.last_student_handoff_dir = None
-        self.last_paper_index_path = None
-        self.last_failure_next_steps_path = None
         self.last_event_count = 0
         self.result_summary_var.set("任务运行中，结束后会在这里显示报告摘要。")
         self.progress_var.set("进度：运行中")
@@ -766,8 +746,6 @@ class PaperScraperUI:
                 self.last_run_output_dir = self.last_summary_json_path.parent
         elif "DOI failure report:" in line:
             self.last_failed_report_path = self._extract_colon_path_from_log(line)
-        elif "研究生查看入口 ->" in line or "研究生查看入口:" in line:
-            self.last_student_handoff_dir = self._extract_report_path_from_log(line) or self._extract_colon_path_from_log(line)
         elif "Manifest CSV:" in line:
             manifest_path = self._extract_colon_path_from_log(line)
             if manifest_path:
@@ -869,13 +847,6 @@ class PaperScraperUI:
             self.last_pdf_report_path = Path(str(data["pdf_report_path"]))
         if data.get("event_path") and not self.last_events_path:
             self.last_events_path = Path(str(data["event_path"]))
-        if data.get("paper_index_path"):
-            self.last_paper_index_path = Path(str(data["paper_index_path"]))
-            self.last_student_handoff_dir = self.last_paper_index_path.parent
-        if data.get("student_readme_path") and not self.last_student_handoff_dir:
-            self.last_student_handoff_dir = Path(str(data["student_readme_path"])).parent
-        if data.get("failure_next_steps_path"):
-            self.last_failure_next_steps_path = Path(str(data["failure_next_steps_path"]))
         reasons = data.get("failure_reasons") or {}
         reason_text = []
         if isinstance(reasons, dict):
@@ -905,9 +876,6 @@ class PaperScraperUI:
                     excluded=data.get("retry_input_excluded_count", 0),
                 )
             )
-        student_handoff_dir = getattr(self, "last_student_handoff_dir", None)
-        if student_handoff_dir:
-            parts.append(f"研究生入口: {student_handoff_dir}")
         if reason_text:
             parts.append("主要失败原因: " + "；".join(reason_text))
         self.result_summary_var.set("；".join(parts))
@@ -1016,18 +984,6 @@ class PaperScraperUI:
         )
         for button, path in button_paths:
             button.configure(state="normal" if path and Path(path).exists() else "disabled")
-        if hasattr(self, "open_student_handoff_button"):
-            self.open_student_handoff_button.configure(
-                state="normal"
-                if self.last_student_handoff_dir and self.last_student_handoff_dir.exists()
-                else "disabled"
-            )
-        if hasattr(self, "open_failure_next_steps_button"):
-            self.open_failure_next_steps_button.configure(
-                state="normal"
-                if self.last_failure_next_steps_path and self.last_failure_next_steps_path.exists()
-                else "disabled"
-            )
 
     def _poll_run_events_once(self) -> None:
         if not self.last_events_path or not self.last_events_path.exists():
@@ -1125,16 +1081,6 @@ class PaperScraperUI:
 
     def open_run_summary(self) -> None:
         self._open_report_path(self.last_summary_path, "任务摘要")
-
-    def open_student_handoff(self) -> None:
-        path = self.last_student_handoff_dir
-        if not path or not path.exists():
-            messagebox.showinfo("研究生查看入口", "尚未找到研究生查看入口。")
-            return
-        self._open_path(path)
-
-    def open_failure_next_steps(self) -> None:
-        self._open_report_path(self.last_failure_next_steps_path, "失败下一步表")
 
     def _open_report_path(self, path: Path | None, label: str) -> None:
         if not path or not path.exists():

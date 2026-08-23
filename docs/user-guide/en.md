@@ -160,7 +160,6 @@ Legacy ScienceDirect-only runs may still create folders with reports such as:
 - `supplement_download_report.csv`
 - `run_summary.txt`
 - `run_summary.json`
-- `00_给研究生查看\`
 - `pdfs\`
 - `supplements\`
 

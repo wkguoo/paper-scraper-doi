@@ -70,7 +70,6 @@ from sd_supplements import (
     make_article_stem,
     supplement_status_counts,
 )
-from student_handoff import write_student_handoff
 from windows_paths import (
     BROWSER_EXE_ENV,
     browser_bin,
@@ -2912,18 +2911,6 @@ def main():
                 )
             else:
                 print(f"[报告] 未发现可重试失败 DOI，未生成重试输入。排除 {retry_result.excluded_count} 条。")
-        handoff_paths = write_student_handoff(
-            output_dir,
-            resolved_records=results,
-            failed_records=failures,
-            pdf_records=pdf_records,
-            supplement_records=supplement_records,
-            merged_input_path=args.input_file,
-            resolved_path=resolved_path,
-            failed_path=failed_path,
-            pdf_report_path=pdf_report_path,
-            supplement_report_path=supplement_report_path,
-        )
         total_doi = getattr(
             scraper,
             "last_doi_batch_total_doi",
@@ -2953,18 +2940,12 @@ def main():
             supplement_report_path=supplement_report_path,
             browser_message=scraper.last_browser_message,
             download_next_steps=scraper.last_download_next_steps,
-            student_readme_path=str(handoff_paths.readme_path),
-            paper_index_path=str(handoff_paths.paper_index_path),
-            paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
-            failure_next_steps_path=str(handoff_paths.failure_next_steps_path),
-            library_index_path=str(handoff_paths.library_index_path),
         )
         summary_path = write_run_summary(summary)
         summary_json_path = write_run_summary_json(summary, event_path=event_path)
         print(f"[报告] PDF 下载明细已保存 -> {pdf_report_path}")
         if supplement_report_path:
             print(f"[报告] 补充材料下载明细已保存 -> {supplement_report_path}")
-        print(f"[报告] 研究生查看入口 -> {handoff_paths.student_dir}")
         print(f"[报告] 任务摘要已保存 -> {summary_path}")
         print(f"[报告] JSON 摘要已保存 -> {summary_json_path}")
         return

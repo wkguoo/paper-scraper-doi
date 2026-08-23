@@ -8,7 +8,6 @@ __pycache__/
 dist/
 build/
 !scripts/build/
-!scripts/build/*.bat
 !scripts/build/*.ps1
 .eggs/
 
