@@ -857,10 +857,11 @@ class ElsevierApiAdapterTests(unittest.TestCase):
                 for _args, kwargs in mkdtemp_calls
                 if kwargs.get("prefix") == ".delivery_"
             ]
+            self.assertEqual(len(delivery_staging_parents), 1)
+            self.assertTrue(delivery_staging_parents[0].samefile(root))
 
         self.assertEqual(exit_code, 0)
         self.assertTrue(client.include_supplements)
-        self.assertEqual(delivery_staging_parents, [root])
         self.assertEqual(delivered_names, ["S01_mmc1.zip"])
         self.assertEqual(
             manifest_row["补充材料"],
