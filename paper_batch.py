@@ -249,6 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="不下载补充材料",
     )
     start.add_argument(
+        "--api-only",
+        action="store_true",
+        help="仅使用 Elsevier API；禁止浏览器、OA 和 Zotero 兜底",
+    )
+    start.add_argument(
         "--no-smart-route",
         action="store_true",
         help="关闭智能路由，恢复「全部先 OA 再机构」旧路径",
@@ -616,6 +621,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     session_break_every=int(args.session_break_every),
                     resolve_title_metadata=bool(args.resolve_title_metadata),
                     iucr_short_try=not bool(getattr(args, "no_iucr_short_try", False)),
+                    api_only=bool(getattr(args, "api_only", False)),
                 ),
                 doi_preflight=do_preflight,
                 fixed_run=use_fixed,
@@ -685,6 +691,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 circuit_breaker_threshold=int(saved.get("circuit_breaker_threshold", 3) or 3),
                 auto_oa_recovery=bool(saved.get("auto_oa_recovery", True)),
                 iucr_short_try=bool(saved.get("iucr_short_try", True)),
+                api_only=bool(saved.get("api_only", False)),
             )
             result = retry_failed_batch(
                 args.run_dir,

@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import sys
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from doi_batch_utils import (
     DoiRecord,
     PdfDownloadRecord,
     RunSummary,
+    SupplementDownloadRecord,
     TEXT_ENCODINGS,
     check_cookie_json,
     clean_doi,
@@ -29,15 +31,20 @@ from doi_batch_utils import (
     load_doi_records,
     row_value,
     write_pdf_download_report,
+    write_pdf_bytes_atomic,
     write_run_summary,
     write_run_summary_json,
     write_supplement_download_report,
 )
 from paper_automation.deduplicator import deduplicate_candidates
+from paper_automation.elsevier_api import ElsevierApiClient, ElsevierApiResult, ElsevierAttachment
+from paper_automation.file_manager import enrich_row_metadata_for_delivery, make_pdf_filename
 from paper_automation.metadata_resolver import JsonGetter, MetadataResolver, SearchProvider, semantic_scholar_search_provider
 from paper_automation.models import MetadataResult, PaperCandidate
 from paper_automation.parser import has_extra_bibliographic_signal, is_probable_paper_title, parse_mixed_text
+from paper_automation.pdf_validation import is_pdf_bytes, is_valid_pdf
 from sd_scraper import ScienceDirectScraper
+from sd_supplements import SAFE_EXTENSIONS, SupplementCandidate, make_supplement_filename, supplement_status_counts
 from student_handoff import write_student_handoff
 
 
@@ -109,6 +116,33 @@ class IntakeResult:
     @property
     def valid_count(self) -> int:
         return len(self.unique_rows)
+
+
+@dataclass
+class ElsevierApiAttemptRecord:
+    """Sanitised audit row; credential values and response bodies are forbidden."""
+
+    doi: str
+    status: str
+    http_status: int | None = None
+    api_key_present: bool = False
+    insttoken_present: bool = False
+    full_xml_received: bool = False
+    attachment_eid: str = ""
+    main_eid_present: bool = False
+    pdf_size_bytes: int = 0
+    pdf_valid: bool = False
+    browser_fallback: bool = False
+    reason: str = ""
+
+
+@dataclass
+class ElsevierApiPhaseResult:
+    resolved_records: list[dict]
+    pdf_records: list[PdfDownloadRecord]
+    supplement_records: list[SupplementDownloadRecord]
+    fallback_rows: list[IntakeRow]
+    attempts: list[ElsevierApiAttemptRecord]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -251,29 +285,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     download_pdfs = not args.dry_run and not args.no_download_pdfs
-    cookie_cache_path = auth_dir / COOKIE_CACHE_NAME
-    scraper = (
-        make_scraper(cookie_cache_path, browser_exe=args.browser_exe, cookies_path=args.cookies)
-        if download_pdfs
-        else ScienceDirectScraper(browser_exe=args.browser_exe)
-    )
-    cookie_message = explicit_cookie_status_message(args.cookies) if args.cookies else cookie_status_message(cookie_cache_path)
-
-    results, failures = scraper.resolve_doi_batch(str(intake.merged_input_path))
-
-    resolved_path = ""
-    if results:
-        resolved_path = scraper.save_to_xlsx(results, "doi_batch_resolved.xlsx", str(run_dir))
-    else:
-        print("[提示] 未解析到任何 ScienceDirect DOI。", flush=True)
-    failed_path = scraper.save_failed_doi_report(failures, "doi_batch_failed.csv", str(run_dir))
-
-    pdf_success = pdf_failed = pdf_skipped = 0
-    pdf_records: list[PdfDownloadRecord] = []
-    supplement_success = supplement_failed = supplement_skipped = supplement_not_found = 0
-    supplement_records = []
-    supplement_report_path = ""
-    # Supplements on by default; disable with --no-download-supplements.
+    # Supplements are on by default; --no-download-supplements applies to both
+    # the API and browser paths.
     download_supplements = download_pdfs and (
         False
         if bool(getattr(args, "no_download_supplements", False))
@@ -281,64 +294,106 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "download_supplements", None) is None
         else bool(args.download_supplements)
     )
-    if download_pdfs and results:
-        cache_devtools_cookies(scraper, cookie_cache_path)
-        try:
-            download_result = scraper.download_pdfs_devtools(
-                results,
-                str(run_dir),
-                login_wait_seconds=args.login_wait_seconds,
-                interactive_login=False,
-                download_supplements=download_supplements,
-                session_break_seconds=float(getattr(args, "session_break_seconds", 60.0) or 60.0),
-                session_break_every=int(getattr(args, "session_break_every", 8) or 8),
-                resume=True,
-            )
-        except Exception as exc:
-            pdf_failed = len(results)
-            pdf_records = [
-                PdfDownloadRecord(
-                    doi=item.get("doi", ""),
-                    pii=item.get("pii", ""),
-                    title=item.get("title", ""),
-                    status="failed",
-                    reason=f"download_exception_{type(exc).__name__}",
+    cookie_cache_path = auth_dir / COOKIE_CACHE_NAME
+    scraper = None
+    cookie_message = explicit_cookie_status_message(args.cookies) if args.cookies else cookie_status_message(cookie_cache_path)
+    api_phase = ElsevierApiPhaseResult([], [], [], [], [])
+    browser_results: list[dict] = []
+    browser_failures: list[dict] = []
+    browser_pdf_records: list[PdfDownloadRecord] = []
+    browser_supplement_records: list[SupplementDownloadRecord] = []
+
+    if download_pdfs:
+        api_phase = run_elsevier_api_phase(
+            intake.unique_rows,
+            run_dir=run_dir,
+            email=args.email,
+            download_supplements=download_supplements,
+        )
+        if api_phase.fallback_rows and args.api_only:
+            attempt_by_doi = {_doi_key(item.doi): item for item in api_phase.attempts}
+            browser_failures = []
+            for row in api_phase.fallback_rows:
+                attempt = attempt_by_doi.get(_doi_key(row.doi))
+                status = attempt.status if attempt is not None else "missing_api_attempt"
+                detail = attempt.reason if attempt is not None else "missing_api_attempt"
+                browser_failures.append(
+                    {
+                        "row_number": row.row_number,
+                        "doi": row.doi,
+                        "reason": f"api_only_{status}:{detail or status}",
+                    }
                 )
-                for item in results
-            ]
-            supplement_skipped = len(results) if download_supplements else 0
+                if attempt is not None:
+                    attempt.browser_fallback = False
+                    attempt.reason = f"api_only_no_fallback:{detail or status}"
+            cookie_message = "API-only：未读取 Cookie，未创建或启动浏览器。"
             print(
-                "[警告] PDF 下载器异常；已为每篇文献写入可恢复的失败记录。",
+                f"[API-only] {len(api_phase.fallback_rows)} 条 API 未成功；"
+                "已记录失败，禁止浏览器兜底。",
                 flush=True,
             )
-        else:
-            if download_result:
-                pdf_success, pdf_failed, pdf_skipped, pdf_records = download_result
-                if isinstance(download_result, DownloadRunResult):
-                    supplement_success = download_result.supplement_success
-                    supplement_failed = download_result.supplement_failed
-                    supplement_skipped = download_result.supplement_skipped
-                    supplement_not_found = download_result.supplement_not_found
-                    supplement_records = download_result.supplement_records
-            else:
-                pdf_failed = len(results)
-                pdf_records = [
-                    PdfDownloadRecord(
-                        doi=item.get("doi", ""),
-                        pii=item.get("pii", ""),
-                        title=item.get("title", ""),
-                        status="failed",
-                        reason="PDF 下载流程未返回状态",
+        elif api_phase.fallback_rows:
+            browser_input_path = write_merged_input(
+                api_phase.fallback_rows,
+                run_dir / "elsevier_api_browser_fallback.csv",
+            )
+            scraper = make_scraper(cookie_cache_path, browser_exe=args.browser_exe, cookies_path=args.cookies)
+            browser_results, browser_failures = scraper.resolve_doi_batch(str(browser_input_path))
+            if browser_results:
+                cache_devtools_cookies(scraper, cookie_cache_path)
+                try:
+                    download_result = scraper.download_pdfs_devtools(
+                        browser_results,
+                        str(run_dir),
+                        login_wait_seconds=args.login_wait_seconds,
+                        interactive_login=False,
+                        download_supplements=download_supplements,
+                        session_break_seconds=float(getattr(args, "session_break_seconds", 60.0) or 60.0),
+                        session_break_every=int(getattr(args, "session_break_every", 8) or 8),
+                        resume=True,
                     )
-                    for item in results
-                ]
-            cache_devtools_cookies(scraper, cookie_cache_path)
-            cookie_message = cookie_status_message(cookie_cache_path)
-    elif download_pdfs:
-        print("[提示] 没有可下载的解析结果，跳过 PDF 下载。", flush=True)
+                except Exception as exc:
+                    browser_pdf_records = [
+                        PdfDownloadRecord(
+                            doi=item.get("doi", ""),
+                            pii=item.get("pii", ""),
+                            title=item.get("title", ""),
+                            status="failed",
+                            reason=f"download_exception_{type(exc).__name__}",
+                        )
+                        for item in browser_results
+                    ]
+                    print("[警告] PDF 下载器异常；已为每篇文献写入可恢复的失败记录。", flush=True)
+                else:
+                    if download_result:
+                        _, _, _, browser_pdf_records = download_result
+                        if isinstance(download_result, DownloadRunResult):
+                            browser_supplement_records = download_result.supplement_records
+                    else:
+                        browser_pdf_records = [
+                            PdfDownloadRecord(
+                                doi=item.get("doi", ""),
+                                pii=item.get("pii", ""),
+                                title=item.get("title", ""),
+                                status="failed",
+                                reason="PDF 下载流程未返回状态",
+                            )
+                            for item in browser_results
+                        ]
+                    cache_devtools_cookies(scraper, cookie_cache_path)
+                    cookie_message = cookie_status_message(cookie_cache_path)
+            else:
+                print("[提示] API 失败项未解析到可供浏览器下载的 ScienceDirect 记录。", flush=True)
+        else:
+            cookie_message = "Elsevier API 已完成全部主 PDF；未读取或启动浏览器 Cookie 流程。"
     else:
+        # Dry runs keep the existing DOI-to-PII resolution behaviour and do not
+        # make Elsevier full-text API requests.
+        scraper = ScienceDirectScraper(browser_exe=args.browser_exe)
+        browser_results, browser_failures = scraper.resolve_doi_batch(str(intake.merged_input_path))
         reason = "dry_run" if args.dry_run else "no_download_pdfs"
-        pdf_records = [
+        browser_pdf_records = [
             PdfDownloadRecord(
                 doi=item.get("doi", ""),
                 pii=item.get("pii", ""),
@@ -346,8 +401,43 @@ def main(argv: list[str] | None = None) -> int:
                 status="not_requested",
                 reason=reason,
             )
-            for item in results
+            for item in browser_results
         ]
+
+    results = merge_resolved_records(intake.unique_rows, api_phase.resolved_records, browser_results)
+    failures = browser_failures
+    pdf_records = merge_pdf_records(
+        intake.unique_rows,
+        api_phase.pdf_records,
+        browser_pdf_records,
+        browser_failures,
+        download_requested=download_pdfs,
+    )
+    supplement_records = [*api_phase.supplement_records, *browser_supplement_records]
+    pdf_success = sum(record.status == "success" for record in pdf_records)
+    pdf_failed = sum(record.status == "failed" for record in pdf_records)
+    pdf_skipped = sum(record.status in {"skipped", "not_requested"} for record in pdf_records)
+    supplement_success, supplement_failed, supplement_skipped, supplement_not_found = supplement_status_counts(
+        supplement_records
+    )
+    api_attempt_report_path = write_elsevier_api_attempt_report(api_phase.attempts, run_dir)
+
+    resolved_path = ""
+    if results:
+        resolved_path = (
+            scraper.save_to_xlsx(results, "doi_batch_resolved.xlsx", str(run_dir))
+            if scraper is not None and hasattr(scraper, "save_to_xlsx")
+            else save_resolved_results(results, run_dir / "doi_batch_resolved.xlsx")
+        )
+    else:
+        print("[提示] 未解析到任何 ScienceDirect DOI。", flush=True)
+    failed_path = (
+        scraper.save_failed_doi_report(failures, "doi_batch_failed.csv", str(run_dir))
+        if scraper is not None and hasattr(scraper, "save_failed_doi_report")
+        else write_resolve_failed_report(failures, run_dir / "doi_batch_failed.csv")
+    )
+
+    supplement_report_path = ""
 
     pdf_report_path = write_pdf_download_report(pdf_records, run_dir)
     if download_supplements and results:
@@ -391,8 +481,8 @@ def main(argv: list[str] | None = None) -> int:
             preflight_only=False,
             auto_web_search=args.auto_web_search,
         ),
-        browser_message=getattr(scraper, "last_browser_message", "") if download_pdfs else "",
-        download_next_steps=getattr(scraper, "last_download_next_steps", ""),
+        browser_message=getattr(scraper, "last_browser_message", "") if scraper is not None else "",
+        download_next_steps=getattr(scraper, "last_download_next_steps", "") if scraper is not None else "",
         student_readme_path=str(handoff_paths.readme_path),
         paper_index_path=str(handoff_paths.paper_index_path),
         paper_index_xlsx_path=str(handoff_paths.paper_index_xlsx_path),
@@ -413,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
     print(f"- PDF 明细: {pdf_report_path}", flush=True)
+    print(f"- Elsevier API 脱敏审计: {api_attempt_report_path}", flush=True)
     if supplement_report_path:
         print(f"- 补充材料明细: {supplement_report_path}", flush=True)
     print(f"- 研究生查看入口: {handoff_paths.student_dir}", flush=True)
@@ -446,6 +537,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--choose-out", action="store_true", help="Open a Windows folder picker for the output root when available")
     parser.add_argument("--dry-run", action="store_true", help="Resolve DOI metadata but do not download PDFs")
     parser.add_argument("--no-download-pdfs", action="store_true", help="Skip PDF downloads after DOI resolution")
+    parser.add_argument(
+        "--api-only",
+        action="store_true",
+        help="Use Elsevier API only; never create a browser fallback",
+    )
     parser.add_argument(
         "--download-supplements",
         action="store_true",
@@ -1197,6 +1293,482 @@ def intake_review_hint(status: str, reason: str, doi: str = "") -> str:
 
 def split_authors(authors: str) -> list[str]:
     return [part.strip() for part in str(authors or "").split(";") if part.strip()]
+
+
+def run_elsevier_api_phase(
+    rows: list[IntakeRow],
+    *,
+    run_dir: Path,
+    email: str,
+    download_supplements: bool,
+    client: ElsevierApiClient | None = None,
+) -> ElsevierApiPhaseResult:
+    """Try Elsevier before any browser/cookie work and return mergeable rows."""
+
+    api_client = client or ElsevierApiClient()
+    resolved_records: list[dict] = []
+    pdf_records: list[PdfDownloadRecord] = []
+    supplement_records: list[SupplementDownloadRecord] = []
+    fallback_rows: list[IntakeRow] = []
+    attempts: list[ElsevierApiAttemptRecord] = []
+    circuit_status = ""
+
+    for row in rows:
+        if circuit_status:
+            result = ElsevierApiResult(
+                status=circuit_status,
+                doi=row.doi,
+                reason=f"api_circuit_open_after_{circuit_status}",
+            )
+        else:
+            result = api_client.download_article(row.doi, include_supplements=download_supplements)
+
+        final_status = result.status
+        final_reason = result.reason
+        article: dict | None = None
+        pdf_size = 0
+        pdf_valid = False
+
+        if result.status == "success" and is_pdf_bytes(result.pdf_bytes):
+            article = _article_from_api_result(row, result, email=email)
+            target_name = _api_pdf_filename(article)
+            target_path = run_dir / "pdfs" / target_name
+            try:
+                if target_path.is_symlink():
+                    raise OSError("unsafe_symlink")
+                if not is_valid_pdf(target_path):
+                    write_pdf_bytes_atomic(target_path, result.pdf_bytes)
+                pdf_valid = is_valid_pdf(target_path)
+                if not pdf_valid:
+                    raise ValueError("published_pdf_invalid")
+                pdf_size = target_path.stat().st_size
+            except OSError:
+                final_status = "network_error"
+                final_reason = "pdf_atomic_write_error"
+            except (TypeError, ValueError):
+                final_status = "invalid_pdf"
+                final_reason = "published_pdf_invalid"
+            else:
+                article["file"] = target_name
+                resolved_records.append(article)
+                pdf_records.append(
+                    PdfDownloadRecord(
+                        doi=row.doi,
+                        pii=result.pii,
+                        title=article.get("title", ""),
+                        status="success",
+                        file=target_name,
+                    )
+                )
+                if download_supplements:
+                    supplement_records.extend(
+                        download_elsevier_api_supplements(
+                            api_client,
+                            result,
+                            article=article,
+                            article_file=target_name,
+                            run_dir=run_dir,
+                        )
+                    )
+        elif result.status == "success":
+            final_status = "invalid_pdf"
+            final_reason = "client_success_without_valid_pdf"
+
+        browser_fallback = final_status != "success"
+        if browser_fallback:
+            fallback_rows.append(row)
+        attempts.append(
+            ElsevierApiAttemptRecord(
+                doi=row.doi,
+                status=final_status,
+                http_status=result.http_status,
+                api_key_present=bool(api_client.api_key),
+                insttoken_present=bool(api_client.insttoken),
+                full_xml_received=result.full_xml_received,
+                attachment_eid=result.attachment_eid,
+                main_eid_present=bool(result.attachment_eid),
+                pdf_size_bytes=pdf_size,
+                pdf_valid=pdf_valid,
+                browser_fallback=browser_fallback,
+                reason=final_reason,
+            )
+        )
+        if not circuit_status:
+            if result.status in {"unauthorized", "rate_limited"}:
+                circuit_status = result.status
+            elif result.supplement_status in {"unauthorized", "rate_limited"}:
+                circuit_status = result.supplement_status
+
+    return ElsevierApiPhaseResult(
+        resolved_records=resolved_records,
+        pdf_records=pdf_records,
+        supplement_records=supplement_records,
+        fallback_rows=fallback_rows,
+        attempts=attempts,
+    )
+
+
+def _article_from_api_result(row: IntakeRow, result: ElsevierApiResult, *, email: str) -> dict:
+    article = {
+        "source_index": row.row_number,
+        "title": row.title or result.title,
+        "authors": row.authors or "; ".join(result.authors),
+        "journal": row.journal or result.journal,
+        "volume": "",
+        "issue": "",
+        "year": row.year or result.year,
+        "date": row.date,
+        "doi": row.doi,
+        "abstract": "",
+        "article_type": "",
+        "open_access": "",
+        "url": f"https://doi.org/{quote(row.doi)}",
+        "pdf_url": "",
+        "pii": result.pii,
+    }
+    if not article["title"] or not article["authors"] or not article["year"]:
+        article = enrich_row_metadata_for_delivery(article, email=email)
+    # API metadata is authoritative enough to fill any field that remained
+    # empty after the existing DOI enrichment helper ran.
+    article["title"] = article.get("title") or result.title or row.input_title or row.doi
+    article["authors"] = article.get("authors") or "; ".join(result.authors)
+    article["journal"] = article.get("journal") or result.journal
+    article["year"] = article.get("year") or result.year
+    return article
+
+
+def _author_list(value: object) -> list[str]:
+    text = str(value or "").replace(" | ", ";").replace("|", ";")
+    return [part.strip() for part in text.split(";") if part.strip()]
+
+
+def _api_pdf_filename(article: dict) -> str:
+    metadata = MetadataResult(
+        source_index=int(article.get("source_index") or 0),
+        query_title=str(article.get("title") or ""),
+        doi=str(article.get("doi") or ""),
+        title=str(article.get("title") or ""),
+        authors=_author_list(article.get("authors")),
+        journal=str(article.get("journal") or ""),
+        year=str(article.get("year") or ""),
+        source="elsevier_api",
+    )
+    return make_pdf_filename(metadata)
+
+
+def download_elsevier_api_supplements(
+    client: ElsevierApiClient,
+    result: ElsevierApiResult,
+    *,
+    article: dict,
+    article_file: str,
+    run_dir: Path,
+) -> list[SupplementDownloadRecord]:
+    if result.supplement_status != "success":
+        return [
+            SupplementDownloadRecord(
+                doi=result.doi,
+                pii=result.pii,
+                article_title=str(article.get("title") or ""),
+                article_file=article_file,
+                status="failed",
+                reason=f"elsevier_api_{result.supplement_status}:{result.supplement_reason or result.supplement_status}",
+            )
+        ]
+    if not result.supplements:
+        return [
+            SupplementDownloadRecord(
+                doi=result.doi,
+                pii=result.pii,
+                article_title=str(article.get("title") or ""),
+                article_file=article_file,
+                status="not_found",
+                reason="elsevier_api_no_supplement_objects",
+            )
+        ]
+
+    article_stem = Path(article_file).stem
+    supplement_dir = run_dir / "supplements" / article_stem
+    records: list[SupplementDownloadRecord] = []
+    for index, attachment in enumerate(result.supplements, start=1):
+        raw_label = Path(attachment.filename or attachment.eid).name
+        candidate = SupplementCandidate(
+            url=attachment.api_url,
+            title=Path(raw_label).stem or "Supplementary material",
+        )
+        filename = make_supplement_filename(index, candidate, attachment.mime_type)
+        suffix = Path(filename).suffix.lower()
+        if suffix not in SAFE_EXTENSIONS:
+            records.append(
+                _api_supplement_record(
+                    result,
+                    article,
+                    article_file,
+                    attachment,
+                    index,
+                    "failed",
+                    reason="unsupported_attachment_extension",
+                )
+            )
+            continue
+
+        target_path = supplement_dir / filename
+        if _valid_existing_attachment(target_path, suffix):
+            records.append(
+                _api_supplement_record(
+                    result,
+                    article,
+                    article_file,
+                    attachment,
+                    index,
+                    "skipped",
+                    file=str(Path("supplements") / article_stem / filename),
+                    content_type=attachment.mime_type,
+                    size_bytes=target_path.stat().st_size,
+                    reason="existing_valid_attachment",
+                )
+            )
+            continue
+
+        # Keep the temporary filename out of the already long article-stem
+        # directory.  On Windows a valid final attachment path can otherwise
+        # cross MAX_PATH only while mkstemp adds its random suffix.  A sibling
+        # staging directory remains on the same volume, so os.replace keeps the
+        # existing atomic-publish semantics.
+        staging_dir = run_dir / ".elsevier_api_tmp"
+        fd: int | None = None
+        temp_path: Path | None = None
+        try:
+            supplement_dir.mkdir(parents=True, exist_ok=True)
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                prefix=".attachment.",
+                suffix=".tmp",
+                dir=str(staging_dir),
+            )
+            temp_path = Path(temp_name)
+            with os.fdopen(fd, "wb") as sink:
+                fd = None
+                object_result = client.stream_attachment(attachment, sink)
+                sink.flush()
+                os.fsync(sink.fileno())
+            if object_result.status != "success":
+                records.append(
+                    _api_supplement_record(
+                        result,
+                        article,
+                        article_file,
+                        attachment,
+                        index,
+                        "failed",
+                        content_type=object_result.content_type or attachment.mime_type,
+                        reason=f"elsevier_api_{object_result.status}:{object_result.reason or object_result.status}",
+                    )
+                )
+                continue
+            if suffix == ".pdf":
+                valid = is_valid_pdf(temp_path)
+            else:
+                valid = temp_path.is_file() and not temp_path.is_symlink() and temp_path.stat().st_size > 0
+            if not valid:
+                records.append(
+                    _api_supplement_record(
+                        result,
+                        article,
+                        article_file,
+                        attachment,
+                        index,
+                        "failed",
+                        content_type=object_result.content_type or attachment.mime_type,
+                        reason="invalid_attachment_content",
+                    )
+                )
+                continue
+            os.replace(temp_path, target_path)
+            records.append(
+                _api_supplement_record(
+                    result,
+                    article,
+                    article_file,
+                    attachment,
+                    index,
+                    "success",
+                    file=str(Path("supplements") / article_stem / filename),
+                    content_type=object_result.content_type or attachment.mime_type,
+                    size_bytes=target_path.stat().st_size,
+                )
+            )
+        except Exception as exc:
+            records.append(
+                _api_supplement_record(
+                    result,
+                    article,
+                    article_file,
+                    attachment,
+                    index,
+                    "failed",
+                    reason=f"attachment_exception_{type(exc).__name__}",
+                )
+            )
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
+    return records
+
+
+def _valid_existing_attachment(path: Path, suffix: str) -> bool:
+    if path.is_symlink() or not path.is_file():
+        return False
+    return is_valid_pdf(path) if suffix == ".pdf" else path.stat().st_size > 0
+
+
+def _api_supplement_record(
+    result: ElsevierApiResult,
+    article: dict,
+    article_file: str,
+    attachment: ElsevierAttachment,
+    index: int,
+    status: str,
+    *,
+    file: str = "",
+    content_type: str = "",
+    size_bytes: int = 0,
+    reason: str = "",
+) -> SupplementDownloadRecord:
+    return SupplementDownloadRecord(
+        doi=result.doi,
+        pii=result.pii,
+        article_title=str(article.get("title") or ""),
+        article_file=article_file,
+        supplement_index=index,
+        supplement_title=attachment.filename or attachment.eid,
+        source_url=attachment.api_url,
+        status=status,
+        file=file,
+        content_type=content_type or attachment.mime_type,
+        size_bytes=size_bytes,
+        reason=reason,
+    )
+
+
+def merge_resolved_records(
+    input_rows: list[IntakeRow],
+    api_records: list[dict],
+    browser_records: list[dict],
+) -> list[dict]:
+    by_doi = {
+        _doi_key(record.get("doi", "")): record
+        for record in [*api_records, *browser_records]
+        if _doi_key(record.get("doi", ""))
+    }
+    return [by_doi[_doi_key(row.doi)] for row in input_rows if _doi_key(row.doi) in by_doi]
+
+
+def merge_pdf_records(
+    input_rows: list[IntakeRow],
+    api_records: list[PdfDownloadRecord],
+    browser_records: list[PdfDownloadRecord],
+    browser_failures: list[dict],
+    *,
+    download_requested: bool,
+) -> list[PdfDownloadRecord]:
+    by_doi = {
+        _doi_key(record.doi): record
+        for record in [*api_records, *browser_records]
+        if _doi_key(record.doi)
+    }
+    failure_by_doi = {
+        _doi_key(failure.get("doi", "")): failure
+        for failure in browser_failures
+        if _doi_key(failure.get("doi", ""))
+    }
+    merged: list[PdfDownloadRecord] = []
+    for row in input_rows:
+        key = _doi_key(row.doi)
+        record = by_doi.get(key)
+        if record is not None:
+            merged.append(record)
+            continue
+        failure = failure_by_doi.get(key, {})
+        merged.append(
+            PdfDownloadRecord(
+                doi=row.doi,
+                pii="",
+                title=row.title,
+                status="failed" if download_requested or failure else "not_requested",
+                reason=str(failure.get("reason") or ("browser_result_missing" if download_requested else "not_requested")),
+            )
+        )
+    return merged
+
+
+def _doi_key(value: object) -> str:
+    return str(value or "").strip().casefold()
+
+
+def write_elsevier_api_attempt_report(records: list[ElsevierApiAttemptRecord], output_dir: Path) -> Path:
+    path = output_dir / "elsevier_api_attempts.csv"
+    fieldnames = [
+        "doi",
+        "status",
+        "http_status",
+        "api_key_present",
+        "insttoken_present",
+        "full_xml_received",
+        "attachment_eid",
+        "main_eid_present",
+        "pdf_size_bytes",
+        "pdf_valid",
+        "browser_fallback",
+        "reason",
+    ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in records:
+            writer.writerow({name: getattr(record, name) for name in fieldnames})
+    return path
+
+
+def write_resolve_failed_report(failures: list[dict], path: Path) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["row_number", "doi", "reason"], extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(failures)
+    return str(path)
+
+
+def save_resolved_results(results: list[dict], path: Path) -> str:
+    fields = ScienceDirectScraper.FIELDS
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "papers"
+        worksheet.append(fields)
+        for item in results:
+            worksheet.append([item.get(field, "") for field in fields])
+        workbook.save(path)
+        return str(path)
+    except ImportError:
+        csv_path = path.with_suffix(".csv")
+        with csv_path.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(results)
+        return str(csv_path)
 
 
 def write_intake_preview(rows: list[IntakeRow], path: Path) -> Path:

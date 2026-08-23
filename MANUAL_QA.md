@@ -62,28 +62,100 @@ Expected:
 - Download status is `dry_run` when a legal OA PDF candidate is found, or a clear unresolved reason is recorded.
 - No institutional cookie or browser profile is used.
 
-## 5. ScienceDirect PDF With Entitlement
+## 5. Elsevier API-First Smoke Test (Unified Entry)
+
+Use only `paper_batch.py start`. Never paste credential values into this file,
+chat, command output, CSV/XLSX input, or Git. Before testing, verify only whether
+the two process variables are present:
+
+```powershell
+[pscustomobject]@{
+    ELSEVIER_API_KEY_Set   = [bool]$env:ELSEVIER_API_KEY
+    ELSEVIER_INSTTOKEN_Set = [bool]$env:ELSEVIER_INSTTOKEN
+}
+```
+
+Create three isolated, fixed batches under `results\elsevier_api_smoke_test\`:
+
+1. Open a PowerShell process that has `ELSEVIER_API_KEY` but no
+   `ELSEVIER_INSTTOKEN`, then run:
+
+   ```powershell
+   .\.venv\Scripts\python.exe paper_batch.py start --text "10.1016/j.actamat.2016.08.081" --out "results\elsevier_api_smoke_test" --run-name "api_key_only" --no-auto-zotero
+   ```
+
+2. In a process with both variables present, run:
+
+   ```powershell
+   .\.venv\Scripts\python.exe paper_batch.py start --text "10.1016/j.actamat.2016.08.081" --out "results\elsevier_api_smoke_test" --run-name "api_key_insttoken" --no-auto-zotero
+   ```
+
+3. With a known DOI that the institution cannot access, run the complete
+   browser → limited OA → Zotero-eligibility chain. Keep Zotero open if actual
+   automatic fallback is part of the check; otherwise add `--no-auto-zotero`
+   and verify `zotero_fallback.csv` was produced.
+
+   ```powershell
+   $noEntitlementDoi = Read-Host "Known no-entitlement DOI"
+   .\.venv\Scripts\python.exe paper_batch.py start --text $noEntitlementDoi --out "results\elsevier_api_smoke_test" --run-name "no_entitlement"
+   ```
+
+   If the user has neither a known no-entitlement DOI nor a non-institutional
+   network, do not alter networking, invent a bad token, or keep probing random
+   papers. Record the live 403 check as user-waived and run the offline routing
+   acceptance instead:
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m unittest tests.test_elsevier_api -v
+   ```
+
+   This verifies 403 → `not_entitled` → browser routing and report isolation,
+   but it is not evidence that the publisher returned a real 403. Retain one
+   real non-success API smoke result, when available, as separate evidence that
+   the browser/Zotero fallback path is operational.
+
+Expected for each batch:
+
+- Inspect `reports\sciencedirect\elsevier_api_attempts.csv`; it contains no
+  response body, full request headers, API Key, Institution Token, or Cookie.
+- A successful API row has `status=success`, a valid final-named PDF under the
+  ScienceDirect stage `pdfs\`, and `browser_fallback=False`.
+- API-only success does not launch a browser or read browser cookies.
+- 403 is `not_entitled`, is never reported as PDF success, and proceeds to the
+  existing fallback ladder.
+- Unified delivery publishes valid files under `结果\pdf\` and supplements
+  under `结果\补充材料\<article-stem>\` without changing the input.
+- Record only sanitised fields in `smoke_summary.csv`: authentication mode
+  booleans, HTTP status, FULL XML boolean, main EID boolean, PDF size/validity,
+  supplement count, browser fallback boolean, and final report status.
+- If the example DOI fails in both authentication modes, do not mark real API
+  acceptance complete; repeat with a user-provided DOI known to be entitled.
+- When the real 403 check is user-waived, record it as `waived_environment_unavailable`
+  rather than `passed`; do not report the simulated 403 as a live entitlement result.
+
+## 6. ScienceDirect PDF With Entitlement
 
 Use one DOI that the user's institution can access.
 
 ```powershell
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<entitled ScienceDirect DOI>" --out results --run-name manual_sd_entitled --login-wait-seconds 600
+.\.venv\Scripts\python.exe paper_batch.py start --text "<entitled ScienceDirect DOI>" --out results --run-name manual_sd_entitled --login-wait-seconds 600 --no-auto-zotero
 ```
 
 Expected:
 
-- If the cached cookie is insufficient, an Edge/Chrome debug window opens.
+- Elsevier API is tried first. A browser opens only when the API does not return
+  a valid entitled PDF.
 - The user completes institutional login in the browser; no password is pasted into Codex or the terminal.
 - `pdf_download_report.csv` records `success` and the PDF exists under `pdfs\`.
 - `00_给研究生查看\paper_index.xlsx` links to the downloaded PDF by relative path and does not duplicate the PDF.
 - `results\_auth\sciencedirect_cookies.json` may be created and must stay local.
 
-## 6. ScienceDirect PDF And Supplementary Materials
+## 7. ScienceDirect PDF And Supplementary Materials
 
 Use one entitled ScienceDirect DOI whose article page shows supplementary files under "Extras" or an Appendix section.
 
 ```powershell
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<entitled ScienceDirect DOI with supplementary files>" --out results --run-name manual_sd_supplements --login-wait-seconds 600
+.\.venv\Scripts\python.exe paper_batch.py start --text "<entitled ScienceDirect DOI with supplementary files>" --out results --run-name manual_sd_supplements --login-wait-seconds 600 --no-auto-zotero
 ```
 
 Expected:
@@ -98,7 +170,7 @@ Expected:
 Disable supplement downloading for comparison:
 
 ```powershell
-.\.venv\Scripts\python.exe sd_institutional_skill.py --text "<entitled ScienceDirect DOI with supplementary files>" --out results --run-name manual_sd_no_supplements --no-download-supplements
+.\.venv\Scripts\python.exe paper_batch.py start --text "<entitled ScienceDirect DOI with supplementary files>" --out results --run-name manual_sd_no_supplements --no-download-supplements --no-auto-zotero
 ```
 
 Expected:
@@ -107,7 +179,7 @@ Expected:
 - No `supplement_download_report.csv` is generated for the disabled run.
 - No `supplements\` directory is required for the disabled run.
 
-## 7. ScienceDirect No Entitlement Or Non-ScienceDirect DOI
+## 8. ScienceDirect No Entitlement Or Non-ScienceDirect DOI
 
 Use one DOI that is not available through the institution or is not an Elsevier/ScienceDirect DOI.
 
@@ -117,8 +189,11 @@ Expected:
 - `00_给研究生查看\失败项_下一步处理.csv` classifies the row, for example as `非 ScienceDirect`, `无机构权限`, `验证码或限速`, or `可重试 PDF 失败`.
 - The tool does not create a fake PDF success row.
 - The final summary points to the failed report.
+- `elsevier_api_attempts.csv` records `not_entitled` (403) or another safe API
+  reason, while `pdf_download_report.csv` keeps the browser failure reason that
+  drives limited OA and Zotero fallback.
 
-## 8. CAPTCHA, 403, Or Rate Limit
+## 9. CAPTCHA, 403, Or Rate Limit
 
 Trigger only with a small batch after confirming normal single-paper access.
 
@@ -126,9 +201,11 @@ Expected:
 
 - CAPTCHA prompts ask the user to complete verification in the browser.
 - 403/rate-limit handling waits or records a failure; it does not repeatedly hammer ScienceDirect.
+- An API 401 or 429 opens the API circuit for the remaining batch rows; those
+  rows go directly to browser handling rather than consuming more API quota.
 - The user can inspect `pdf_download_report.csv` before retrying.
 
-## 9. Windows Package Verification
+## 10. Windows Package Verification
 
 ```powershell
 .\make_windows_ui_package.bat
@@ -143,7 +220,7 @@ Expected:
 - The package contains `skills\sciencedirect-doi-download\references\failure-reasons.md`.
 - `docs\sciencedirect_skill_beginner_guide.md`, `README.md`, `README_zh.md`, `WINDOWS_UI_README.md`, and `MANUAL_QA.md` are included.
 
-## 10. Unified Batch With Zotero Fallback
+## 11. Unified Batch With Zotero Fallback
 
 Do not perform these checks in the default unittest suite. They require an
 explicitly approved XPI and the isolated profile `elpj7iql.Zotero test`. Do not

@@ -84,6 +84,55 @@ class SkillPackagingTests(unittest.TestCase):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, text)
 
+    def test_paper_download_skill_preserves_elsevier_api_first_route(self) -> None:
+        text = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        start = text.index("## Elsevier API-first ScienceDirect route")
+        end = text.index("## CSV reading contract", start)
+        section = text[start:end]
+
+        route = (
+            "Elsevier Article/Object API",
+            "Existing browser institutional access",
+            "Bounded OA recovery",
+            "Zotero fallback",
+        )
+        positions = [section.index(stage) for stage in route]
+        self.assertEqual(positions, sorted(positions))
+
+        for required in (
+            "paper_batch.py start",
+            "ELSEVIER_API_KEY",
+            "ELSEVIER_INSTTOKEN",
+            "elsevier_api_attempts.csv",
+            "--no-download-supplements",
+            "api_key_missing",
+            "not_entitled",
+            "rate_limited",
+            "waived_environment_unavailable",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, section)
+
+    def test_paper_download_skill_uses_parallel_crossref_preflight(self) -> None:
+        text = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        start = text.index("## Parallel Crossref DOI preflight (default metadata check)")
+        end = text.index("## Elsevier API-first ScienceDirect route", start)
+        section = text[start:end]
+        for required in (
+            "preflight_doi_metadata.py",
+            "--workers",
+            "verified_crossref",
+            "does **not** download PDFs",
+            "--no-doi-preflight",
+            "paper_automation.doi_preflight",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, section)
+
     def test_paper_download_skill_uses_zotero_bridge(self) -> None:
         skill_text = (
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md"
