@@ -275,19 +275,44 @@ class SkillPackagingTests(unittest.TestCase):
         self.assertIn("Test-PathOverlap", text)
         self.assertIn("Refusing to install because target skills root overlaps", text)
 
-    def test_notice_and_license_document_public_origin(self) -> None:
-        notice = (PROJECT_ROOT / "NOTICE").read_text(encoding="utf-8")
+    def test_license_and_third_party_notices_are_separated(self) -> None:
+        notices = (PROJECT_ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
         license_text = (PROJECT_ROOT / "LICENSE").read_text(encoding="utf-8")
-        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        upstream_name = "GAO" + "-pooh"
+        upstream_repo = upstream_name + "/paper-scraper"
+        public_paths = [
+            PROJECT_ROOT / "LICENSE",
+            PROJECT_ROOT / "README.md",
+            PROJECT_ROOT / "README_zh.md",
+            PROJECT_ROOT / "WINDOWS_UI_README.md",
+        ]
 
-        self.assertIn("GAO-pooh/paper-scraper", notice)
-        self.assertIn("based on and extends", notice)
-        self.assertIn("Copyright (c) 2026 wkguoo (modifications)", notice)
-        self.assertIn("Copyright (c) 2026 wkguoo (modifications)", license_text)
-        self.assertIn("基于开源项目", readme)
-        self.assertIn("修改并扩展", readme)
-        self.assertIn("NOTICE", readme)
-        self.assertIn("不提供任何数据库、学校或出版社访问权限", readme)
+        self.assertIn("Copyright (c) 2026 wkguoo", license_text)
+        self.assertNotIn(upstream_name, license_text)
+        self.assertNotIn("(modifications)", license_text)
+        self.assertIn(upstream_repo, notices)
+        self.assertIn("Copyright (c) 2026 " + upstream_name, notices)
+        self.assertIn("Permission is hereby granted", notices)
+        self.assertIn("copies or substantial portions of the Software", notices)
+        self.assertNotIn("based on " + "and extends", notices)
+
+        disallowed = [
+            upstream_name,
+            "github.com/" + upstream_repo,
+            "based on " + "and extends",
+            "基于" + "开源项目",
+            "修改并" + "扩展",
+            "wkguoo (" + "modifications)",
+        ]
+        for path in public_paths:
+            text = path.read_text(encoding="utf-8")
+            for phrase in disallowed:
+                with self.subTest(path=path.relative_to(PROJECT_ROOT), phrase=phrase):
+                    self.assertNotIn(phrase, text)
+
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("THIRD_PARTY_NOTICES.md", readme)
+        self.assertIn("does not provide database, university, publisher", readme)
 
     def test_github_actions_windows_tests_workflow_exists(self) -> None:
         workflow = PROJECT_ROOT / ".github" / "workflows" / "tests.yml"
@@ -332,7 +357,7 @@ class SkillPackagingTests(unittest.TestCase):
             PROJECT_ROOT / "README.md",
             PROJECT_ROOT / "README_zh.md",
             PROJECT_ROOT / "WINDOWS_UI_README.md",
-            PROJECT_ROOT / "NOTICE",
+            PROJECT_ROOT / "THIRD_PARTY_NOTICES.md",
             PROJECT_ROOT / "paper_scraper_ui.py",
             PROJECT_ROOT / "paper_skill.py",
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
@@ -480,7 +505,7 @@ class SkillPackagingTests(unittest.TestCase):
             'call :copy_required "sd_supplements.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "student_handoff.py" "%PACKAGE_DIR%\\"',
             'call :copy_required "LICENSE" "%PACKAGE_DIR%\\"',
-            'call :copy_required "NOTICE" "%PACKAGE_DIR%\\"',
+            'call :copy_required "THIRD_PARTY_NOTICES.md" "%PACKAGE_DIR%\\"',
             'call :copy_optional "如何导出机构Cookie.md" "%PACKAGE_DIR%\\"',
             'call :copy_required "README.md" "%PACKAGE_DIR%\\"',
             'call :copy_required "README_zh.md" "%PACKAGE_DIR%\\"',

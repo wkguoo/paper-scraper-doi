@@ -1,6 +1,15 @@
+# Third-Party Notices
+
+Portions of the ScienceDirect compatibility and browser-integration code are
+derived from `GAO-pooh/paper-scraper`:
+
+https://github.com/GAO-pooh/paper-scraper/tree/main
+
+Those portions are provided under the following MIT License:
+
 MIT License
 
-Copyright (c) 2026 wkguoo
+Copyright (c) 2026 GAO-pooh
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

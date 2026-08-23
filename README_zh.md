@@ -390,8 +390,6 @@ git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist
 
 真实机构登录、PDF 下载、CAPTCHA 和补充材料下载属于人工 QA，见 [MANUAL_QA.md](MANUAL_QA.md)。
 
-## 来源声明
+## 许可证
 
-本项目基于开源项目 [GAO-pooh/paper-scraper](https://github.com/GAO-pooh/paper-scraper/tree/main) 修改并扩展。原项目采用 MIT License，本仓库保留原项目版权声明和许可声明。当前版本保留并增强 ScienceDirect 工作流，增加 Windows 图形界面、DOI 批量解析、Cookie JSON 支持、补充材料下载、OA 资源辅助获取流程和 Codex Skills。
-
-授权和修改声明见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。本仓库后续修改、扩展与新增模块由 `wkguoo` 维护并声明修改部分版权：`Copyright (c) 2026 wkguoo (modifications)`。
+本项目采用 [MIT License](LICENSE)，版权归 `wkguoo` 所有。仓库所含第三方代码的许可声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

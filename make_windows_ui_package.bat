@@ -27,7 +27,7 @@ call :copy_required "doi_batch_utils.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "windows_paths.py" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "requirements.txt" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "LICENSE" "%PACKAGE_DIR%\" || exit /b 1
-call :copy_required "NOTICE" "%PACKAGE_DIR%\" || exit /b 1
+call :copy_required "THIRD_PARTY_NOTICES.md" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "README.md" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "README_zh.md" "%PACKAGE_DIR%\" || exit /b 1
 call :copy_required "WINDOWS_UI_README.md" "%PACKAGE_DIR%\" || exit /b 1

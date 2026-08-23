@@ -52,7 +52,7 @@ Do **not** start new literature jobs with `paper_skill.py`, `sd_institutional_sk
 - It does not ask Codex or the script to enter your university account password.
 - It does not guarantee that title-only metadata matching is correct. Uncertain rows are kept in `needs_review`.
 
-中文兼容说明：本项目基于开源项目修改并扩展；本项目不提供任何数据库、学校或出版社访问权限。完整中文说明见 [README_zh.md](README_zh.md)。
+中文说明：本项目不提供任何数据库、学校或出版社访问权限。完整中文说明见 [README_zh.md](README_zh.md)。
 
 ## Quick Start
 
@@ -191,8 +191,6 @@ Run the offline checks before committing Python or workflow changes:
 
 Manual checks that require real institutional login, CAPTCHA, or PDF access are documented in [MANUAL_QA.md](MANUAL_QA.md).
 
-## Project Origin
+## License
 
-This project is based on and extends [GAO-pooh/paper-scraper](https://github.com/GAO-pooh/paper-scraper/tree/main). The original project uses the MIT License. This repository keeps the original copyright and license notices, and adds Windows UI support, DOI batch intake improvements, Cookie JSON support, supplementary material handling, OA PDF candidate discovery, and Codex Skills.
-
-See [LICENSE](LICENSE) and [NOTICE](NOTICE) for license and modification details. Later changes, extensions, and new modules in this repository are maintained by `wkguoo` and declare modification copyright as `Copyright (c) 2026 wkguoo (modifications)`.
+This project is licensed under the [MIT License](LICENSE), with copyright held by `wkguoo`. Notices for third-party code included in this repository are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

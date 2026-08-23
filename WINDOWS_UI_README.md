@@ -4,10 +4,9 @@
 
 **默认入口：统一批次（`paper_batch.py`）**——公开 OA → 机构访问 → **失败自动进 Zotero 并排队桥接**（默认无 `resume`）。GUI 已收口为统一批次和运行日志两个页签；ScienceDirect DOI 专用与 OA 专用能力仍作为命令行兼容入口保留。新任务请优先使用 `paper_batch.py`。
 
-## 来源声明
+## 许可证
 
-本项目基于开源项目 [GAO-pooh/paper-scraper](https://github.com/GAO-pooh/paper-scraper/tree/main) 修改并扩展。
-授权和修改声明见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
+本项目采用 [MIT License](LICENSE)，版权归 `wkguoo` 所有。第三方代码许可声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 启动方式
 
