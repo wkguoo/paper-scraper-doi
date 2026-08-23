@@ -93,7 +93,6 @@ python -m venv .venv
 - [Complete English guide](docs/user-guide/en.md)
 - [Windows UI 使用说明](docs/user-guide/windows-ui.md)
 - [Zotero 9 本地桥接新手指南](docs/zotero_bridge_beginner_guide.md)
-- [ScienceDirect Skill 新手指南](docs/sciencedirect_skill_beginner_guide.md)
 - [人工 QA 清单](docs/development/manual-qa.md)
 - [安全策略](.github/SECURITY.md)
 
@@ -115,4 +114,4 @@ python -m venv .venv
 
 不要提交 Cookie、密码、下载的 PDF、结果表、浏览器缓存、`.venv/` 或 `dist/`。发现安全问题时请先阅读[安全策略](.github/SECURITY.md)。
 
-项目采用 [MIT License](LICENSE)，版权归 `wkguoo` 所有；第三方代码许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+项目采用 [MIT License](LICENSE)，版权归 `wkguoo` 所有；第三方代码许可见 [THIRD_PARTY_NOTICES.md](docs/legal/THIRD_PARTY_NOTICES.md)。

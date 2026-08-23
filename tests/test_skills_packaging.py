@@ -22,17 +22,6 @@ class SkillPackagingTests(unittest.TestCase):
                 "PDF",
                 "institutional",
             ],
-            "sciencedirect-doi-download": [
-                "ScienceDirect",
-                "institutional",
-                "DOI",
-            ],
-            "legal-oa-paper-download": [
-                "PDF",
-                "download assistance",
-                "without institutional cookies",
-                "third-party",
-            ],
         }
 
         for skill_name, required_terms in expected.items():
@@ -45,6 +34,13 @@ class SkillPackagingTests(unittest.TestCase):
                 self.assertGreater(len(description), 80)
                 for term in required_terms:
                     self.assertIn(term, description)
+
+    def test_only_unified_skill_is_shipped(self) -> None:
+        skill_names = {
+            path.parent.name
+            for path in (PROJECT_ROOT / "skills").glob("*/SKILL.md")
+        }
+        self.assertEqual(skill_names, {"paper-download"})
 
     def test_paper_download_skill_documents_batch_zotero_fallback_contract(self) -> None:
         text = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(
@@ -276,7 +272,9 @@ class SkillPackagingTests(unittest.TestCase):
         self.assertIn("Refusing to install because target skills root overlaps", text)
 
     def test_license_and_third_party_notices_are_separated(self) -> None:
-        notices = (PROJECT_ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+        notices = (
+            PROJECT_ROOT / "docs" / "legal" / "THIRD_PARTY_NOTICES.md"
+        ).read_text(encoding="utf-8")
         license_text = (PROJECT_ROOT / "LICENSE").read_text(encoding="utf-8")
         upstream_name = "GAO" + "-pooh"
         upstream_repo = upstream_name + "/paper-scraper"
@@ -336,9 +334,6 @@ class SkillPackagingTests(unittest.TestCase):
             PROJECT_ROOT / "docs" / "development" / "manual-qa.md",
             PROJECT_ROOT / "sd_scraper.py",
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
-            PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md",
-            PROJECT_ROOT / "skills" / "legal-oa-paper-download" / "SKILL.md",
-            PROJECT_ROOT / "docs" / "sciencedirect_skill_beginner_guide.md",
         ]
         disallowed = [
             "bypass " + "Cloudflare",
@@ -361,11 +356,10 @@ class SkillPackagingTests(unittest.TestCase):
             PROJECT_ROOT / "README.md",
             PROJECT_ROOT / "docs" / "user-guide" / "zh.md",
             PROJECT_ROOT / "docs" / "user-guide" / "windows-ui.md",
-            PROJECT_ROOT / "THIRD_PARTY_NOTICES.md",
+            PROJECT_ROOT / "docs" / "legal" / "THIRD_PARTY_NOTICES.md",
             PROJECT_ROOT / "paper_scraper_ui.py",
             PROJECT_ROOT / "paper_skill.py",
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
-            PROJECT_ROOT / "skills" / "legal-oa-paper-download" / "SKILL.md",
         ]
         disallowed = [
             "合法 " + "OA " + "下载",
@@ -385,52 +379,18 @@ class SkillPackagingTests(unittest.TestCase):
                 with self.subTest(path=path.relative_to(PROJECT_ROOT), phrase=phrase):
                     self.assertNotIn(phrase, text)
 
-    def test_sciencedirect_skills_document_supplement_outputs(self) -> None:
-        for skill_name in ("paper-download", "sciencedirect-doi-download"):
-            with self.subTest(skill=skill_name):
-                text = (PROJECT_ROOT / "skills" / skill_name / "SKILL.md").read_text(encoding="utf-8")
-                self.assertIn("supplement_download_report.csv", text)
-                if skill_name == "paper-download":
-                    self.assertIn("结果/补充材料/", text)
-                else:
-                    self.assertIn("supplements\\", text)
-                if skill_name == "sciencedirect-doi-download":
-                    self.assertIn("--no-download-supplements", text)
-
-    def test_sciencedirect_reference_files_exist_and_are_linked(self) -> None:
-        references_dir = PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "references"
-        expected_reference_files = {
-            "beginner-workflow.md",
-            "failure-reasons.md",
-        }
-
-        self.assertTrue(references_dir.is_dir())
-        actual_reference_files = {path.name for path in references_dir.glob("*.md")}
-        self.assertTrue(expected_reference_files.issubset(actual_reference_files))
-
-        skill_text = (
-            PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md"
-        ).read_text(encoding="utf-8")
-        for filename in expected_reference_files:
-            with self.subTest(reference=filename):
-                self.assertIn(f"references/{filename}", skill_text)
+    def test_paper_download_skill_documents_supplement_outputs(self) -> None:
+        text = (PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("supplement_download_report.csv", text)
+        self.assertIn("结果/补充材料/", text)
 
     def test_beginner_docs_preflight_before_download_not_dry_run(self) -> None:
         beginner_docs = [
             PROJECT_ROOT / "README.md",
             PROJECT_ROOT / "docs" / "user-guide" / "zh.md",
-            PROJECT_ROOT / "docs" / "sciencedirect_skill_beginner_guide.md",
             PROJECT_ROOT / "skills" / "paper-download" / "SKILL.md",
-            PROJECT_ROOT / "skills" / "sciencedirect-doi-download" / "SKILL.md",
-            PROJECT_ROOT
-            / "skills"
-            / "sciencedirect-doi-download"
-            / "references"
-            / "beginner-workflow.md",
         ]
         blocked_first_pass_phrases = [
-            "Use $sciencedirect-doi-download to dry-run this paper list",
-            "Use $sciencedirect-doi-download to dry-run these paper recommendations",
             "第一次拿到 AI 推荐列表，先跑 `--dry-run`",
             "beginner_dry_run",
         ]

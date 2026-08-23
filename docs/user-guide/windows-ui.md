@@ -6,7 +6,7 @@
 
 ## 许可证
 
-本项目采用 [MIT License](../../LICENSE)，版权归 `wkguoo` 所有。第三方代码许可声明见 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。
+本项目采用 [MIT License](../../LICENSE)，版权归 `wkguoo` 所有。第三方代码许可声明见 [THIRD_PARTY_NOTICES.md](../legal/THIRD_PARTY_NOTICES.md)。
 
 ## 启动方式
 

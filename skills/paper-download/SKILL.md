@@ -18,10 +18,6 @@ Recommended entry / default product entry for agents and users: `paper_batch.py`
 | Optional one-shot login/CAPTCHA retry (compat) | `paper_batch.py resume --run-dir` only with `--enable-manual-retry` batches | restart `start` unnecessarily |
 | GUI | UI tab **统一批次（推荐）**; use **运行日志** to inspect progress | Expect DOI/OA compatibility tabs or GUI email/Cookie fields |
 
-Skills `sciencedirect-doi-download` and `legal-oa-paper-download` are **internal
-compatibility references**; they are not the default install and must not be
-chosen as standalone user routes when this skill applies.
-
 Use this as the single entry point for a mixed DOI/title paper list. Run the
 project workflow first. Only `zotero_fallback.csv` rows enter the bridge. Never
 send the complete input list to Zotero again.

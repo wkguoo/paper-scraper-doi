@@ -36,7 +36,6 @@ Do **not** start new literature jobs with `paper_skill.py`, `sd_institutional_sk
 | `sd_institutional_skill.py` | Internal ScienceDirect intake/download adapter (also used by preflight) |
 | `paper_skill.py` | Internal OA-only adapter |
 | `institutional_paper_skill.py` | Internal non-Elsevier institutional adapter |
-| Skills `sciencedirect-doi-download` / `legal-oa-paper-download` | Internal skill docs; not installed by default |
 
 ## What It Does
 
@@ -192,4 +191,4 @@ Manual checks that require real institutional login, CAPTCHA, or PDF access are 
 
 ## License
 
-This project is licensed under the [MIT License](../../LICENSE), with copyright held by `wkguoo`. Notices for third-party code included in this repository are listed in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
+This project is licensed under the [MIT License](../../LICENSE), with copyright held by `wkguoo`. Notices for third-party code included in this repository are listed in [THIRD_PARTY_NOTICES.md](../legal/THIRD_PARTY_NOTICES.md).

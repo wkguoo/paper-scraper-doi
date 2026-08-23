@@ -31,7 +31,6 @@
 | UI 的「DOI 批量下载 / OA 资源辅助获取」 | 旧版专用路径，仅兼容维护 |
 | `sd_scraper.py` | 旧版 ScienceDirect DOI 批量下载兼容 CLI |
 | `sd_institutional_skill.py` / `paper_skill.py` / `institutional_paper_skill.py` | 统一流程内部适配器 |
-| `sciencedirect-doi-download` / `legal-oa-paper-download` skill | 内部说明；默认不安装 |
 
 ## 这个工具能做什么
 
@@ -384,4 +383,4 @@ git ls-files | rg "cookie|cookies|results|pdfs|\.pdf$|\.xlsx$|\.csv$|\.venv|dist
 
 ## 许可证
 
-本项目采用 [MIT License](../../LICENSE)，版权归 `wkguoo` 所有。仓库所含第三方代码的许可声明见 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。
+本项目采用 [MIT License](../../LICENSE)，版权归 `wkguoo` 所有。仓库所含第三方代码的许可声明见 [THIRD_PARTY_NOTICES.md](../legal/THIRD_PARTY_NOTICES.md)。

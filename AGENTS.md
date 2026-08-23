@@ -6,7 +6,7 @@ This repository is a Windows-oriented paper download helper.
 
 **User-facing default:** `paper_batch.py` (CLI) and the UI tab **统一批次（推荐）** in `paper_scraper_ui.py`; the GUI contains only that entry tab plus **运行日志**. Codex agents should use skill `paper-download` only.
 
-**Internal / compatibility modules (not default user routes):** `sd_scraper.py` (legacy ScienceDirect DOI batch compatibility CLI), `sd_institutional_skill.py` (ScienceDirect intake/download adapter, also used for preflight), `paper_skill.py` (OA-only adapter), `institutional_paper_skill.py` (non-Elsevier institutional adapter), and skills `sciencedirect-doi-download` / `legal-oa-paper-download`. Shared libraries live under `paper_automation/` and `doi_batch_utils.py`. Path helpers: `windows_paths.py`. Windows helpers: `start_paper_scraper_ui.bat` and `install_codex_skills.ps1`. Docs: `README.md`, `docs/user-guide/`, `docs/development/manual-qa.md`. Generated `results/`, `dist/`, PDFs, and cookies stay out of Git.
+**Internal / compatibility modules (not default user routes):** `sd_scraper.py` (legacy ScienceDirect DOI batch compatibility CLI), `sd_institutional_skill.py` (ScienceDirect intake/download adapter, also used for preflight), `paper_skill.py` (OA-only adapter), and `institutional_paper_skill.py` (non-Elsevier institutional adapter). Shared libraries live under `paper_automation/` and `doi_batch_utils.py`. Path helpers: `windows_paths.py`. Windows helpers: `start_paper_scraper_ui.bat` and `install_codex_skills.ps1`. Docs: `README.md`, `docs/user-guide/`, `docs/development/manual-qa.md`. Generated `results/`, `dist/`, PDFs, and cookies stay out of Git.
 
 ## Build, Test, and Development Commands
 
