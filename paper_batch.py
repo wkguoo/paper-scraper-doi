@@ -161,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "示例：paper_batch.py start --input papers.xlsx --out results --email you@example.com\n"
+            "Elsevier 全文 XML：paper_batch.py xml-download --input papers.csv --out results --run-name 全文XML\n"
             "默认固定目录：results/<输入文件名>/（重复 start 会续跑同一目录，不再新建时间戳夹）\n"
             "强制新开一批：paper_batch.py start ... --fresh\n"
             "失败重试：paper_batch.py retry-failed --run-dir <run-dir>\n"
@@ -286,6 +287,37 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-iucr-short-try",
         action="store_true",
         help="关闭 IUCr 短试策略（默认：机构失败 1 次后熔断 → OA → Zotero）",
+    )
+
+    xml_download = subparsers.add_parser(
+        "xml-download",
+        help="Elsevier Article Retrieval 全文 XML-only 固定批次；重复运行自动续传",
+    )
+    xml_download.add_argument(
+        "--input",
+        required=True,
+        help="CSV 输入；每行必须包含 DOI，或包含 Scopus ID/EID",
+    )
+    xml_download.add_argument("--out", required=True, help="批次输出根目录")
+    xml_download.add_argument("--run-name", required=True, help="固定批次文件夹名")
+    xml_download.add_argument(
+        "--workers",
+        type=int,
+        choices=range(1, 5),
+        default=4,
+        help="API 并发数 1–4（默认 4）",
+    )
+    xml_download.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=30.0,
+        help="单次 API 请求超时秒数（默认 30）",
+    )
+    xml_download.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="本次最多处理的新条目数；0 表示全部，适合先用小值冒烟检查",
     )
 
     resume = subparsers.add_parser("resume", help="兼容：仅重试一次登录/验证码失败条目（默认批次已跳过）")
@@ -589,6 +621,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "xml-download":
+            from paper_automation.xml_batch import run_xml_batch
+
+            result = run_xml_batch(
+                input_path=args.input,
+                output_root=args.out,
+                run_name=args.run_name,
+                workers=int(args.workers),
+                timeout_seconds=float(args.timeout_seconds),
+                limit=int(args.limit),
+            )
+            print(f"XML 批次目录：{result.run_dir}")
+            print(f"下载清单：{result.manifest_path}")
+            print(f"失败清单：{result.failed_path}")
+            if result.stopped_reason:
+                print(
+                    f"批次已安全停止：{result.stopped_reason}；"
+                    "重新运行同一条命令即可续传。"
+                )
+                return 3
+            if result.pending:
+                print(f"仍有 {result.pending} 条待处理；去掉 --limit 后重跑同一批次即可继续。")
+            return 0
         if args.command == "start":
             # A4: preflight on by default; disable with --no-doi-preflight.
             do_preflight = not bool(args.no_doi_preflight)
