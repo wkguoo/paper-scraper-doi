@@ -120,6 +120,26 @@ class ElsevierApiResult:
     supplement_reason: str = ""
 
 
+@dataclass(frozen=True)
+class ElsevierXmlResult:
+    """Raw Elsevier Article Retrieval XML plus filename metadata."""
+
+    status: str
+    identifier_type: str
+    identifier: str
+    http_status: int | None = None
+    content_type: str = ""
+    xml_bytes: bytes = b""
+    reason: str = ""
+    doi: str = ""
+    scopus_id: str = ""
+    pii: str = ""
+    title: str = ""
+    authors: tuple[str, ...] = ()
+    journal: str = ""
+    year: str = ""
+
+
 Transport = Callable[[str, Mapping[str, str], float], HttpResponse]
 StreamTransport = Callable[[str, Mapping[str, str], float, BinaryIO], StreamHttpResponse]
 
@@ -251,6 +271,101 @@ class ElsevierApiClient:
     @property
     def auth_mode(self) -> str:
         return "api_key+insttoken" if self.insttoken else "api_key"
+
+    def retrieve_article_xml(
+        self,
+        identifier: str,
+        *,
+        identifier_type: str = "doi",
+    ) -> ElsevierXmlResult:
+        """Retrieve one raw ``view=FULL`` XML response without requesting a PDF."""
+
+        kind = str(identifier_type or "").strip().lower()
+        value = str(identifier or "").strip()
+        if kind == "doi":
+            value = clean_doi(value)
+        elif kind == "scopus_id":
+            if value.upper().startswith("SCOPUS_ID:"):
+                value = value.split(":", 1)[1].strip()
+            if value.lower().startswith("2-s2.0-"):
+                value = value[len("2-s2.0-") :].strip()
+        else:
+            return ElsevierXmlResult(
+                status="invalid_identifier",
+                identifier_type=kind,
+                identifier=value,
+                reason="unsupported_identifier_type",
+            )
+        if not value:
+            return ElsevierXmlResult(
+                status="invalid_identifier",
+                identifier_type=kind,
+                identifier=value,
+                reason="identifier_missing",
+            )
+        if not self.api_key:
+            return ElsevierXmlResult(
+                status="api_key_missing",
+                identifier_type=kind,
+                identifier=value,
+                reason="api_key_missing",
+            )
+
+        article_url = (
+            f"{API_ROOT}/content/article/{kind}/{quote(value, safe='')}?view=FULL"
+        )
+        response, error = self._request(article_url, accept="text/xml")
+        if error:
+            return ElsevierXmlResult(
+                status=error[0],
+                identifier_type=kind,
+                identifier=value,
+                http_status=error[1],
+                reason=error[2],
+                doi=value if kind == "doi" else "",
+                scopus_id=value if kind == "scopus_id" else "",
+            )
+        assert response is not None
+
+        content_type = _content_type(response.headers)
+        if is_pdf_bytes(response.body):
+            reason = "article_response_pdf"
+        elif _looks_like_html(response.body, content_type):
+            reason = "article_response_html"
+        else:
+            root = parse_full_text_xml(response.body)
+            if root is not None:
+                response_doi = _first_text(root, "doi")
+                response_scopus_id = _first_text(root, "scopus-id")
+                return ElsevierXmlResult(
+                    status="success",
+                    identifier_type=kind,
+                    identifier=value,
+                    http_status=response.status,
+                    content_type=content_type,
+                    xml_bytes=response.body,
+                    doi=(value if kind == "doi" else response_doi),
+                    scopus_id=(value if kind == "scopus_id" else response_scopus_id),
+                    pii=_first_text(root, "pii"),
+                    title=_first_text(root, "title"),
+                    authors=_authors_from_xml(root),
+                    journal=_first_text(root, "publicationName"),
+                    year=_year_from_text(
+                        _first_text(root, "coverDate")
+                        or _first_text(root, "cover-date-year")
+                    ),
+                )
+            reason = "article_response_invalid_xml"
+        return ElsevierXmlResult(
+            status="invalid_xml",
+            identifier_type=kind,
+            identifier=value,
+            http_status=response.status,
+            content_type=content_type,
+            reason=reason,
+            doi=value if kind == "doi" else "",
+            scopus_id=value if kind == "scopus_id" else "",
+        )
 
     def download_article(self, doi: str, *, include_supplements: bool = True) -> ElsevierApiResult:
         cleaned_doi = clean_doi(doi)
@@ -588,6 +703,15 @@ def _parse_xml(body: bytes) -> ElementTree.Element | None:
         return ElementTree.fromstring(sample)
     except ElementTree.ParseError:
         return None
+
+
+def parse_full_text_xml(body: bytes) -> ElementTree.Element | None:
+    """Return the root only for a valid Article Retrieval full-text response."""
+
+    root = _parse_xml(body)
+    if root is None or _local_name(root.tag) != "full-text-retrieval-response":
+        return None
+    return root
 
 
 def _local_name(tag: object) -> str:

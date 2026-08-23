@@ -16,6 +16,7 @@ from paper_automation.elsevier_api import (
     ElsevierApiClient,
     ElsevierApiResult,
     ElsevierAttachment,
+    ElsevierXmlResult,
     HttpResponse,
     StreamHttpResponse,
 )
@@ -106,6 +107,57 @@ class QueueTransport:
 
 
 class ElsevierApiClientTests(unittest.TestCase):
+    def test_xml_only_returns_raw_full_xml_without_pdf_request(self) -> None:
+        transport = QueueTransport([HttpResponse(200, {"Content-Type": "text/xml"}, FULL_XML)])
+        result = ElsevierApiClient(api_key="key", transport=transport).retrieve_article_xml(
+            "10.1016/j.actamat.2016.08.081"
+        )
+
+        self.assertIsInstance(result, ElsevierXmlResult)
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.xml_bytes, FULL_XML)
+        self.assertEqual(result.title, "API-first titanium paper")
+        self.assertEqual(result.authors, ("Zhang Wei", "Li Ming"))
+        self.assertEqual(result.year, "2016")
+        self.assertEqual(len(transport.calls), 1)
+        self.assertIn("/content/article/doi/", transport.calls[0][0])
+        self.assertNotIn("/content/object/", transport.calls[0][0])
+
+    def test_xml_only_accepts_scopus_id_and_strips_eid_prefix(self) -> None:
+        transport = QueueTransport([HttpResponse(200, {"Content-Type": "application/xml"}, FULL_XML)])
+        result = ElsevierApiClient(api_key="key", transport=transport).retrieve_article_xml(
+            "2-s2.0-0026985040",
+            identifier_type="scopus_id",
+        )
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(result.scopus_id, "0026985040")
+        self.assertIn("/content/article/scopus_id/0026985040?view=FULL", transport.calls[0][0])
+
+    def test_xml_only_rejects_pdf_html_and_non_article_xml(self) -> None:
+        responses = (
+            HttpResponse(200, {"Content-Type": "application/pdf"}, minimal_pdf_bytes()),
+            HttpResponse(200, {"Content-Type": "text/html"}, b"<html>login</html>"),
+            HttpResponse(200, {"Content-Type": "text/xml"}, b"<service-error/>"),
+        )
+        for response in responses:
+            with self.subTest(content_type=response.headers.get("Content-Type")):
+                result = ElsevierApiClient(
+                    api_key="key", transport=QueueTransport([response])
+                ).retrieve_article_xml("10.1016/example")
+                self.assertEqual(result.status, "invalid_xml")
+                self.assertEqual(result.xml_bytes, b"")
+
+    def test_xml_only_preserves_http_status_mapping(self) -> None:
+        for http_status, status in ((401, "unauthorized"), (403, "not_entitled"), (404, "not_found"), (429, "rate_limited"), (503, "network_error")):
+            with self.subTest(http_status=http_status):
+                result = ElsevierApiClient(
+                    api_key="key",
+                    transport=QueueTransport([HttpResponse(http_status, {}, b"")]),
+                ).retrieve_article_xml("10.1016/example")
+                self.assertEqual(result.status, status)
+                self.assertEqual(result.http_status, http_status)
+
     def test_full_xml_selects_main_pdf_and_metadata(self) -> None:
         pdf = minimal_pdf_bytes(b"article")
         transport = QueueTransport(

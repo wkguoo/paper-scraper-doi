@@ -184,6 +184,20 @@ API 成功时，程序不会创建浏览器下载器，也不会读取 Cookie。
 
 正文 PDF 在写入 `pdfs\` 时就使用 `年份-第一作者姓-题名.pdf`。API 补充材料写入 `supplements\<正文文件名stem>\`；个别附件失败不会把已成功的正文改成失败，也不会为附件失败单独启动浏览器。`--no-download-supplements` 会同时关闭 API 和浏览器的补充材料阶段。
 
+## Elsevier 全文 XML-only 固定批次
+
+准备一个 CSV 输入文件，每行至少填写 `DOI`，或者填写 `Scopus ID`/`EID`，即可只保存 Article Retrieval API 的 `view=FULL` 原始 XML。可选列包括 `标题`/`title`、`年份`/`year`、`期刊名`/`journal` 和 `期刊谱系`/`journal_family`；不依赖额外的目录统计或 `raw` 缓存：
+
+```powershell
+.\.venv\Scripts\python.exe paper_batch.py xml-download `
+  --input ".\papers.csv" `
+  --out "E:\文献库-分配存档" `
+  --run-name "Elsevier全文XML_20260823" `
+  --workers 4
+```
+
+该命令不会请求 PDF、补充材料，也不会启动浏览器、OA 或 Zotero。文件在写入前必须通过 XML 校验，优先按期刊谱系或期刊名分目录，直接保存为 `年份-第一作者姓-题名.xml`，不再创建年份子目录；相同命令可安全续传。先冒烟检查时可加 `--limit 12`，确认后去掉 `--limit` 重跑同一固定批次。成功、失败和待处理状态分别记录在 `reports\download_manifest.csv`、`reports\failed.csv` 和 `working\xml_checkpoint.jsonl`。401/403、429 或磁盘剩余低于 8 GiB 时会保留断点并停止。
+
 ## 统一批处理：项目优先，Zotero 仅处理失败项
 
 当 DOI 与题名混合列表需要先走项目已有流程、再把剩余失败项交给 Zotero 9 时，使用本地文件桥接。打开 Zotero 并启用“文献下载桥接”插件；正常路径不再使用直接 Zotero MCP 写入。
