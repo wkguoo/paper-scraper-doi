@@ -5,6 +5,7 @@ import csv
 import os
 import socket
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from urllib.error import URLError
@@ -442,6 +443,142 @@ class ElsevierApiAdapterTests(unittest.TestCase):
         self.assertEqual([row.doi for row in phase.fallback_rows], ["10.1016/one", "10.1016/two"])
         self.assertEqual(phase.attempts[1].status, "unauthorized")
         self.assertEqual(phase.attempts[1].reason, "api_circuit_open_after_unauthorized")
+        self.assertEqual([item.request_attempts for item in phase.attempts], [1, 0])
+
+    def test_transient_api_failures_retry_before_browser_fallback(self) -> None:
+        pdf = minimal_pdf_bytes(b"retry success")
+
+        class Client:
+            api_key = "key"
+            insttoken = ""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def download_article(self, doi, *, include_supplements=True):
+                self.calls += 1
+                if self.calls == 1:
+                    return ElsevierApiResult(
+                        status="network_error", doi=doi, http_status=503, reason="http_503"
+                    )
+                if self.calls == 2:
+                    return ElsevierApiResult(
+                        status="invalid_pdf", doi=doi, http_status=200, reason="article_response_html"
+                    )
+                return ElsevierApiResult(
+                    status="success",
+                    doi=doi,
+                    http_status=200,
+                    pdf_bytes=pdf,
+                    title="Recovered through API retry",
+                    authors=("Zhang Wei",),
+                    year="2024",
+                    supplement_status="not_requested",
+                )
+
+        with tempfile.TemporaryDirectory() as tmp, patch("sd_institutional_skill.time.sleep") as sleep:
+            client = Client()
+            phase = run_elsevier_api_phase(
+                [self._row("10.1016/retry-success")],
+                run_dir=Path(tmp),
+                email="",
+                download_supplements=False,
+                client=client,
+            )
+
+        self.assertEqual(client.calls, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5.0, 15.0])
+        self.assertEqual(phase.fallback_rows, [])
+        self.assertEqual(phase.attempts[0].status, "success")
+        self.assertEqual(phase.attempts[0].request_attempts, 3)
+
+    def test_persistent_rate_limit_retries_then_opens_batch_circuit(self) -> None:
+        class Client:
+            api_key = "key"
+            insttoken = ""
+
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def download_article(self, doi, *, include_supplements=True):
+                self.calls.append(doi)
+                return ElsevierApiResult(
+                    status="rate_limited", doi=doi, http_status=429, reason="http_429"
+                )
+
+        rows = [self._row("10.1016/one"), self._row("10.1016/two")]
+        with tempfile.TemporaryDirectory() as tmp, patch("sd_institutional_skill.time.sleep") as sleep:
+            client = Client()
+            phase = run_elsevier_api_phase(
+                rows,
+                run_dir=Path(tmp),
+                email="",
+                download_supplements=False,
+                client=client,
+            )
+
+        self.assertEqual(client.calls, ["10.1016/one"] * 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5.0, 15.0])
+        self.assertEqual([row.doi for row in phase.fallback_rows], ["10.1016/one", "10.1016/two"])
+        self.assertEqual([item.request_attempts for item in phase.attempts], [3, 0])
+        self.assertEqual(phase.attempts[1].reason, "api_circuit_open_after_rate_limited")
+
+    def test_default_two_workers_overlap_after_serial_warmup_and_preserve_order(self) -> None:
+        pdf = minimal_pdf_bytes(b"parallel main")
+
+        class Client:
+            api_key = "key"
+            insttoken = ""
+
+            def __init__(self):
+                self.barrier = threading.Barrier(2)
+                self.lock = threading.Lock()
+                self.active = 0
+                self.max_active = 0
+
+            def download_article(self, doi, *, include_supplements=True):
+                if doi != "10.1016/warmup":
+                    with self.lock:
+                        self.active += 1
+                        self.max_active = max(self.max_active, self.active)
+                    try:
+                        self.barrier.wait(timeout=2)
+                    finally:
+                        with self.lock:
+                            self.active -= 1
+                label = doi.rsplit("/", 1)[-1]
+                return ElsevierApiResult(
+                    status="success",
+                    doi=doi,
+                    http_status=200,
+                    pii=label,
+                    attachment_eid=f"{label}-main.pdf",
+                    pdf_bytes=pdf,
+                    full_xml_received=True,
+                    title=f"{label} paper",
+                    authors=("Zhang Wei",),
+                    year="2024",
+                    supplement_status="not_requested",
+                )
+
+        rows = [
+            self._row("10.1016/warmup", title="warmup paper"),
+            self._row("10.1016/two", title="two paper"),
+            self._row("10.1016/three", title="three paper"),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            client = Client()
+            phase = run_elsevier_api_phase(
+                rows,
+                run_dir=Path(tmp),
+                email="",
+                download_supplements=False,
+                client=client,
+            )
+
+        self.assertEqual(client.max_active, 2)
+        self.assertEqual([record.doi for record in phase.attempts], [row.doi for row in rows])
+        self.assertEqual([record.doi for record in phase.pdf_records], [row.doi for row in rows])
 
     def test_supplement_partial_failure_does_not_fail_main_pdf(self) -> None:
         pdf = minimal_pdf_bytes(b"main")
@@ -570,6 +707,7 @@ class ElsevierApiAdapterTests(unittest.TestCase):
                 row = next(csv.DictReader(handle))
         self.assertEqual(row["api_key_present"], "True")
         self.assertEqual(row["insttoken_present"], "True")
+        self.assertEqual(row["request_attempts"], "0")
         self.assertNotIn("sentinel-key", text)
         self.assertNotIn("sentinel-token", text)
 
@@ -641,7 +779,11 @@ class ElsevierApiAdapterTests(unittest.TestCase):
             api_key = "key"
             insttoken = "token"
 
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
             def download_article(self, doi, *, include_supplements=True):
+                self.calls.append(doi)
                 if doi.endswith("api"):
                     return ElsevierApiResult(
                         status="success",
@@ -683,7 +825,8 @@ class ElsevierApiAdapterTests(unittest.TestCase):
                 "10.1016/browser-only,Browser article,Li Ming,2023\n",
                 encoding="utf-8",
             )
-            with patch("sd_institutional_skill.ElsevierApiClient", return_value=Client()), patch(
+            client = Client()
+            with patch("sd_institutional_skill.ElsevierApiClient", return_value=client), patch(
                 "sd_institutional_skill.make_scraper", return_value=Browser()
             ):
                 exit_code = main(
@@ -704,6 +847,7 @@ class ElsevierApiAdapterTests(unittest.TestCase):
                 audit_rows = list(csv.DictReader(handle))
 
         self.assertEqual(exit_code, 0)
+        self.assertEqual(client.calls, ["10.1016/first-api", "10.1016/browser-only"])
         self.assertEqual(browser_inputs, [["10.1016/browser-only"]])
         self.assertEqual([row["doi"] for row in report_rows], ["10.1016/first-api", "10.1016/browser-only"])
         self.assertEqual([row["status"] for row in report_rows], ["success", "failed"])

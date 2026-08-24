@@ -106,10 +106,14 @@ For a ScienceDirect DOI (normally `10.1016/*`), `paper_batch.py start`
 automatically uses this fixed order:
 
 1. Elsevier Article/Object API for the main PDF and requested supplements.
-2. Existing browser institutional access for only the DOI rows that did not
-   succeed through the API.
-3. Bounded OA recovery.
-4. Zotero fallback for the remaining DOI-bearing failures.
+2. Bounded API retry before changing channels: retry `network_error`,
+   `rate_limited`, and `invalid_pdf` after 5 seconds and 15 seconds (three API
+   attempts total). Do not retry terminal `unauthorized`, `not_entitled`,
+   `not_found`, or `no_main_pdf` responses.
+3. Existing browser institutional access for only the DOI rows that still did
+   not succeed through the API.
+4. Bounded OA recovery.
+5. Zotero fallback for the remaining DOI-bearing failures.
 
 This is an internal stage of the unified batch. Do not call
 `paper_automation/elsevier_api.py`, `sd_institutional_skill.py`, or a hand-made
@@ -137,16 +141,18 @@ browser paths.
 Preserve the API status without treating it as the final browser result:
 `api_key_missing`, `unauthorized`, `not_entitled`, `not_found`,
 `rate_limited`, `no_main_pdf`, `invalid_pdf`, `network_error`, or `success`.
-After API 401 or 429, stop further API probes for that batch and route the
-remaining ScienceDirect rows to the browser. Keep browser/OA/Zotero failure
-classification authoritative for later recovery.
+After API 401, or after a 429 remains after the bounded API retries, stop
+further API probes for that batch and route the remaining ScienceDirect rows
+to the browser. Keep browser/OA/Zotero failure classification authoritative
+for later recovery. `request_attempts` records whether a row used one, two, or
+three real API calls; circuit-marked rows use zero.
 
 Use `<run-dir>\reports\sciencedirect\elsevier_api_attempts.csv` for the
 sanitised API audit. It may contain DOI, safe statuses, HTTP status, boolean
-authentication mode, FULL XML/main-EID flags, PDF size/validity, and browser
-fallback state; it must not contain response bodies, full headers, credentials,
-or cookies. Successful PDFs and supplements still follow the delivery naming
-and directory rules below.
+authentication mode, request-attempt count, FULL XML/main-EID flags,
+PDF size/validity, and browser fallback state; it must not contain response
+bodies, full headers, credentials, or cookies. Successful PDFs and supplements
+still follow the delivery naming and directory rules below.
 
 For development acceptance, prefer a real API Key-only success through
 `paper_batch.py start`. If no known no-entitlement DOI or non-institutional

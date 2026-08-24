@@ -1247,6 +1247,7 @@ class BatchStageTests(unittest.TestCase):
         # Supplements on by default → CLI passes --download-supplements
         self.assertIn("--download-supplements", argv)
         self.assertNotIn("--no-download-supplements", argv)
+        self.assertEqual(argv[argv.index("--api-workers") + 1], "2")
         self.assertEqual(argv[argv.index("--cookies") + 1], "cookies.json")
         self.assertEqual(argv[argv.index("--browser-exe") + 1], "C:/Browser/browser.exe")
         self.assertEqual(argv[argv.index("--login-wait-seconds") + 1], "30")
@@ -2263,7 +2264,11 @@ class BatchRunTests(unittest.TestCase):
             BatchOptions(throttle_seconds=-0.1, skip_manual_retry=False),
             BatchOptions(throttle_seconds=float("nan")),
             BatchOptions(throttle_seconds=float("inf")),
+            BatchOptions(api_workers=False),
+            BatchOptions(api_workers=0),
+            BatchOptions(api_workers=4),
         ]
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             for index, options in enumerate(invalid_options, start=1):
@@ -2282,6 +2287,69 @@ class BatchRunTests(unittest.TestCase):
                         )
                     state_files = list(output.rglob("batch_state.json")) if output.exists() else []
                     self.assertTrue(all(b"topsecret" not in path.read_bytes() for path in state_files))
+
+    def test_stage_updates_checkpoint_state_every_25_rows(self) -> None:
+        from dataclasses import asdict
+
+        import paper_automation.batch_workflow as workflow
+        from paper_automation.batch_stages import BatchOptions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = workflow.create_batch_paths(Path(tmp))
+            rows = [
+                {
+                    "task_id": f"paper-{index:04d}",
+                    "source_index": str(index),
+                    "input_doi": f"10.1000/{index}",
+                    "input_title": f"Paper {index}",
+                    "doi": f"10.1000/{index}",
+                    "title": f"Paper {index}",
+                    "authors": "",
+                    "journal": "",
+                    "year": "",
+                    "publisher": "",
+                    "status": "pending",
+                    "source": "",
+                    "file": "",
+                    "reason": "",
+                }
+                for index in range(1, 62)
+            ]
+            state = {
+                "version": 1,
+                "run_dir": str(paths.root),
+                "manual_retry_used": False,
+                "options": asdict(BatchOptions(auto_oa_recovery=False)),
+                "rows": rows,
+            }
+            workflow.save_batch_state(paths, state)
+            updates = [
+                {
+                    **row,
+                    "status": "no_open_pdf",
+                    "source": "oa",
+                    "reason": "no_open_pdf",
+                }
+                for row in rows
+            ]
+            checkpoint_counts: list[int] = []
+            real_save = workflow.save_batch_state
+
+            def record_checkpoint(selected_paths, payload):
+                checkpoint_counts.append(
+                    sum(row["status"] == "no_open_pdf" for row in payload["rows"])
+                )
+                return real_save(selected_paths, payload)
+
+            with patch.object(workflow, "save_batch_state", side_effect=record_checkpoint) as save:
+                workflow._apply_stage_updates(state, updates, paths)
+
+            persisted = workflow.load_batch_state(paths.root)
+
+        self.assertEqual(save.call_count, 3)
+        self.assertEqual(checkpoint_counts, [25, 50, 61])
+        self.assertTrue(all(row["status"] == "no_open_pdf" for row in state["rows"]))
+        self.assertTrue(all(row["status"] == "no_open_pdf" for row in persisted["rows"]))
 
     def test_options_allow_nonexistent_windows_and_relative_cookie_json_paths(self) -> None:
         from paper_automation.batch_stages import BatchOptions

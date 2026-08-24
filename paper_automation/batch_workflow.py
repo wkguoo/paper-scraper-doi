@@ -41,6 +41,7 @@ _WINDOWS_RESERVED_NAMES = {
 
 _LOCK_POLL_SECONDS = 0.05
 _STATE_REPLACE_TIMEOUT_SECONDS = 2.0
+_STAGE_STATE_CHECKPOINT_SIZE = 25
 
 
 @dataclass(frozen=True)
@@ -1190,8 +1191,9 @@ def _apply_stage_updates(
     _validate_state(state, expected_run_dir=paths.root)
     normalized_updates = _validate_stage_updates(state["rows"], updates)
     email = str((state.get("options") or {}).get("email", "") or "")
-    for update in normalized_updates:
-        state["rows"] = _merge_stage_rows(state["rows"], [update], paths, email=email)
+    for start in range(0, len(normalized_updates), _STAGE_STATE_CHECKPOINT_SIZE):
+        checkpoint = normalized_updates[start:start + _STAGE_STATE_CHECKPOINT_SIZE]
+        state["rows"] = _merge_stage_rows(state["rows"], checkpoint, paths, email=email)
         save_batch_state(paths, state)
 
 
@@ -1344,6 +1346,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "auto_oa_recovery",
         "iucr_short_try",
         "api_only",
+        "api_workers",
     }
     if not isinstance(data, dict):
         raise ValueError("invalid_batch_options")
@@ -1360,6 +1363,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
     payload.setdefault("auto_oa_recovery", True)
     payload.setdefault("iucr_short_try", True)
     payload.setdefault("api_only", False)
+    payload.setdefault("api_workers", 2)
     if set(payload) != expected_fields:
         # Ignore unknown keys from future versions; require all expected after defaults.
         payload = {key: payload[key] for key in expected_fields if key in payload}
@@ -1381,6 +1385,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
                 "auto_oa_recovery": True,
                 "iucr_short_try": True,
                 "api_only": False,
+                "api_workers": 2,
             }[key])
         if set(payload) != expected_fields:
             raise ValueError("invalid_batch_options")
@@ -1438,6 +1443,9 @@ def _validate_options_data(data: object) -> dict[str, object]:
     circuit_breaker_threshold = payload["circuit_breaker_threshold"]
     if type(circuit_breaker_threshold) is not int or circuit_breaker_threshold < 1:
         raise ValueError("invalid_circuit_breaker_threshold")
+    api_workers = payload["api_workers"]
+    if type(api_workers) is not int or not 1 <= api_workers <= 3:
+        raise ValueError("invalid_api_workers")
     return {
         "email": payload["email"],
         "cookies": cookie_path,
@@ -1455,6 +1463,7 @@ def _validate_options_data(data: object) -> dict[str, object]:
         "auto_oa_recovery": payload["auto_oa_recovery"],
         "iucr_short_try": payload["iucr_short_try"],
         "api_only": payload["api_only"],
+        "api_workers": api_workers,
     }
 
 

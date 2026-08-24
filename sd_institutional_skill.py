@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 from collections import Counter
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,8 @@ COOKIE_DOMAINS = ("sciencedirect.com", "elsevier.com", "sciencedirectassets.com"
 COOKIE_CACHE_NAME = "sciencedirect_cookies.json"
 DEFAULT_LOGIN_WAIT_SECONDS = 600
 DEFAULT_METADATA_CONFIDENCE = 0.92
+ELSEVIER_API_RETRYABLE_STATUSES = frozenset({"network_error", "rate_limited", "invalid_pdf"})
+ELSEVIER_API_RETRY_DELAYS_SECONDS = (5.0, 15.0)
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,7 @@ class ElsevierApiAttemptRecord:
     main_eid_present: bool = False
     pdf_size_bytes: int = 0
     pdf_valid: bool = False
+    request_attempts: int = 0
     browser_fallback: bool = False
     reason: str = ""
 
@@ -142,6 +146,16 @@ class ElsevierApiPhaseResult:
     supplement_records: list[SupplementDownloadRecord]
     fallback_rows: list[IntakeRow]
     attempts: list[ElsevierApiAttemptRecord]
+
+
+@dataclass
+class _ElsevierApiRowOutcome:
+    resolved_record: dict | None
+    pdf_record: PdfDownloadRecord | None
+    supplement_records: list[SupplementDownloadRecord]
+    fallback: bool
+    attempt: ElsevierApiAttemptRecord
+    circuit_status: str = ""
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -281,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dir=run_dir,
             email=args.email,
             download_supplements=download_supplements,
+            api_workers=args.api_workers,
         )
         if api_phase.fallback_rows and args.api_only:
             attempt_by_doi = {_doi_key(item.doi): item for item in api_phase.attempts}
@@ -494,6 +509,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--api-only",
         action="store_true",
         help="Use Elsevier API only; never create a browser fallback",
+    )
+    parser.add_argument(
+        "--api-workers",
+        type=int,
+        choices=(1, 2, 3),
+        default=2,
+        help="Concurrent Elsevier API article jobs (1-3; default: 2)",
     )
     parser.add_argument(
         "--download-supplements",
@@ -1254,111 +1276,226 @@ def run_elsevier_api_phase(
     run_dir: Path,
     email: str,
     download_supplements: bool,
+    api_workers: int = 2,
     client: ElsevierApiClient | None = None,
 ) -> ElsevierApiPhaseResult:
     """Try Elsevier before any browser/cookie work and return mergeable rows."""
 
+    if type(api_workers) is not int or not 1 <= api_workers <= 3:
+        raise ValueError("api_workers_invalid")
     api_client = client or ElsevierApiClient()
-    resolved_records: list[dict] = []
-    pdf_records: list[PdfDownloadRecord] = []
-    supplement_records: list[SupplementDownloadRecord] = []
-    fallback_rows: list[IntakeRow] = []
-    attempts: list[ElsevierApiAttemptRecord] = []
-    circuit_status = ""
+    if not rows:
+        return ElsevierApiPhaseResult([], [], [], [], [])
 
-    for row in rows:
-        if circuit_status:
-            result = ElsevierApiResult(
-                status=circuit_status,
-                doi=row.doi,
-                reason=f"api_circuit_open_after_{circuit_status}",
-            )
-        else:
-            result = api_client.download_article(row.doi, include_supplements=download_supplements)
-
-        final_status = result.status
-        final_reason = result.reason
-        article: dict | None = None
-        pdf_size = 0
-        pdf_valid = False
-
-        if result.status == "success" and is_pdf_bytes(result.pdf_bytes):
-            article = _article_from_api_result(row, result, email=email)
-            target_name = _api_pdf_filename(article)
-            target_path = run_dir / "pdfs" / target_name
-            try:
-                if target_path.is_symlink():
-                    raise OSError("unsafe_symlink")
-                if not is_valid_pdf(target_path):
-                    write_pdf_bytes_atomic(target_path, result.pdf_bytes)
-                pdf_valid = is_valid_pdf(target_path)
-                if not pdf_valid:
-                    raise ValueError("published_pdf_invalid")
-                pdf_size = target_path.stat().st_size
-            except OSError:
-                final_status = "network_error"
-                final_reason = "pdf_atomic_write_error"
-            except (TypeError, ValueError):
-                final_status = "invalid_pdf"
-                final_reason = "published_pdf_invalid"
-            else:
-                article["file"] = target_name
-                resolved_records.append(article)
-                pdf_records.append(
-                    PdfDownloadRecord(
-                        doi=row.doi,
-                        pii=result.pii,
-                        title=article.get("title", ""),
-                        status="success",
-                        file=target_name,
-                    )
-                )
-                if download_supplements:
-                    supplement_records.extend(
-                        download_elsevier_api_supplements(
-                            api_client,
-                            result,
-                            article=article,
-                            article_file=target_name,
-                            run_dir=run_dir,
-                        )
-                    )
-        elif result.status == "success":
-            final_status = "invalid_pdf"
-            final_reason = "client_success_without_valid_pdf"
-
-        browser_fallback = final_status != "success"
-        if browser_fallback:
-            fallback_rows.append(row)
-        attempts.append(
-            ElsevierApiAttemptRecord(
-                doi=row.doi,
-                status=final_status,
-                http_status=result.http_status,
-                api_key_present=bool(api_client.api_key),
-                insttoken_present=bool(api_client.insttoken),
-                full_xml_received=result.full_xml_received,
-                attachment_eid=result.attachment_eid,
-                main_eid_present=bool(result.attachment_eid),
-                pdf_size_bytes=pdf_size,
-                pdf_valid=pdf_valid,
-                browser_fallback=browser_fallback,
-                reason=final_reason,
-            )
-        )
-        if not circuit_status:
-            if result.status in {"unauthorized", "rate_limited"}:
-                circuit_status = result.status
-            elif result.supplement_status in {"unauthorized", "rate_limited"}:
-                circuit_status = result.supplement_status
-
-    return ElsevierApiPhaseResult(
-        resolved_records=resolved_records,
-        pdf_records=pdf_records,
-        supplement_records=supplement_records,
-        fallback_rows=fallback_rows,
-        attempts=attempts,
+    print(
+        f"[Elsevier API] 并发数: {api_workers}（首条串行授权/限流门禁）",
+        flush=True,
     )
+    outcomes: dict[int, _ElsevierApiRowOutcome] = {}
+    first = _process_elsevier_api_row(
+        rows[0],
+        run_dir=run_dir,
+        email=email,
+        download_supplements=download_supplements,
+        client=api_client,
+    )
+    outcomes[0] = first
+    circuit_status = first.circuit_status
+    next_index = 1
+
+    if not circuit_status and api_workers == 1:
+        while next_index < len(rows):
+            outcome = _process_elsevier_api_row(
+                rows[next_index],
+                run_dir=run_dir,
+                email=email,
+                download_supplements=download_supplements,
+                client=api_client,
+            )
+            outcomes[next_index] = outcome
+            next_index += 1
+            if outcome.circuit_status:
+                circuit_status = outcome.circuit_status
+                break
+    elif not circuit_status:
+        with ThreadPoolExecutor(max_workers=api_workers, thread_name_prefix="elsevier-api") as executor:
+            pending: dict[Future[_ElsevierApiRowOutcome], int] = {}
+
+            def submit_next() -> bool:
+                nonlocal next_index
+                if next_index >= len(rows):
+                    return False
+                index = next_index
+                next_index += 1
+                future = executor.submit(
+                    _process_elsevier_api_row,
+                    rows[index],
+                    run_dir=run_dir,
+                    email=email,
+                    download_supplements=download_supplements,
+                    client=api_client,
+                )
+                pending[future] = index
+                return True
+
+            while len(pending) < api_workers and submit_next():
+                pass
+            while pending:
+                done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                for future in sorted(done, key=lambda item: pending[item]):
+                    index = pending.pop(future)
+                    outcome = future.result()
+                    outcomes[index] = outcome
+                    if not circuit_status and outcome.circuit_status:
+                        circuit_status = outcome.circuit_status
+                if not circuit_status:
+                    while len(pending) < api_workers and submit_next():
+                        pass
+
+    if circuit_status:
+        for index in range(next_index, len(rows)):
+            outcomes[index] = _process_elsevier_api_row(
+                rows[index],
+                run_dir=run_dir,
+                email=email,
+                download_supplements=download_supplements,
+                client=api_client,
+                forced_status=circuit_status,
+            )
+
+    ordered = [outcomes[index] for index in range(len(rows))]
+    return ElsevierApiPhaseResult(
+        resolved_records=[item.resolved_record for item in ordered if item.resolved_record is not None],
+        pdf_records=[item.pdf_record for item in ordered if item.pdf_record is not None],
+        supplement_records=[record for item in ordered for record in item.supplement_records],
+        fallback_rows=[row for row, item in zip(rows, ordered) if item.fallback],
+        attempts=[item.attempt for item in ordered],
+    )
+
+
+def _process_elsevier_api_row(
+    row: IntakeRow,
+    *,
+    run_dir: Path,
+    email: str,
+    download_supplements: bool,
+    client: ElsevierApiClient,
+    forced_status: str = "",
+) -> _ElsevierApiRowOutcome:
+    request_attempts = 0
+    if forced_status:
+        result = ElsevierApiResult(
+            status=forced_status,
+            doi=row.doi,
+            reason=f"api_circuit_open_after_{forced_status}",
+        )
+    else:
+        result, request_attempts = _download_elsevier_article_with_retry(
+            client,
+            row.doi,
+            include_supplements=download_supplements,
+        )
+    final_status = result.status
+    final_reason = result.reason
+    article: dict | None = None
+    pdf_record: PdfDownloadRecord | None = None
+    supplement_records: list[SupplementDownloadRecord] = []
+    pdf_size = 0
+    pdf_valid = False
+
+    if result.status == "success" and is_pdf_bytes(result.pdf_bytes):
+        article = _article_from_api_result(row, result, email=email)
+        target_name = _api_pdf_filename(article)
+        target_path = run_dir / "pdfs" / target_name
+        try:
+            if target_path.is_symlink():
+                raise OSError("unsafe_symlink")
+            if not is_valid_pdf(target_path):
+                write_pdf_bytes_atomic(target_path, result.pdf_bytes)
+            pdf_valid = is_valid_pdf(target_path)
+            if not pdf_valid:
+                raise ValueError("published_pdf_invalid")
+            pdf_size = target_path.stat().st_size
+        except OSError:
+            final_status = "network_error"
+            final_reason = "pdf_atomic_write_error"
+        except (TypeError, ValueError):
+            final_status = "invalid_pdf"
+            final_reason = "published_pdf_invalid"
+        else:
+            article["file"] = target_name
+            pdf_record = PdfDownloadRecord(
+                doi=row.doi,
+                pii=result.pii,
+                title=article.get("title", ""),
+                status="success",
+                file=target_name,
+            )
+            if download_supplements:
+                supplement_records = download_elsevier_api_supplements(
+                    client,
+                    result,
+                    article=article,
+                    article_file=target_name,
+                    run_dir=run_dir,
+                )
+    elif result.status == "success":
+        final_status = "invalid_pdf"
+        final_reason = "client_success_without_valid_pdf"
+
+    fallback = final_status != "success"
+    circuit_status = ""
+    if not forced_status:
+        if result.status in {"unauthorized", "rate_limited"}:
+            circuit_status = result.status
+        elif result.supplement_status in {"unauthorized", "rate_limited"}:
+            circuit_status = result.supplement_status
+    return _ElsevierApiRowOutcome(
+        resolved_record=article if final_status == "success" else None,
+        pdf_record=pdf_record,
+        supplement_records=supplement_records,
+        fallback=fallback,
+        attempt=ElsevierApiAttemptRecord(
+            doi=row.doi,
+            status=final_status,
+            http_status=result.http_status,
+            api_key_present=bool(client.api_key),
+            insttoken_present=bool(client.insttoken),
+            full_xml_received=result.full_xml_received,
+            attachment_eid=result.attachment_eid,
+            main_eid_present=bool(result.attachment_eid),
+            pdf_size_bytes=pdf_size,
+            pdf_valid=pdf_valid,
+            request_attempts=request_attempts,
+            browser_fallback=fallback,
+            reason=final_reason,
+        ),
+        circuit_status=circuit_status,
+    )
+
+
+def _download_elsevier_article_with_retry(
+    client: ElsevierApiClient,
+    doi: str,
+    *,
+    include_supplements: bool,
+) -> tuple[ElsevierApiResult, int]:
+    """Retry transient API failures before the existing fallback ladder runs."""
+
+    result = ElsevierApiResult(status="network_error", doi=doi, reason="api_not_attempted")
+    max_attempts = 1 + len(ELSEVIER_API_RETRY_DELAYS_SECONDS)
+    for attempt_number in range(1, max_attempts + 1):
+        result = client.download_article(doi, include_supplements=include_supplements)
+        if result.status not in ELSEVIER_API_RETRYABLE_STATUSES or attempt_number >= max_attempts:
+            return result, attempt_number
+        delay = ELSEVIER_API_RETRY_DELAYS_SECONDS[attempt_number - 1]
+        print(
+            f"[Elsevier API] {doi}: {result.status}，{delay:g} 秒后继续 API 重试 "
+            f"({attempt_number + 1}/{max_attempts})",
+            flush=True,
+        )
+        time.sleep(delay)
+    return result, max_attempts
 
 
 def _article_from_api_result(row: IntakeRow, result: ElsevierApiResult, *, email: str) -> dict:
@@ -1680,6 +1817,7 @@ def write_elsevier_api_attempt_report(records: list[ElsevierApiAttemptRecord], o
         "main_eid_present",
         "pdf_size_bytes",
         "pdf_valid",
+        "request_attempts",
         "browser_fallback",
         "reason",
     ]

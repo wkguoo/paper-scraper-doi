@@ -136,6 +136,7 @@ class BatchOptionsDefaultsTests(unittest.TestCase):
         self.assertFalse(opts.resolve_title_metadata)
         self.assertTrue(opts.auto_oa_recovery)
         self.assertTrue(opts.iucr_short_try)
+        self.assertEqual(opts.api_workers, 2)
 
 
 class FilenameSanitizeB5Tests(unittest.TestCase):

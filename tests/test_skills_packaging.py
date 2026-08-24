@@ -90,6 +90,7 @@ class SkillPackagingTests(unittest.TestCase):
 
         route = (
             "Elsevier Article/Object API",
+            "Bounded API retry",
             "Existing browser institutional access",
             "Bounded OA recovery",
             "Zotero fallback",
@@ -106,6 +107,9 @@ class SkillPackagingTests(unittest.TestCase):
             "api_key_missing",
             "not_entitled",
             "rate_limited",
+            "request_attempts",
+            "5 seconds",
+            "15 seconds",
             "waived_environment_unavailable",
         ):
             with self.subTest(required=required):

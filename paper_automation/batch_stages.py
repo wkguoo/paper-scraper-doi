@@ -44,6 +44,8 @@ class BatchOptions:
     iucr_short_try: bool = True
     # Explicit API-only mode: Elsevier API attempts only; no browser/OA/Zotero fallback.
     api_only: bool = False
+    # Elsevier article/PDF/supplement jobs; bounded to 1-3 by state validation.
+    api_workers: int = 2
 
 
 @dataclass(frozen=True)
@@ -202,6 +204,7 @@ def run_sciencedirect_stage(input_path: Path, output_dir: Path, options: BatchOp
         argv.append("--no-download-supplements")
     if bool(getattr(options, "api_only", False)):
         argv.append("--api-only")
+    argv.extend(["--api-workers", str(int(getattr(options, "api_workers", 2) or 2))])
     # Opt3: fixed session break (default 60s / every 8 successes).
     break_s = float(getattr(options, "session_break_seconds", 60.0) or 60.0)
     break_n = int(getattr(options, "session_break_every", 8) or 8)

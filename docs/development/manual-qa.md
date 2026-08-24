@@ -88,7 +88,7 @@ Create three isolated, fixed batches under `results\elsevier_api_smoke_test\`:
    ```
 
 3. With a known DOI that the institution cannot access, run the complete
-   browser → limited OA → Zotero-eligibility chain. Keep Zotero open if actual
+   API retry → browser → limited OA → Zotero-eligibility chain. Keep Zotero open if actual
    automatic fallback is part of the check; otherwise add `--no-auto-zotero`
    and verify `zotero_fallback.csv` was produced.
 
@@ -117,6 +117,9 @@ Expected for each batch:
   response body, full request headers, API Key, Institution Token, or Cookie.
 - A successful API row has `status=success`, a valid final-named PDF under the
   ScienceDirect stage `pdfs\`, and `browser_fallback=False`.
+- Transient `network_error`, `rate_limited`, and `invalid_pdf` results use at
+  most three API calls with 5-second and 15-second waits before fallback;
+  `request_attempts` records the actual count.
 - API-only success does not launch a browser or read browser cookies.
 - 403 is `not_entitled`, is never reported as PDF success, and proceeds to the
   existing fallback ladder.
@@ -140,8 +143,8 @@ Use one DOI that the user's institution can access.
 
 Expected:
 
-- Elsevier API is tried first. A browser opens only when the API does not return
-  a valid entitled PDF.
+- Elsevier API is tried first. Retryable API errors exhaust the bounded retry
+  budget before a browser opens; terminal API failures may fall back immediately.
 - The user completes institutional login in the browser; no password is pasted into Codex or the terminal.
 - `pdf_download_report.csv` records `success` and the PDF exists under `pdfs\`.
 - `results\_auth\sciencedirect_cookies.json` may be created and must stay local.
@@ -195,8 +198,10 @@ Expected:
 
 - CAPTCHA prompts ask the user to complete verification in the browser.
 - 403/rate-limit handling waits or records a failure; it does not repeatedly hammer ScienceDirect.
-- An API 401 or 429 opens the API circuit for the remaining batch rows; those
-  rows go directly to browser handling rather than consuming more API quota.
+- An API 401 opens the API circuit immediately. A 429 first uses the bounded
+  API retry budget; if it persists, the circuit opens for the remaining batch
+  rows, which then go directly to browser handling rather than consuming more
+  API quota.
 - The user can inspect `pdf_download_report.csv` before retrying.
 
 

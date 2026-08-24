@@ -255,6 +255,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="仅使用 Elsevier API；禁止浏览器、OA 和 Zotero 兜底",
     )
     start.add_argument(
+        "--api-workers",
+        type=int,
+        choices=(1, 2, 3),
+        default=2,
+        help="Elsevier API 文章任务并发数（1-3，默认 2）",
+    )
+    start.add_argument(
         "--no-smart-route",
         action="store_true",
         help="关闭智能路由，恢复「全部先 OA 再机构」旧路径",
@@ -677,6 +684,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     resolve_title_metadata=bool(args.resolve_title_metadata),
                     iucr_short_try=not bool(getattr(args, "no_iucr_short_try", False)),
                     api_only=bool(getattr(args, "api_only", False)),
+                    api_workers=int(getattr(args, "api_workers", 2)),
                 ),
                 doi_preflight=do_preflight,
                 fixed_run=use_fixed,

@@ -165,6 +165,7 @@ Example title copied from a bibliography
 
 ```text
 Elsevier Article/Object Retrieval API（正文 PDF + 补充材料）
+→ 可恢复 API 错误有限重试
 → 现有浏览器机构访问
 → 有限 OA 恢复
 → Zotero 回退
@@ -177,7 +178,7 @@ API 配置只从当前 Python 进程的环境变量读取：
 
 建议通过 Windows“系统属性 → 环境变量”或组织批准的凭据注入方式设置，不要把真实值写进命令、Excel、日志或 Git。仓库里的 `.env.example` 只列出空变量名；程序**不会自动加载 `.env` 或 `.env.example`**。
 
-API 成功时，程序不会创建浏览器下载器，也不会读取 Cookie。API 返回 401、403、404、429、超时、无主 PDF 或伪 PDF 时，会把脱敏原因写入 `elsevier_api_attempts.csv`，然后仅把失败 DOI 交给浏览器；浏览器仍失败时，统一批处理继续执行有限 OA 和 Zotero。API Key、Institution Token、Cookie、响应正文和完整请求头不会写入审计表。
+API 成功时，程序不会创建浏览器下载器，也不会读取 Cookie。遇到网络错误、超时、5xx、429 或异常 HTML/PDF 时，程序会在 5 秒、15 秒后继续使用 API 重试，最多共请求 3 次；401、403、404 和无主 PDF 等明确结果不做无意义重复请求。API 仍无法获取时，才把失败 DOI 交给浏览器；浏览器仍失败时，统一批处理继续执行有限 OA 和 Zotero。`elsevier_api_attempts.csv` 的 `request_attempts` 会记录真实 API 请求次数。API Key、Institution Token、Cookie、响应正文和完整请求头不会写入审计表。
 
 真实 `403/not_entitled` 取决于机构订阅和当前网络环境。若没有非机构网络或已知无权限 DOI，不应伪造 Token、修改网络或无限尝试随机论文；可运行 `python -m unittest tests.test_elsevier_api -v` 验证 403 状态映射和浏览器后备路由，并在验收记录中明确标为“环境不可提供，用户同意跳过”，不能将模拟响应写成真实出版社 403。
 
@@ -331,7 +332,7 @@ D:\Literature\OA\
 | 不确定安装脚本会改哪里 | 先运行 `powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1 -DryRun`。 |
 | 没有弹出登录窗口 | 可能已经有可用 Cookie；也可能浏览器路径异常。先看日志，如果提示找不到浏览器，可优先安装 Edge，或设置 `PAPER_SCRAPER_BROWSER_EXE`。 |
 | 已登录但下载失败 | 打开 `pdf_download_report.csv` 看原因，常见是无机构权限、Cookie 过期、CAPTCHA、403 或限速。 |
-| 已设置 Elsevier API Key 但仍打开浏览器 | 查看 `elsevier_api_attempts.csv`；`not_entitled`、`unauthorized`、`rate_limited`、`no_main_pdf`、`invalid_pdf` 或网络错误都会安全回退。 |
+| 已设置 Elsevier API Key 但仍打开浏览器 | 查看 `elsevier_api_attempts.csv`；明确的无权限/不存在/无主 PDF 会直接回退，可恢复错误会先完成最多 3 次 API 请求，再安全进入浏览器、有限 OA 和 Zotero。 |
 | `needs_review` 很多 | 输入信息太少。给每篇论文补 DOI、完整题名、期刊、年份、卷期页后重跑。 |
 | 补充材料状态是 `not_found` | 页面没有检测到可下载 supplement 链接，不代表正文 PDF 失败。 |
 | `run_summary.txt` 中文乱码 | 用支持 UTF-8 的编辑器打开，或优先看 CSV/XLSX 报告。 |
