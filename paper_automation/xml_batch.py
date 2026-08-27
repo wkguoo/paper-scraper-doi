@@ -20,7 +20,12 @@ from typing import Callable, Iterable
 
 from doi_batch_utils import clean_doi
 
-from .elsevier_api import ElsevierApiClient, ElsevierXmlResult, parse_full_text_xml
+from .elsevier_api import (
+    DEFAULT_MAX_REQUESTS_PER_SECOND,
+    ElsevierApiClient,
+    ElsevierXmlResult,
+    parse_full_text_xml,
+)
 from .file_manager import make_pdf_filename, sanitize_filename
 from .models import MetadataResult
 
@@ -523,6 +528,7 @@ def run_xml_batch(
     limit: int = 0,
     min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
     retries: int = DEFAULT_RETRIES,
+    max_requests_per_second: float = DEFAULT_MAX_REQUESTS_PER_SECOND,
     client: ElsevierApiClient | None = None,
     progress: Callable[[str], None] = print,
 ) -> XmlBatchResult:
@@ -532,10 +538,15 @@ def run_xml_batch(
         raise ValueError("xml_workers_invalid")
     if limit < 0:
         raise ValueError("xml_limit_invalid")
+    if not 0 < max_requests_per_second <= 10:
+        raise ValueError("xml_max_rps_invalid")
     safe_run_name = sanitize_filename(run_name)
     if not safe_run_name or safe_run_name != run_name or Path(run_name).name != run_name:
         raise ValueError("xml_run_name_invalid")
-    api_client = client or ElsevierApiClient(timeout_seconds=timeout_seconds)
+    api_client = client or ElsevierApiClient(
+        timeout_seconds=timeout_seconds,
+        max_requests_per_second=max_requests_per_second,
+    )
     if not api_client.api_key:
         raise RuntimeError("api_key_missing")
 
@@ -580,7 +591,8 @@ def run_xml_batch(
     started_at = datetime.now().astimezone().isoformat(timespec="seconds")
     progress(
         f"[xml-download] 总数 {len(records)}；已验证复用 {len(reusable)}；"
-        f"本次计划 {len(pending)}；并发 {workers}"
+        f"本次计划 {len(pending)}；并发 {workers}；"
+        f"全局限速 {max_requests_per_second:g} 次/秒"
     )
 
     stop_event = threading.Event()

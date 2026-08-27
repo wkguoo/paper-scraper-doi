@@ -38,7 +38,12 @@ from doi_batch_utils import (
     write_supplement_download_report,
 )
 from paper_automation.deduplicator import deduplicate_candidates
-from paper_automation.elsevier_api import ElsevierApiClient, ElsevierApiResult, ElsevierAttachment
+from paper_automation.elsevier_api import (
+    DEFAULT_MAX_REQUESTS_PER_SECOND,
+    ElsevierApiClient,
+    ElsevierApiResult,
+    ElsevierAttachment,
+)
 from paper_automation.file_manager import enrich_row_metadata_for_delivery, make_pdf_filename
 from paper_automation.metadata_resolver import JsonGetter, MetadataResolver, SearchProvider, semantic_scholar_search_provider
 from paper_automation.models import MetadataResult, PaperCandidate
@@ -1277,18 +1282,29 @@ def run_elsevier_api_phase(
     email: str,
     download_supplements: bool,
     api_workers: int = 2,
+    api_max_requests_per_second: float = DEFAULT_MAX_REQUESTS_PER_SECOND,
     client: ElsevierApiClient | None = None,
 ) -> ElsevierApiPhaseResult:
     """Try Elsevier before any browser/cookie work and return mergeable rows."""
 
     if type(api_workers) is not int or not 1 <= api_workers <= 3:
         raise ValueError("api_workers_invalid")
-    api_client = client or ElsevierApiClient()
+    if (
+        isinstance(api_max_requests_per_second, bool)
+        or not isinstance(api_max_requests_per_second, (int, float))
+        or not 0 < float(api_max_requests_per_second) <= 10
+    ):
+        raise ValueError("api_max_rps_invalid")
+    api_client = client or ElsevierApiClient(
+        max_requests_per_second=float(api_max_requests_per_second)
+    )
     if not rows:
         return ElsevierApiPhaseResult([], [], [], [], [])
 
     print(
-        f"[Elsevier API] 并发数: {api_workers}（首条串行授权/限流门禁）",
+        f"[Elsevier API] 并发数: {api_workers}；"
+        f"全局限速: {float(api_max_requests_per_second):g} 次/秒"
+        "（首条串行授权/限流门禁）",
         flush=True,
     )
     outcomes: dict[int, _ElsevierApiRowOutcome] = {}

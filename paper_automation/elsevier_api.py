@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import socket
 import ssl
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO, Callable, Mapping
@@ -25,6 +27,7 @@ from .pdf_validation import is_pdf_bytes
 API_ROOT = "https://api.elsevier.com"
 API_HOST = "api.elsevier.com"
 DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_MAX_REQUESTS_PER_SECOND = 4.0
 SNIFF_BYTES = 8192
 SENSITIVE_HEADERS = ("X-ELS-APIKey", "X-ELS-Insttoken")
 ELSEVIER_API_STATUSES = frozenset(
@@ -50,6 +53,24 @@ _EXCLUDED_ATTACHMENT_TYPES = (
     "ALTIMG",
 )
 _ENV_SENTINEL = object()
+
+
+class _RequestRateLimiter:
+    """Space request starts across every thread sharing one API client."""
+
+    def __init__(self, max_requests_per_second: float) -> None:
+        self._interval = 1.0 / max_requests_per_second
+        self._next_request_at = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next_request_at - now
+            if delay > 0:
+                time.sleep(delay)
+                now = time.monotonic()
+            self._next_request_at = max(self._next_request_at, now) + self._interval
 
 
 @dataclass(frozen=True)
@@ -251,6 +272,7 @@ class ElsevierApiClient:
         api_key: str | object = _ENV_SENTINEL,
         insttoken: str | object = _ENV_SENTINEL,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+        max_requests_per_second: float | None = None,
         transport: Transport | None = None,
         stream_transport: StreamTransport | None = None,
     ) -> None:
@@ -265,6 +287,22 @@ class ElsevierApiClient:
             else str(insttoken or "").strip()
         )
         self.timeout_seconds = float(timeout_seconds)
+        if max_requests_per_second is not None and (
+            isinstance(max_requests_per_second, bool)
+            or not isinstance(max_requests_per_second, (int, float))
+            or not 0 < float(max_requests_per_second) <= 10
+        ):
+            raise ValueError("elsevier_api_max_rps_invalid")
+        self.max_requests_per_second = (
+            float(max_requests_per_second)
+            if max_requests_per_second is not None
+            else None
+        )
+        self._rate_limiter = (
+            _RequestRateLimiter(self.max_requests_per_second)
+            if self.max_requests_per_second is not None
+            else None
+        )
         self._transport = transport or _default_transport
         self._stream_transport = stream_transport
 
@@ -520,6 +558,7 @@ class ElsevierApiClient:
         if not self.api_key:
             return ElsevierObjectResult(status="api_key_missing", reason="api_key_missing")
         headers = self._headers(attachment.mime_type or "*/*")
+        self._wait_for_rate_limit()
         try:
             if self._stream_transport is not None:
                 response = self._stream_transport(
@@ -584,6 +623,7 @@ class ElsevierApiClient:
         parsed = urlparse(url)
         if parsed.scheme.lower() != "https" or (parsed.hostname or "").lower() != API_HOST:
             return None, ("network_error", None, "unsafe_api_url")
+        self._wait_for_rate_limit()
         try:
             response = self._transport(url, self._headers(accept), self.timeout_seconds)
         except (TimeoutError, socket.timeout):
@@ -594,6 +634,10 @@ class ElsevierApiClient:
         if status != "success":
             return None, (status, response.status, f"http_{response.status}")
         return response, None
+
+    def _wait_for_rate_limit(self) -> None:
+        if self._rate_limiter is not None:
+            self._rate_limiter.wait()
 
     def _headers(self, accept: str) -> dict[str, str]:
         headers = {

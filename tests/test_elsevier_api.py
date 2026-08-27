@@ -108,6 +108,28 @@ class QueueTransport:
 
 
 class ElsevierApiClientTests(unittest.TestCase):
+    def test_rate_limiter_spaces_article_and_pdf_object_requests(self) -> None:
+        transport = QueueTransport(
+            [
+                HttpResponse(200, {"Content-Type": "text/xml"}, FULL_XML),
+                HttpResponse(200, {"Content-Type": "application/pdf"}, minimal_pdf_bytes()),
+            ]
+        )
+        client = ElsevierApiClient(
+            api_key="key",
+            max_requests_per_second=4.0,
+            transport=transport,
+        )
+        with (
+            patch("paper_automation.elsevier_api.time.monotonic", side_effect=[0.0, 0.1, 0.25]),
+            patch("paper_automation.elsevier_api.time.sleep") as sleep,
+        ):
+            result = client.download_article("10.1016/example", include_supplements=False)
+
+        self.assertEqual(result.status, "success")
+        self.assertEqual(len(transport.calls), 2)
+        sleep.assert_called_once_with(0.15)
+
     def test_xml_only_returns_raw_full_xml_without_pdf_request(self) -> None:
         transport = QueueTransport([HttpResponse(200, {"Content-Type": "text/xml"}, FULL_XML)])
         result = ElsevierApiClient(api_key="key", transport=transport).retrieve_article_xml(

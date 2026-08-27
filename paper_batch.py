@@ -315,6 +315,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="API 并发数 1–4（默认 4）",
     )
     xml_download.add_argument(
+        "--max-rps",
+        type=float,
+        default=4.0,
+        help="Elsevier API 全局最大请求数/秒（0 < 值 <= 10；默认 4）",
+    )
+    xml_download.add_argument(
         "--timeout-seconds",
         type=float,
         default=30.0,
@@ -636,6 +642,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_root=args.out,
                 run_name=args.run_name,
                 workers=int(args.workers),
+                max_requests_per_second=float(args.max_rps),
                 timeout_seconds=float(args.timeout_seconds),
                 limit=int(args.limit),
             )

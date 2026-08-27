@@ -303,6 +303,15 @@ class XmlBatchTests(unittest.TestCase):
                     )
             self.assertEqual(client.calls, [])
 
+    def test_rate_limit_rejects_values_above_official_ceiling(self) -> None:
+        with self.assertRaisesRegex(ValueError, "xml_max_rps_invalid"):
+            run_xml_batch(
+                input_path="missing.csv",
+                output_root="unused",
+                run_name="xml-run",
+                max_requests_per_second=10.1,
+            )
+
     def test_cli_exposes_idempotent_xml_download_command(self) -> None:
         args = build_parser().parse_args(
             [
@@ -319,6 +328,7 @@ class XmlBatchTests(unittest.TestCase):
         )
         self.assertEqual(args.command, "xml-download")
         self.assertEqual(args.workers, 4)
+        self.assertEqual(args.max_rps, 4.0)
         self.assertEqual(args.limit, 0)
 
 
