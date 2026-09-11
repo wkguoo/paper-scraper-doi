@@ -33,6 +33,24 @@ def bridge_result(job, rows):
 
 
 class ZoteroBridgeRequestTests(unittest.TestCase):
+    def test_waiting_for_result_does_not_assert_plugin_is_disabled(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        from paper_batch import _handle_bridge_run
+
+        waiting = SimpleNamespace(
+            status="awaiting_confirmation",
+            bridge=SimpleNamespace(jobs=[SimpleNamespace(run_dir=Path("fixture-run"))]),
+        )
+        output = StringIO()
+        with redirect_stdout(output):
+            result, exit_code = _handle_bridge_run(waiting)
+        self.assertIsNone(result)
+        self.assertEqual(exit_code, 3)
+        self.assertIn("尚未收到全部完成回执", output.getvalue())
+        self.assertIn("这不等于插件未启用或未确认", output.getvalue())
+
     def _run(self, root: Path, fallback_count: int = 1) -> Path:
         from paper_automation.batch_stages import BatchOptions
         from paper_automation.batch_workflow import NORMALIZED_FIELDS, create_batch_paths, save_batch_state

@@ -74,7 +74,7 @@
   };
 
   const zotero = {
-    pluginVersion: "0.2.0",
+    pluginVersion: "0.2.2",
     version: String(Zotero.version || "9.0"),
     getInstanceIdentity() {
       let dataDir = "";
@@ -109,7 +109,7 @@
         profile_dir: profileDir,
         profile_name: profileName,
         zotero_version: String(Zotero.version || "9.0"),
-        plugin_version: "0.2.0",
+        plugin_version: "0.2.2",
       };
     },
     /**
@@ -181,7 +181,9 @@
     async searchByDOI(libraryID, doi) {
       const search = new Zotero.Search();
       search.libraryID = libraryID;
-      search.addCondition("DOI", "is", doi);
+      // Zotero's `is` uses case-sensitive equality. Fetch candidates with LIKE;
+      // resolveItem still requires exact equality after DOI normalization.
+      search.addCondition("DOI", "contains", doi);
       const ids = await search.search();
       return ids.length ? await Zotero.Items.getAsync(ids) : [];
     },
@@ -233,6 +235,7 @@
           path = "";
         }
       }
+      if (path && !await IOUtils.exists(path)) path = "";
       return {
         attachment,
         id: attachment?.id,
@@ -561,6 +564,9 @@
 
   let timer = null;
   let scanInFlight = null;
+  let pollInFlight = null;
+  let activeLeasePaths = null;
+  let activeOperation = null;
   let undoInFlight = null;
   let temporaryCounter = 0;
   let lastStatus = "插件已启动，尚无已处理批次。";
@@ -675,7 +681,7 @@
           profile_name: String(identity.profile_name || "").slice(0, MAX_BRIDGE_TEXT_LENGTH),
           zotero_version: String(identity.zotero_version || zotero?.version || "9.0")
             .slice(0, MAX_BRIDGE_TEXT_LENGTH),
-          plugin_version: String(identity.plugin_version || zotero?.pluginVersion || "0.2.0")
+          plugin_version: String(identity.plugin_version || zotero?.pluginVersion || "0.2.2")
             .slice(0, MAX_BRIDGE_TEXT_LENGTH),
         };
       }
@@ -686,7 +692,7 @@
       profile_dir: "",
       profile_name: "",
       zotero_version: String(zotero?.version || "9.0").slice(0, MAX_BRIDGE_TEXT_LENGTH),
-      plugin_version: String(zotero?.pluginVersion || "0.2.0").slice(0, MAX_BRIDGE_TEXT_LENGTH),
+      plugin_version: String(zotero?.pluginVersion || "0.2.2").slice(0, MAX_BRIDGE_TEXT_LENGTH),
     };
   }
 
@@ -1656,7 +1662,7 @@
       schema_version: 1,
       job_id: request.job_id,
       payload_sha256: request.payload_sha256,
-      plugin_version: String(zotero?.pluginVersion || "0.2.0"),
+      plugin_version: String(zotero?.pluginVersion || "0.2.2"),
       zotero_version: String(zotero?.version || "9.0"),
       started_at: startedAt,
       finished_at: finishedAt,
@@ -2042,11 +2048,14 @@
       }
     }
     let created;
+    activeOperation = { taskID, phase: "等待 Zotero 附件下载返回", startedAt: now().getTime() };
     try {
       created = await zotero.addAvailablePDF(item);
     } catch (error) {
       if (progress?.pending_write?.kind === "attachment") throw fatalBridgeError(error);
       throw error;
+    } finally {
+      activeOperation = null;
     }
     if (created) {
       if (progress) {
@@ -2186,6 +2195,20 @@
     if (item && !context.progress.created_item_ids.includes(Number(item.id))) {
       context.preexistingItemIDs.add(Number(item.id));
     }
+    if (context.readOnlyExistingPDFs) {
+      // Deleting the batch collection withdraws permission to keep organizing
+      // it. Existing files can still be delivered without recreating a folder
+      // or starting any new Zotero write/download.
+      if (!item) {
+        return core.failureRow(requestItem.task_id, "not_found", "bridge_collection_missing_no_item");
+      }
+      const existing = await findPDFAttachment(item);
+      if (!existing) {
+        return core.failureRow(requestItem.task_id, "no_pdf", "bridge_collection_missing_no_pdf");
+      }
+      context.preexistingAttachmentIDs.add(Number(existing.attachmentID));
+      return core.successRow(requestItem.task_id, zoteroItemID(item), existing.path, "existing_pdf");
+    }
     if (!item) {
       const doi = core.normalizeDOI(requestItem.doi);
       if (!doi) throw new Error("not_found");
@@ -2300,9 +2323,15 @@
 
   function buildUndoLedger(group, progressRecords, context) {
     const rows = progressRecords.flatMap(record => record.progress.rows);
+    // A parent holding a PDF obtained outside this confirmed write must survive
+    // undo too: deleting the parent would cascade-delete that protected PDF.
+    // Keep the original write evidence in progress, but relinquish deletion rights.
+    const protectedItemIDs = new Set(rows
+      .filter(row => row.status === "existing_pdf")
+      .map(row => Number(row.zotero_item_id)));
     const createdItemIDs = uniqueSortedIDs(
       progressRecords.flatMap(record => record.progress.created_item_ids),
-    );
+    ).filter(id => !protectedItemIDs.has(id));
     const createdAttachmentIDs = uniqueSortedIDs(
       progressRecords.flatMap(record => record.progress.created_attachment_ids),
     );
@@ -2410,9 +2439,37 @@
     }
     const collectionMarker = await loadCollectionMarker(paths, group);
     const collectionWriteUncertain = collectionMarker?.value.phase === "pending";
+    const recoveredAttachmentIDs = new Set();
+    // Recovery may read an existing PDF, but must never replay an uncertain
+    // write or infer that an attachment was created/owned by this bridge.
+    async function recoverExistingPDF(requestItem) {
+      try {
+        const item = await resolveItem(requestItem, first.library_id);
+        const pdf = item && await findPDFAttachment(item);
+        if (!pdf) return null;
+        recoveredAttachmentIDs.add(Number(pdf.attachmentID));
+        return core.successRow(requestItem.task_id, zoteroItemID(item), pdf.path, "existing_pdf");
+      } catch (error) {
+        reportError(errorCode(error), { run_id: group.runID, task_id: requestItem.task_id });
+        return null;
+      }
+    }
     let sealedUncertainWrite = false;
     for (const record of progressRecords) {
       const { entry, progress } = record;
+      // Never change rows whose immutable outbox result has already published.
+      const resultPublished = await io.exists(io.join(paths.outbox, `${entry.request.job_id}.result.json`));
+      if (!resultPublished && !collectionWriteUncertain) {
+        for (let index = 0; index < progress.rows.length; index += 1) {
+          const row = progress.rows[index];
+          if (row.status !== "plugin_error" || row.reason !== "write_outcome_uncertain") continue;
+          const recovered = await recoverExistingPDF(entry.request.items[index]);
+          if (recovered) {
+            progress.rows[index] = recovered;
+            await saveProgress(record);
+          }
+        }
+      }
       if (collectionWriteUncertain) {
         const remaining = entry.request.items.slice(progress.rows.length);
         if (remaining.length) {
@@ -2433,6 +2490,14 @@
         }
       } else if (progress.pending_write !== null) {
         const requestItem = entry.request.items[progress.rows.length];
+        const recovered = progress.pending_write.kind === "attachment"
+          ? await recoverExistingPDF(requestItem) : null;
+        if (recovered) {
+          progress.rows.push(recovered);
+          progress.pending_write = null;
+          await saveProgress(record);
+          continue;
+        }
         reportError("write_outcome_uncertain", {
           run_id: group.runID,
           task_id: requestItem.task_id,
@@ -2470,8 +2535,16 @@
         rows: existingRows,
       };
     }
+    const checkpointedCollection = collectionMarker?.value.phase === "complete"
+      ? await getCollectionByID(first.library_id, collectionMarker.value.collection_id) : null;
+    if (checkpointedCollection && (
+      checkpointedCollection.name !== first.collection_name || checkpointedCollection.deleted === true
+    )) {
+      throw fatalBridgeError(new Error("bridge_collection_invalid"));
+    }
+    const readOnlyExistingPDFs = collectionMarker?.value.phase === "complete" && !checkpointedCollection;
     let preflightError = null;
-    if (hasRemainingItems) {
+    if (hasRemainingItems && !readOnlyExistingPDFs) {
       try {
         await assertProcessingAPI(first.library_id);
       } catch (error) {
@@ -2484,12 +2557,13 @@
       paths,
       libraryID: first.library_id,
       collectionName: first.collection_name,
-      collectionPromise: null,
+      collectionPromise: checkpointedCollection ? Promise.resolve(checkpointedCollection) : null,
       collectionMarker,
+      readOnlyExistingPDFs,
       collectionID: collectionMarker?.value.collection_id ?? null,
       checkpoint: null,
       preexistingItemIDs: new Set(),
-      preexistingAttachmentIDs: new Set(),
+      preexistingAttachmentIDs: recoveredAttachmentIDs,
     };
     const startedAt = nowISO();
     const allRows = [];
@@ -2518,6 +2592,10 @@
         }
         progress.rows.push(row);
         await saveProgress(record);
+        const completedRows = progressRecords.flatMap(value => value.progress.rows);
+        const completedSummary = summaryForRows(group.runID, "running", completedRows);
+        lastRunSummary.successCount = completedSummary.successCount;
+        lastRunSummary.failureCount = completedSummary.failureCount;
       }
       allRows.push(...progress.rows);
       const target = io.join(paths.outbox, `${entry.request.job_id}.result.json`);
@@ -2536,7 +2614,9 @@
       lastStatus = `批次 ${group.runID} 无法访问所需 Zotero API，未写入条目。`;
       return { status: "api_unavailable", runID: group.runID, rows: allRows };
     }
-    lastStatus = `批次 ${group.runID} 已处理 ${allRows.length} 项。`;
+    lastStatus = readOnlyExistingPDFs
+      ? `批次 ${group.runID} 原集合已删除；已只读处理 ${allRows.length} 项，未重建集合。`
+      : `批次 ${group.runID} 已处理 ${allRows.length} 项。`;
     return { status: "processed", runID: group.runID, rows: allRows };
   }
 
@@ -2564,6 +2644,7 @@
         identity: leaseResult.identity,
       };
     }
+    activeLeasePaths = paths;
 
     let state;
     try {
@@ -2665,10 +2746,16 @@
     scanInFlight = current;
     current.then(
       () => {
-        if (scanInFlight === current) scanInFlight = null;
+        if (scanInFlight === current) {
+          scanInFlight = null;
+          activeLeasePaths = null;
+        }
       },
       () => {
-        if (scanInFlight === current) scanInFlight = null;
+        if (scanInFlight === current) {
+          scanInFlight = null;
+          activeLeasePaths = null;
+        }
       },
     );
     return current;
@@ -2676,10 +2763,33 @@
 
   async function startup() {
     if (timer) return;
-    await scanNow();
+    await ensureQueue();
+    // Startup and menu availability must not depend on the first download.
+    scanNow().catch(error => reportError(errorCode(error)));
     if (typeof clock.setInterval === "function") {
       timer = clock.setInterval(() => {
-        scanNow().catch(error => reportError(errorCode(error)));
+        if (pollInFlight) return;
+        const current = (async () => {
+          if (!scanInFlight) {
+            scanNow().catch(error => reportError(errorCode(error)));
+            return;
+          }
+          const paths = activeLeasePaths;
+          if (!paths) return;
+          const identity = resolveInstanceIdentity();
+          const lease = await readConsumerLease(paths);
+          if (lease?.instance_id !== identity.instance_id) {
+            reportError("bridge_consumer_lease_lost");
+            return;
+          }
+          if (Date.parse(lease.expires_at) - now().getTime() > 30000) return;
+          await writeConsumerLease(paths, identity, lease.claimed_at);
+          await publishActiveInstance(paths, identity);
+        })();
+        pollInFlight = current;
+        current.catch(error => reportError(errorCode(error))).finally(() => {
+          if (pollInFlight === current) pollInFlight = null;
+        });
       }, POLL_INTERVAL_MS);
     }
   }
@@ -2687,6 +2797,7 @@
   async function shutdown() {
     if (timer && typeof clock.clearInterval === "function") clock.clearInterval(timer);
     timer = null;
+    if (pollInFlight) await pollInFlight.catch(() => {});
     if (scanInFlight) await scanInFlight;
     try {
       const paths = queuePaths();
@@ -2705,7 +2816,7 @@
       undone: "已撤销",
     };
     const instanceLine = `当前桥接实例：${instanceLabel(identity)}`;
-    const message = lastRunSummary
+    let message = lastRunSummary
       ? [
         instanceLine,
         "（桥接始终跟随当前打开的 Zotero，不固定测试配置）",
@@ -2716,6 +2827,13 @@
         `失败：${lastRunSummary.failureCount}`,
       ].join("\n")
       : [instanceLine, lastStatus || "空闲"].join("\n");
+    if (activeOperation) {
+      const seconds = Math.max(0, Math.floor((now().getTime() - activeOperation.startedAt) / 1000));
+      message += `\n当前任务：${activeOperation.taskID}\n阶段：${activeOperation.phase}\n等待：${seconds} 秒`;
+      if (seconds >= 120) {
+        message += "\n附件调用尚未返回。请检查 Zotero 的下载/登录窗口；立即检查任务不会重复启动下载。";
+      }
+    }
     if (typeof prompt.alert === "function") prompt.alert("文献下载桥接", message);
     return message;
   }

@@ -647,6 +647,7 @@ async function makeHarness({
   for (const request of requests) addRequest(request);
   return {
     runtime,
+    clock,
     files: io.files,
     io,
     prompt,
@@ -2569,4 +2570,184 @@ test("showStatus reports run id, phase, total, successes, and failures", async (
   assert.match(restored, /总数：2/);
   assert.match(restored, /成功：1/);
   assert.match(restored, /失败：1/);
+});
+
+test('startup and heartbeat remain available while a native PDF call is pending', async () => {
+  const request = await job();
+  const harness = await makeHarness({ requests: [request], zoteroOptions: {
+    collections: [{ id: 706, libraryID: 1, name: request.collection_name }],
+    items: [{ id: 670, libraryID: 1, doi: request.items[0].doi, collections: [706], attachments: [] }],
+  } });
+  let tick;
+  let intervalCleared = false;
+  harness.clock.setInterval = callback => { tick = callback; return 1; };
+  harness.clock.clearInterval = () => { intervalCleared = true; };
+  let releasePDF;
+  let enteredPDF;
+  const entered = new Promise(resolve => { enteredPDF = resolve; });
+  let pdfCalls = 0;
+  harness.zotero.addAvailablePDF = async () => {
+    pdfCalls += 1;
+    enteredPDF();
+    return new Promise(resolve => { releasePDF = resolve; });
+  };
+  const started = harness.runtime.startup();
+  try {
+    await entered;
+    assert.equal(await Promise.race([started.then(() => true), new Promise(resolve => setImmediate(() => resolve(false)))]), true);
+    const scan = harness.runtime.scanNow();
+    assert.equal(harness.runtime.scanNow(), scan);
+    harness.clock.now = () => new Date('2026-07-11T10:03:00Z');
+    tick();
+    tick();
+    await new Promise(resolve => setImmediate(resolve));
+    const active = JSON.parse(await harness.io.readUTF8(harness.paths.activeInstance));
+    const lease = JSON.parse(await harness.io.readUTF8(harness.paths.consumerLease));
+    assert.equal(active.updated_at, '2026-07-11T10:03:00.000Z');
+    assert.equal(lease.expires_at, '2026-07-11T10:03:45.000Z');
+    assert.equal(pdfCalls, 1);
+    assert.equal(harness.results().length, 0);
+    assert.match(harness.runtime.showStatus(), /paper-0001/);
+    assert.match(harness.runtime.showStatus(), /180 秒/);
+    assert.match(harness.runtime.showStatus(), /附件调用尚未返回/);
+    // A busy consumer must not overwrite a lease now held by a different instance.
+    lease.instance_id = 'another-instance';
+    await harness.io.replaceUTF8(harness.paths.consumerLease, JSON.stringify(lease));
+    harness.clock.now = () => new Date('2026-07-11T10:04:00Z');
+    tick();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(JSON.parse(await harness.io.readUTF8(harness.paths.consumerLease)).instance_id, 'another-instance');
+    assert.ok(harness.errors.some(error => error.code === 'bridge_consumer_lease_lost'));
+  } finally {
+    releasePDF?.(false);
+    await harness.runtime.scanNow();
+    await started;
+    await harness.runtime.shutdown();
+  }
+  assert.equal(intervalCleared, true);
+  assert.equal(harness.results().length, 1);
+});
+
+test('restart reads an existing PDF after uncertain attachment write without claiming or repeating it', async () => {
+  const request = await job();
+  const first = await makeHarness({ requests: [request], zoteroOptions: {
+    crashAfterZoteroWrite: 'attachment',
+    collections: [{ id: 706, libraryID: 1, name: request.collection_name }],
+    items: [{ id: 670, libraryID: 1, doi: request.items[0].doi, collections: [706], attachments: [] }],
+    availablePDFByItemID: { 670: { id: 671, contentType: 'application/pdf', path: 'C:\\Zotero\\recovered.pdf' } },
+  } });
+  await first.runtime.scanNow();
+  assert.equal(first.results().length, 0);
+  const second = await makeHarness({ sharedFiles: first.files, sharedZotero: first.zotero });
+  await second.runtime.scanNow();
+  assert.equal(second.results()[0].rows[0].status, 'existing_pdf');
+  assert.deepEqual(second.zotero.availablePDFCalls, [670]);
+  const state = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.deepEqual(state.last_undo.created_attachment_ids, []);
+  assert.deepEqual(state.last_undo.preexisting_attachment_ids, [671]);
+  assert.equal(state.runs[request.run_id].completed, true);
+});
+
+test('unpublished uncertain failure is recovered from a PDF added before the next scan', async () => {
+  const request = await job({ items: [
+    { task_id: 'paper-0001', doi: '10.1000/example-1', title: 'Example 1', authors: '', year: '' },
+    { task_id: 'paper-0002', doi: '10.1000/example-2', title: 'Example 2', authors: '', year: '' },
+  ] });
+  const first = await makeHarness({ requests: [request], zoteroOptions: {
+    crashAfterZoteroWrite: 'attachment',
+    collections: [{ id: 706, libraryID: 1, name: request.collection_name }],
+    items: [
+      { id: 670, libraryID: 1, doi: request.items[0].doi, collections: [706], attachments: [] },
+      { id: 680, libraryID: 1, doi: request.items[1].doi, collections: [706], attachments: [{ id: 681, contentType: 'application/pdf', path: 'C:\\Zotero\\second.pdf' }] },
+    ],
+    availablePDFByItemID: { 670: { id: 671, contentType: 'application/pdf', path: 'C:\\Zotero\\first.pdf' } },
+  } });
+  await first.runtime.scanNow();
+  const firstItem = first.zotero.items.find(item => item.id === 670);
+  const attachment = firstItem.attachments.pop();
+  const second = await makeHarness({ sharedFiles: first.files, sharedZotero: first.zotero });
+  await second.runtime.scanNow();
+  assert.equal(second.results().length, 0);
+  firstItem.attachments.push(attachment);
+  const third = await makeHarness({ sharedFiles: second.files, sharedZotero: second.zotero });
+  await third.runtime.scanNow();
+  assert.deepEqual(third.results()[0].rows.map(row => row.status), ['existing_pdf', 'existing_pdf']);
+  assert.deepEqual(third.zotero.availablePDFCalls, [670]);
+  assert.deepEqual(JSON.parse(await third.io.readUTF8(third.paths.state)).last_undo.created_attachment_ids, []);
+});
+
+test('recovery relinquishes parent deletion rights so undo cannot cascade-delete an external PDF', async () => {
+  const request = await job();
+  const first = await makeHarness({ requests: [request], zoteroOptions: {
+    crashAfterZoteroWrite: 'attachment',
+    translationsByDOI: { [request.items[0].doi]: {
+      id: 670, doi: request.items[0].doi, title: request.items[0].title,
+    } },
+    availablePDFByItemID: { 670: { id: 671, contentType: 'application/pdf', path: 'C:\\Zotero\\recovered.pdf' } },
+  } });
+  await first.runtime.scanNow();
+  assert.equal(first.results().length, 0);
+  const second = await makeHarness({ sharedFiles: first.files, sharedZotero: first.zotero });
+  await second.runtime.scanNow();
+  const state = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.deepEqual(state.last_undo.created_item_ids, []);
+  assert.deepEqual(state.last_undo.preexisting_item_ids, [670]);
+  assert.deepEqual(state.last_undo.created_attachment_ids, []);
+  await second.runtime.undoLastBatch();
+  assert.deepEqual(second.zotero.deletedIDs, []);
+  assert.equal(second.zotero.items.find(item => item.id === 670).attachments[0].id, 671);
+});
+
+test('a deleted checkpointed collection allows existing PDF delivery with zero new library writes', async () => {
+  const request = await job();
+  const first = await makeHarness({ requests: [request], crashAfterCollectionMarker: true, zoteroOptions: {
+    items: [{ id: 670, libraryID: 1, doi: request.items[0].doi, collections: [],
+      attachments: [{ id: 671, contentType: 'application/pdf', path: 'C:\\Zotero\\kept.pdf' }] }],
+  } });
+  await first.runtime.scanNow();
+  assert.equal(first.results().length, 0);
+  first.zotero.collections.splice(0);
+  // A newly created folder with the same name is not the deleted folder.
+  first.zotero.collections.push({ id: 9999, libraryID: 1, name: request.collection_name });
+  const writesBefore = first.zotero.writeCalls.length;
+  const second = await makeHarness({ sharedFiles: first.files, sharedZotero: first.zotero });
+  await second.runtime.scanNow();
+  assert.equal(second.results()[0].rows[0].status, 'existing_pdf');
+  assert.equal(second.zotero.writeCalls.length, writesBefore);
+  assert.deepEqual(second.zotero.importCalls, []);
+  assert.deepEqual(second.zotero.availablePDFCalls, []);
+  assert.equal(second.zotero.collections.length, 1);
+  const state = JSON.parse(await second.io.readUTF8(second.paths.state));
+  assert.equal(state.runs[request.run_id].completed, true);
+  assert.deepEqual(state.last_undo.created_attachment_ids, []);
+});
+
+test('deleted collection recovery reports missing PDFs and items without importing or downloading', async () => {
+  const request = await job({ items: [
+    { task_id: 'paper-0001', doi: '10.1000/one', title: 'One', authors: '', year: '' },
+    { task_id: 'paper-0002', doi: '10.1000/two', title: 'Two', authors: '', year: '' },
+    { task_id: 'paper-0003', doi: '10.1000/three', title: 'Three', authors: '', year: '' },
+  ] });
+  const first = await makeHarness({ requests: [request], crashAfterCollectionMarker: true, zoteroOptions: {
+    items: [
+      { id: 670, libraryID: 1, doi: '10.1000/one', collections: [], attachments: [
+        { id: 671, contentType: 'application/pdf', path: 'C:\\Zotero\\one.pdf' },
+      ] },
+      { id: 680, libraryID: 1, doi: '10.1000/two', collections: [], attachments: [] },
+    ],
+  } });
+  await first.runtime.scanNow();
+  first.zotero.collections.splice(0);
+  const writesBefore = first.zotero.writeCalls.length;
+  const second = await makeHarness({ sharedFiles: first.files, sharedZotero: first.zotero });
+  await second.runtime.scanNow();
+  assert.deepEqual(second.results()[0].rows.map(row => [row.status, row.reason]), [
+    ['existing_pdf', ''],
+    ['no_pdf', 'bridge_collection_missing_no_pdf'],
+    ['not_found', 'bridge_collection_missing_no_item'],
+  ]);
+  assert.equal(second.zotero.writeCalls.length, writesBefore);
+  assert.deepEqual(second.zotero.importCalls, []);
+  assert.deepEqual(second.zotero.availablePDFCalls, []);
+  assert.deepEqual(second.zotero.collections, []);
 });

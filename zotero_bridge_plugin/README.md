@@ -5,6 +5,28 @@
 若需恢复弹窗确认：在 Zotero `about:config` 中设置
 `extensions.zoteroPaperDownloadBridge.autoConfirm = false`。
 
+### 0.2.2：原批次集合被删除后的恢复
+
+已确认并记录过集合 ID 的批次，如果该集合随后被用户删除，恢复时只读查找文库中的已有本地 PDF，并生成正常回执；不重建集合，不向同名新集合添加文献，也不导入或下载缺失项。
+
+缺少文献条目时返回 `not_found / bridge_collection_missing_no_item`，条目存在但没有本地 PDF 时返回 `no_pdf / bridge_collection_missing_no_pdf`，供项目继续报告未完成项。原队列身份与已发布回执保持不变。
+
+### 0.2.1 修复说明
+
+- DOI 查询先获取不区分 ASCII 大小写的候选，再对规范化 DOI 精确比较；避免将 `10.1107/S...` 等已有文献重复导入。多个精确匹配仍返回 `metadata_uncertain`。
+- 启动不再等待首个下载完成；下载等待期间保持心跳和消费租约，菜单可显示当前任务、等待秒数与已完成数量。
+- 重启遇到不确定附件写入时，只读查找已有本地 PDF；未发布的 `write_outcome_uncertain` 行也可在后续扫描中恢复。不重放原写入，不覆盖已发布回执。
+- 恢复所得附件不计入新增所有权；其父条目也不授予撤销删除权限，以防删除父条目时连带删除用户补充的 PDF。原写入证据保留在进度归档中。
+- 附件记录指向已丢失的本地文件时，继续检查其他 PDF 附件，由项目交付端最终验证 PDF 内容。
+
+旧版插件不会自动加载新的源码。需要明确要求打包后生成对应版本 XPI，再安装和验证真实批次；当前源码版本为 0.2.2。
+
+### 等待附件下载时
+
+在 Zotero 工具菜单选择“文献下载桥接 → 查看最近状态”。等待超过 120 秒会提示检查 Zotero 下载/登录窗口；这只是长时间等待提示，不代表已取消原下载。
+
+原生附件调用可能等待网络重试或人工窗口。该 API 在当前调用接口中没有可靠的取消句柄，因此插件不会用超时竞争释放任务锁并启动第二个写入。确认原调用结束后才能继续；必要重启会保留检查点。不要重复导入整批文献，也不要手工编辑队列 JSON。
+
 ## 兼容范围
 
 - 仅支持 Zotero 9.0.x；当前源码按本机 Zotero 9.0.6 API 静态核对。
@@ -32,7 +54,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build\build_zotero_bridge_xpi
 
 输入：`manifest.json`、`bootstrap.js`、`content/`、`locale/` 四项白名单源码。
 
-输出：按清单版本命名的 XPI，例如 `dist\zotero-paper-download-bridge-0.2.0.xpi`。脚本不会包含 `tests/`、`package.json`、日志、桥接队列、Cookie 或环境文件；拒绝输出路径链或插件源码树中的 junction/symlink；不会调用现有 Windows UI 打包脚本；不会自动安装到 Zotero。目标已存在时默认停止，只有显式添加 `-Force` 才允许替换。
+输出：按清单版本命名的 XPI，例如 `dist\zotero-paper-download-bridge-0.2.1.xpi`。脚本不会包含 `tests/`、`package.json`、日志、桥接队列、Cookie 或环境文件；拒绝输出路径链或插件源码树中的 junction/symlink；不会调用现有 Windows UI 打包脚本；不会自动安装到 Zotero。目标已存在时默认停止，只有显式添加 `-Force` 才允许替换。
 
 桥接目标 = 当前打开且持有消费租约的 Zotero 实例（`active-instance.json`），不固定 `Zotero test`。
 
@@ -47,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build\build_zotero_bridge_xpi
 
 插件不会修改已有附件。菜单“查看最近状态”显示等待、运行、完成或撤销状态；“撤销最近批次新增”需要第二次确认，并且只处理账本记录且身份仍匹配的新条目、新附件和集合成员关系。撤销动作也使用写前检查点；若崩溃使某个动作结果无法确认，重启只会将该对象记为跳过，不会重放删除。
 
-若崩溃发生在 Zotero 写入与所有权检查点之间，插件不会根据当前对象“存在/不存在”猜测归属，也不会重试该写入；对应任务会记录 `plugin_error / write_outcome_uncertain`，供隔离配置中人工复核。
+若崩溃发生在 Zotero 写入与所有权检查点之间，插件不会根据当前对象“存在/不存在”猜测归属，也不会重试该写入；找不到可核实的已有 PDF 时，对应任务保留 `plugin_error / write_outcome_uncertain`；0.2.1 的只读恢复仅确认文件可供交付，不追认写入归属。
 
 ## 注意事项
 

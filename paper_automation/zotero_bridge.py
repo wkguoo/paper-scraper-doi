@@ -169,8 +169,9 @@ def read_active_bridge_instance(
 def format_active_bridge_target(instance: Mapping[str, str] | None) -> str:
     if not instance:
         return (
-            "未检测到正在运行的桥接插件。"
-            "请打开任意已安装「文献下载桥接」的 Zotero（跟随当前打开的实例，不固定测试配置）。"
+            "未检测到近期桥接心跳：插件可能未启动，或旧版插件正等待长时间操作返回。"
+            "请在当前 Zotero 的「文献下载桥接 → 查看最近状态」核实；"
+            "桥接跟随当前打开的实例，不固定测试配置。"
         )
     profile = instance.get("profile_name") or instance.get("profile_dir") or "未知配置"
     data_dir = instance.get("data_dir") or "未知数据目录"

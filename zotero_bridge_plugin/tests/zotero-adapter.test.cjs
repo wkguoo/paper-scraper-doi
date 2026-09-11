@@ -6,7 +6,7 @@ const vm = require("node:vm");
 
 const core = require("../content/bridge-core.js");
 
-function loadProductionRuntime() {
+function loadProductionRuntime({ items = [], existingPaths = [] } = {}) {
   const calls = {
     identifiers: [],
     translators: [],
@@ -42,8 +42,15 @@ function loadProductionRuntime() {
   };
 
   class Search {
-    addCondition() {}
-    async search() { return []; }
+    addCondition(field, operator, value) { this.condition = { field, operator, value }; }
+    async search() {
+      const { field, operator, value } = this.condition;
+      // Zotero 9.0.6: `is` generates `=`, `contains` generates `LIKE`.
+      return items.filter(item => item.libraryID === this.libraryID && (
+        operator === "is" ? item.getField(field) === value
+          : item.getField(field).toLowerCase().includes(value.toLowerCase())
+      )).map(item => item.id);
+    }
   }
 
   class Collection {
@@ -81,7 +88,7 @@ function loadProductionRuntime() {
     IOUtils: {
       makeDirectory: async () => {},
       getChildren: async () => [],
-      exists: async () => false,
+      exists: async path => existingPaths.includes(path),
       readUTF8: async () => "",
       writeUTF8: async () => {},
       move: async () => {},
@@ -106,7 +113,7 @@ function loadProductionRuntime() {
           isFeed: false,
         }),
       },
-      Items: { getAsync: async () => [] },
+      Items: { getAsync: async ids => ids.map(id => items.find(item => item.id === id)).filter(Boolean) },
       Collections: {
         getByLibrary: libraryID => (
           libraryID === 1 ? [existingCollection] : []
@@ -193,4 +200,42 @@ test("production Zotero adapter reads a checkpointed collection by numeric id", 
 
   assert.equal(collection.id, 77);
   assert.deepEqual(calls.collectionLookups, [77]);
+});
+
+function doiItem(id, doi, libraryID = 1) {
+  return {
+    id, libraryID, deleted: false, isFeedItem: false,
+    isRegularItem: () => true,
+    getField: field => ({ DOI: doi, title: 'Case-sensitive DOI regression', year: '2024' }[field] || ''),
+  };
+}
+
+test('production DOI lookup finds uppercase and URL-prefixed DOIs without accepting suffix matches', async () => {
+  const wanted = doiItem(501, 'https://doi.org/10.1107/S1600576714012576');
+  const { runtime } = loadProductionRuntime({ items: [
+    wanted, doiItem(502, '10.1107/S16005767140125760'),
+    doiItem(503, '10.1107/S1600576714012576', 2),
+  ] });
+  assert.equal((await runtime.resolveItem({ doi: '10.1107/s1600576714012576' }, 1)).id, 501);
+});
+
+test('production DOI lookup keeps duplicate normalized matches ambiguous', async () => {
+  const { runtime } = loadProductionRuntime({ items: [
+    doiItem(501, '10.1107/S1600576714012576'),
+    doiItem(502, 'https://doi.org/10.1107/s1600576714012576'),
+  ] });
+  await assert.rejects(runtime.resolveItem({ doi: '10.1107/s1600576714012576' }, 1), /metadata_uncertain/);
+});
+
+test('production attachment lookup skips a missing local PDF and reads the next local file', async () => {
+  const paths = ['C:\\Zotero\\missing.pdf', 'C:\\Zotero\\present.pdf'];
+  const parent = doiItem(501, '10.1000/example');
+  parent.getAttachments = () => [601, 602];
+  const attachments = paths.map((path, index) => ({
+    id: 601 + index, libraryID: 1, parentItemID: 501,
+    isAttachment: () => true, attachmentContentType: 'application/pdf',
+    getFilePathAsync: async () => path,
+  }));
+  const { runtime } = loadProductionRuntime({ items: [parent, ...attachments], existingPaths: [paths[1]] });
+  assert.equal((await runtime.findPDFAttachment(parent)).path, paths[1]);
 });

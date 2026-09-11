@@ -625,10 +625,11 @@ def _handle_bridge_run(bridge_run, *, rerun_command: str = "zotero") -> tuple[Ba
             raise RuntimeError("bridge_batch_result_missing")
         print(f"桥接任务：{len(bridge_run.bridge.jobs)} 个子作业")
         print(
-            "Zotero 插件应自动确认批次（0.2.0+）。"
-            "若仍在等待：请升级/启用「文献下载桥接」插件，或在 about:config 中确认"
-            " extensions.zoteroPaperDownloadBridge.autoConfirm 为 true；"
-            "然后重新运行同一条命令。"
+            "桥接已排队，尚未收到全部完成回执；这不等于插件未启用或未确认。"
+            "请在 Zotero「文献下载桥接 → 查看最近状态」查看当前任务；"
+            "若停在附件下载，请检查 Zotero 的下载/登录窗口。"
+            "仅当插件未安装或被禁用时才需安装/启用；关闭自动确认时需在 Zotero 确认批次。"
+            "插件完成后重新运行同一条命令收取结果。"
         )
         if bridge_run.bridge.jobs:
             run_dir = Path(bridge_run.bridge.jobs[0].run_dir).expanduser()
