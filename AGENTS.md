@@ -4,7 +4,7 @@
 
 This repository is a Windows-oriented paper download helper.
 
-**User-facing default:** `paper_batch.py` (CLI) and the UI tab **统一批次（推荐）** in `paper_scraper_ui.py`; the GUI contains only that entry tab plus **运行日志**. Codex agents should use skill `paper-download` only.
+**User-facing default:** `paper_batch.py` (CLI) and the UI tab **统一批次（推荐）** in `paper_scraper_ui.py`; the GUI contains only that entry tab plus **运行日志**. Codex agents use `paper-download` as the main entry and its official `zotero:Zotero` dependency for read-only local PDF reuse. The custom bridge is manual/legacy only.
 
 **Internal / compatibility modules (not default user routes):** `sd_scraper.py` (legacy ScienceDirect DOI batch compatibility CLI), `sd_institutional_skill.py` (ScienceDirect intake/download adapter, also used for preflight), `paper_skill.py` (OA-only adapter), and `institutional_paper_skill.py` (non-Elsevier institutional adapter). Shared libraries live under `paper_automation/` and `doi_batch_utils.py`. Path helpers: `windows_paths.py`. Windows helpers: `start_paper_scraper_ui.bat` and `install_codex_skills.ps1`. Docs: `README.md`, `docs/user-guide/`, `docs/development/manual-qa.md`. Generated `results/`, `dist/`, PDFs, and cookies stay out of Git.
 
@@ -68,14 +68,14 @@ For browser-assisted institutional login, literature retrieval, and paper downlo
 
 1. Institutional / ScienceDirect stages
 2. Limited OA recovery (`run_post_download_ladder` on `start` **and** `retry-failed`)
-3. `zotero_fallback.csv` + CLI auto Zotero (`--no-auto-zotero` to skip)
+3. `zotero_fallback.csv` + Codex official Zotero local PDF lookup; CLI/GUI retain the list without auto-queuing. Custom bridge only with explicit `--auto-zotero` or manual `paper_batch.py zotero`.
 4. Merge-safe publish to `结果/` + `下载清单.csv` (manual drops preserved)
 
 **Fixed run (A1):** prefer `paper_batch.py start --out <parent> --run-name <job>`;
 same input reuses the folder. Use `--fresh` only for a deliberate new batch.
 
 **IUCr (C6):** DOIs `10.1107/*` use **short institutional try** (adapter circuit
-threshold **1** + fewer PDF candidates). After miss → OA once → Zotero. Disable
+threshold **1** + fewer PDF candidates). After miss → OA once → official-plugin local PDF lookup (native Zotero download is manual). Disable
 with `--no-iucr-short-try`.
 
 **Manual PDF drop (A3):** after placing a file into `结果/`, run:
@@ -116,7 +116,7 @@ Rules for agents and scripts:
 4. **No browser CDP** on the OA path. Do not open SAGE/DOI/repo pages to scrape links.
 5. If OpenAlex points at a repository **landing page without a PDF URL** (metadata-only), record `repo_metadata_only` and stop — do not render JS or guess bitstreams.
 6. Host negative cache: if a host is `CONNECTION_CLOSED` / SSL failure for one DOI, skip that host for sibling DOIs in the same run.
-7. After limited OA fails, keep the prior institutional reason, then use Zotero fallback / institutional VPN — do not invent more sources.
+7. After limited OA fails, keep the prior institutional reason, then use official-plugin local PDF lookup or explicitly requested manual Zotero fallback / institutional VPN — do not invent more sources.
 8. Agents must not treat `unsupported_publisher` as terminal without the OA-direct attempt having run (unless user set `try_oa_direct=False` / disabled auto OA).
 
 ## PDF Delivery Naming Rule (mandatory)

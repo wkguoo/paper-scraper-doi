@@ -2728,8 +2728,10 @@ def run_post_download_ladder(
     )
     if result.zotero_fallback_count > 0:
         print(
-            f"[阶梯] 仍有 {result.zotero_fallback_count} 条可走 Zotero "
-            f"(paper_batch.py zotero --run-dir \"{paths.root}\")",
+            f"[阶梯] 仍有 {result.zotero_fallback_count} 条待解决，已保留失败清单；"
+            "Codex 可用官方 Zotero 插件复用本地 PDF。"
+            "原生补下载或旧桥接续作可手动执行："
+            f"paper_batch.py zotero --run-dir \"{paths.root}\"",
             flush=True,
         )
     return result

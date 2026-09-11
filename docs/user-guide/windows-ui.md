@@ -2,7 +2,7 @@
 
 这个界面使用 Python 标准库 `tkinter` 编写，不需要额外安装 GUI 框架。推荐环境是 Windows 10/11 + Python 3.10 或 3.11。
 
-**默认入口：统一批次（`paper_batch.py`）**——公开 OA → 机构访问 → **失败自动进 Zotero 并排队桥接**（默认无 `resume`）。GUI 已收口为统一批次和运行日志两个页签；ScienceDirect DOI 专用与 OA 专用能力仍作为命令行兼容入口保留。新任务请优先使用 `paper_batch.py`。
+**默认入口：统一批次（`paper_batch.py`）**——公开 OA → 机构访问 → **失败写入清单，默认不排队 Zotero 桥接**（默认无 `resume`）。GUI 已收口为统一批次和运行日志两个页签；ScienceDirect DOI 专用与 OA 专用能力仍作为命令行兼容入口保留。新任务请优先使用 `paper_batch.py`。
 
 ## 许可证
 
@@ -39,9 +39,9 @@ GUI 不显示邮箱或 Cookie JSON 输入框，也不会在启动统一批次时
 1. 启动后默认在「统一批次（推荐）」页，子命令选择 `start`。
 2. 选择文献清单（TXT/MD/CSV/XLSX/XLSM），或直接粘贴 DOI/题名列表。
 3. 选择输出根目录。GUI 使用统一批次的默认配置，不要求填写邮箱或 Cookie JSON。
-4. 可选填写 Zotero `library-id` / 等待秒数（会传给 `start` 的自动桥接）。
-5. 保持 Zotero 9 与本地桥接插件可用，点击「开始运行」。失败项默认写入 `zotero_fallback` 并由 `start` **自动排队**。
-6. 若日志退出码为 3 或提示确认：在 Zotero 中接受一次批次确认；确认后子命令选 `zotero` 再运行同一批次即可。
+4. 点击「开始运行」。失败项写入 `zotero_fallback`，不要求 Zotero 或自建桥接可用。
+5. 需要复用库内已有 PDF 时，将批次目录交给 Codex，使用 `paper-download` 和官方 Zotero 插件处理。
+6. 只有手动补下载或继续旧桥接时，才选择 `zotero` 并填写 `library-id` / 等待秒数；此时需保持 Zotero 与桥接插件可用。退出码 3 表示等待，就绪后继续同一命令。
 7. `resume` 仅用于兼容旧批次或显式启用人工重试的场景，默认新任务无需使用。
 
 批次目录结构示例：
@@ -60,7 +60,7 @@ results\paper_batch_时间戳\
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
-# 若需确认后继续：
+# 可选：手动原生补下载，或继续旧桥接批次：
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "results\paper_batch_时间戳"
 ```
 

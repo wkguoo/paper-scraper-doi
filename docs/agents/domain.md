@@ -10,7 +10,7 @@ This is a single-context repository.
 
 ## Vocabulary
 
-Use terminology defined by any available context or ADR documents in issue titles, tests, code, and documentation. For this project, keep the distinction clear between project-side batch processing, the local bridge queue, Zotero plugin processing, and final PDF publication.
+Use terminology defined by any available context or ADR documents in issue titles, tests, code, and documentation. For this project, keep the distinction clear between project-side batch processing, official Codex Zotero read-only lookup, the optional manual bridge queue, Zotero plugin processing, and final PDF publication.
 
 ## Delivery PDF naming
 

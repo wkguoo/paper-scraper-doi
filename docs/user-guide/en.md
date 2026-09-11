@@ -16,14 +16,14 @@ This project helps researchers turn DOI tables, copied bibliography text, and AI
 
 | Situation | Use | Notes |
 | --- | --- | --- |
-| Any mixed DOI / title / Excel / Markdown list | `paper_batch.py` | Default CLI: OA → institutional access → one manual retry → Zotero fallback |
+| Any mixed DOI / title / Excel / Markdown list | `paper_batch.py` | Default CLI: project downloads → limited OA → unresolved list; Codex reuses local PDFs via its official Zotero plugin |
 | Same workflow in a GUI | `start_paper_scraper_ui.bat` → tab **统一批次（推荐）** | Graphical shell around `paper_batch.py`; the other tab is **运行日志** |
 | Natural-language agent | Codex skill `$paper-download` | Install script installs only this skill |
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
 .\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"   # only if manual_retry has rows
-.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"   # remaining failures only
+.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"   # optional native PDF retrieval / existing queue only
 ```
 
 Do **not** start new literature jobs with `paper_skill.py`, `sd_institutional_skill.py`, or `sd_scraper.py` unless you intentionally want a compatibility path. Those scripts skip the shared batch state and Zotero fallback queue.
@@ -101,29 +101,31 @@ Save results to D:\Literature\ScienceDirect.
 
 Check `doi_intake_preview.csv`, `merged_doi_input.csv`, and related reports, then run **`paper_batch.py start`** (or the UI unified-batch tab) on the confirmed list.
 
-### Recommended: unified batch with Zotero fallback
+### Recommended: official Zotero lookup and optional manual bridge
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --email "you@example.com"
 ```
 
-Prefer a **DOI-only** list (TXT one DOI per line, or a table with a DOI column).
-Markdown is fine, but by default only explicit DOIs become tasks.
+`start`, `retry-failed`, and `recover-oa` leave unresolved DOI rows in
+`working/zotero_fallback.csv` without queuing or waiting for Zotero. Codex uses
+the official Zotero plugin through `paper-download` to match existing local
+PDFs, then runs `paper_batch.py finalize` on confirmed successes only. The
+standalone GUI/CLI does not launch Codex or perform this lookup.
 
-Default path: DOI preflight → OA (gold / OA-signal only) → institutional access →
-bounded OA recovery for OA-signal failures → **DOI-bearing failures go to
-`zotero_fallback.csv`** (no `resume` gate). `start` **auto-queues** Zotero and
-waits (default `--wait-seconds 600`). Keep Zotero open with bridge plugin
-**0.2.0+** (auto-confirm by default; no modal). Exit code 3 means still waiting
-for the plugin; after it finishes, rerun only if needed:
+For explicit native PDF retrieval or an existing bridge manifest, keep the
+custom XPI enabled in the intended Zotero instance and run:
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
 ```
 
-Optional: `--wait-seconds N` on `start` to poll in-process; `--no-auto-zotero`
-to queue later; `--enable-manual-retry` for the legacy one-shot login/CAPTCHA
-path (then `resume` once if `manual_retry.csv` has rows).
+Alternatively, pass `--auto-zotero` explicitly to `start`, `retry-failed`, or
+`recover-oa`. `--no-auto-zotero` remains a mutually exclusive compatibility
+flag. `--library-id` and `--wait-seconds` apply only to manual/opt-in bridge
+runs. Exit 3 means waiting; continue the same `zotero` command when ready.
+Keep old jobs and receipts unchanged. `resume` is only for the old one-shot
+manual retry workflow enabled with `--enable-manual-retry`.
 
 For the unified batch, user-facing files are in `结果\`: the original input,
 `下载清单.csv`, `pdf\`, and an always-present empty `md\`; `补充材料\` is

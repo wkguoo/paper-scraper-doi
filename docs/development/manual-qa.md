@@ -88,8 +88,8 @@ Create three isolated, fixed batches under `results\elsevier_api_smoke_test\`:
    ```
 
 3. With a known DOI that the institution cannot access, run the complete
-   API retry → browser → limited OA → Zotero-eligibility chain. Keep Zotero open if actual
-   automatic fallback is part of the check; otherwise add `--no-auto-zotero`
+   API retry → browser → limited OA → Zotero-eligibility chain. Keep Zotero open and pass `--auto-zotero` explicitly if actual
+   native fallback is part of the check; the default does not queue Zotero
    and verify `zotero_fallback.csv` was produced.
 
    ```powershell
@@ -255,3 +255,18 @@ Run after institutional-access tests if this machine should not keep cached brow
 Remove-Item -Recurse -Force (Join-Path $env:TEMP "chrome_dbg_profile")
 Remove-Item -Force ".\results\_auth\sciencedirect_cookies.json"
 ```
+
+
+## Official Codex Zotero read-only reuse
+
+Use a new isolated fixture batch with resolved metadata for one already-local
+PDF. Do not change a live batch or use one with a bridge manifest. From the
+repository root, run `skills/paper-download/scripts/collect_existing_pdfs.py`
+with `--run-dir <fixture>` and `--zotero-helper <installed-official-zotero.py>`.
+Verify the printed JSON, five-column success CSV and lookup audit. Finalize
+that CSV into the fixture only. Check the source SHA-256 is unchanged, delivery
+uses year-author-title, and repeat collection/finalization does not duplicate
+PDFs or overwrite lookup evidence. This acceptance uses local API reads and a
+local file copy only: no new downloads, Zotero writes, preference changes,
+application restart, or custom XPI. Record unavailable permissions/API as an
+unverified live check.

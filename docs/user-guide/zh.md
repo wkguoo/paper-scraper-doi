@@ -20,7 +20,7 @@
 
 **推荐输入：** 每行一个 DOI 的 TXT，或带 DOI 列的 CSV/XLSX。Markdown 可用，但默认**只识别 DOI**（章节标题、备注行会被丢弃）。题名-only 需显式 `--resolve-title-metadata`。
 
-**默认行为（减少手动）：** DOI 预检开启；机构失败后有 OA 信号才做有界 OA 补救；失败 DOI 自动排队 Zotero 并等待结果（约 600s）；Zotero 桥接插件 **0.2.0+** 默认自动确认（无需点弹窗）。可用 `--no-doi-preflight` / `--no-auto-zotero` / pref `extensions.zoteroPaperDownloadBridge.autoConfirm=false` 关闭。
+**默认行为：** DOI 预检开启；下载后执行有限 OA 补救，剩余 DOI 写入 `zotero_fallback.csv`。`start`、`retry-failed`、`recover-oa` 默认不排队、不等待自建桥接。通过 Codex 使用 `paper-download` 时，优先调用官方 Zotero 插件复用已有本地 PDF；显式 `--auto-zotero` 才启用桥接，`--no-auto-zotero` 保留兼容且与其互斥。
 
 **不要**把 `paper_skill.py`、`sd_institutional_skill.py`、`sd_scraper.py` 当作新任务的首选入口；它们不走统一批次状态，失败项也进不了同一份 Zotero 回退清单。
 
@@ -112,7 +112,7 @@ powershell -ExecutionPolicy Bypass -File .\install_codex_skills.ps1
 
 ## 推荐用法：直接让 Codex 调用 Skill
 
-安装后，在 Codex 里使用唯一入口 `paper-download`。它会自动选择公开 OA、机构访问和 Zotero 回退路径。
+安装后，在 Codex 里使用唯一入口 `paper-download`。它会先执行项目下载和有限 OA 补救，再通过官方 Zotero 插件只读复用已有 PDF。
 
 ### 示例 1：ScienceDirect 机构权限下载
 
@@ -168,7 +168,7 @@ Elsevier Article/Object Retrieval API（正文 PDF + 补充材料）
 → 可恢复 API 错误有限重试
 → 现有浏览器机构访问
 → 有限 OA 恢复
-→ Zotero 回退
+→ 官方 Zotero 插件查库（自建桥接需显式启用）
 ```
 
 API 配置只从当前 Python 进程的环境变量读取：
@@ -198,27 +198,33 @@ API 成功时，程序不会创建浏览器下载器，也不会读取 Cookie。
 
 该命令不会请求 PDF、补充材料，也不会启动浏览器、OA 或 Zotero。文件在写入前必须通过 XML 校验，优先按期刊谱系或期刊名分目录，直接保存为 `年份-第一作者姓-题名.xml`，不再创建年份子目录；相同命令可安全续传。先冒烟检查时可加 `--limit 12`，确认后去掉 `--limit` 重跑同一固定批次。成功、失败和待处理状态分别记录在 `reports\download_manifest.csv`、`reports\failed.csv` 和 `working\xml_checkpoint.jsonl`。401/403、429 或磁盘剩余低于 8 GiB 时会保留断点并停止。
 
-## 统一批处理：项目优先，Zotero 仅处理失败项
+## 统一批处理：项目优先，官方插件只读复用已有 PDF
 
-当 DOI 与题名混合列表需要先走项目已有流程、再把剩余失败项交给 Zotero 9 时，使用本地文件桥接。打开 Zotero 并启用“文献下载桥接”插件；正常路径不再使用直接 Zotero MCP 写入。
+普通新任务只运行项目下载及有限 OA 补救：
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results"
 ```
 
-默认路径：合法 OA → 机构访问 → **失败项全部写入 `zotero_fallback.csv`（不再默认走 `resume`）**，且 `start` 结束后**自动排队** Zotero 本地桥接。请保持 Zotero 打开并启用桥接插件。退出码 `3` 表示已排队等待确认；在 Zotero 中接受一次批次确认后，只重跑：
+失败项保留在 `working/zotero_fallback.csv`，不自动启动 Zotero 桥接。通过 Codex
+使用 `paper-download` 时，由官方 Zotero 插件的辅助脚本读取个人文库，按 DOI
+精确匹配并复用已存在的本地 PDF，再调用 `paper_batch.py finalize` 归并成功项。
+未匹配、附件缺失和歧义保留在查询报告中，不改变机构/OA 的原始失败原因。
+GUI/CLI 不会自行启动 Codex 或调用官方插件。
+
+只有明确需要 Zotero 原生补下载，或继续已有桥接清单的旧批次时，才运行：
 
 ```powershell
 .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
 ```
 
-可选：`start` 加 `--wait-seconds N` 同进程等待；`--no-auto-zotero` 改为稍后手动排队；`--enable-manual-retry` 恢复旧的一次登录/验证码门禁，此时仅当 `manual_retry.csv` 有数据时运行一次：
-
-```powershell
-.\.venv\Scripts\python.exe paper_batch.py resume --run-dir "<run-dir>"
-```
-
-桥接队列固定在 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`。多个分块仍是 one confirmation per batch。
+也可在 `start`、`retry-failed`、`recover-oa` 中显式添加 `--auto-zotero`。
+`--library-id` / `--wait-seconds` 仅作用于这种手动或显式启用的桥接。
+桥接退出码 `3` 表示等待回执，应保留队列并在就绪后重跑同一条 `zotero` 命令。
+桥接队列固定在 `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`，插件 0.2.0+
+默认自动确认（one confirmation per batch）；禁用自动确认时才会显示确认弹窗。
+`resume` 仅用于显式启用 `--enable-manual-retry` 的旧流程，并且只运行一次
+`paper_batch.py resume --run-dir "<run-dir>"`。
 
 输出目录为 `results\paper_batch_YYYYMMDD_HHMMSS\`。用户交付只看 `结果\`，其顶层固定为输入清单、`下载清单.csv`、`pdf\` 和 `md\`；实际下载到补充材料时才增加 `补充材料\`。批次根目录下的 `pdfs\`、`reports\`、`working\` 只用于缓存、续跑、失败恢复和审计。流程遵守 do not overwrite：不移动或覆盖 Zotero 原附件、原始输入、已有结果或已有 PDF。Zotero 桥接跟随**当前打开的实例**（不固定测试配置；隔离验收可用 `Zotero test` / Zotero test profile）。请在要用的配置中安装插件。详细步骤见 [Zotero 9 本地桥接新手指南](../zotero_bridge_beginner_guide.md)。
 

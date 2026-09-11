@@ -148,7 +148,7 @@ class PaperScraperUI:
         ttk.Label(header, text="论文下载集成界面", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             header,
-            text="统一入口：paper_batch start（OA → 机构授权 → Zotero 回退）",
+            text="统一入口：paper_batch start（OA / 机构授权 → 失败清单；Zotero 可选）",
             style="Step.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
@@ -188,7 +188,7 @@ class PaperScraperUI:
 
         ttk.Label(
             frame,
-            text="默认入口 · 统一批次：OA → 机构授权 → 一次人工重试 → Zotero（paper_batch.py）",
+            text="默认入口 · 统一批次：项目下载 → 有限 OA 补救 → 失败清单（paper_batch.py）",
             font=("Microsoft YaHei UI", 11, "bold"),
         ).grid(row=0, column=0, sticky="w")
 
@@ -247,18 +247,18 @@ class PaperScraperUI:
         ttk.Label(right, text="登录等待秒数（start，可选）").grid(row=5, column=0, sticky="w")
         ttk.Entry(right, textvariable=self.batch_login_wait_var, width=12).grid(row=6, column=0, sticky="w", pady=(2, 8))
 
-        ttk.Label(right, text="Zotero library-id（start 自动桥接 / zotero）").grid(row=7, column=0, sticky="w")
+        ttk.Label(right, text="Zotero library-id（仅手动 zotero）").grid(row=7, column=0, sticky="w")
         ttk.Entry(right, textvariable=self.batch_library_id_var, width=12).grid(row=8, column=0, sticky="w", pady=(2, 8))
 
-        ttk.Label(right, text="等待 Zotero 结果秒数（start/zotero，0=只排队）").grid(row=9, column=0, sticky="w")
+        ttk.Label(right, text="等待 Zotero 结果秒数（仅手动 zotero，0=只排队）").grid(row=9, column=0, sticky="w")
         ttk.Entry(right, textvariable=self.batch_wait_seconds_var, width=12).grid(row=10, column=0, sticky="w", pady=(2, 8))
 
         ttk.Label(
             right,
             text=(
-                "start：OA + 机构，失败默认进 Zotero 并自动排队桥接；"
+                "start：项目下载与 OA 补救，保留失败清单，不自动启动桥接；"
                 "resume：兼容旧批次的一次人工重试；"
-                "zotero：确认后重跑或手动排队桥接。"
+                "zotero：手动原生补下载或继续旧桥接批次。"
             ),
             foreground="#555555",
             wraplength=420,
@@ -269,8 +269,8 @@ class PaperScraperUI:
         ttk.Label(
             hint,
             text=(
-                "新任务请只用本页。默认无需 resume：机构失败会写入 zotero_fallback 并由 start 自动排队。"
-                "保持你要用的 Zotero 打开（桥接跟随当前打开的实例，不固定测试配置）；"
+                "新任务请只用本页。失败项写入 zotero_fallback；可交给 Codex 用官方 Zotero 插件复用已有 PDF。"
+                "只有手动桥接才需要打开 Zotero 并启用文献下载桥接插件；"
                 "若提示确认，在插件中点一次后可用子命令 zotero 继续。"
                 "日志出现「运行目录：…」后会自动填回「已有批次目录」。"
             ),
@@ -375,11 +375,9 @@ class PaperScraperUI:
         run_dir = self.batch_run_dir_var.get().strip() or "未选择"
         if action == "start":
             source = self.batch_input_file_var.get().strip() or ("粘贴内容" if self._get_batch_text() else "未选择")
-            library_id = self.batch_library_id_var.get().strip() or "1"
-            wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
             summary = (
                 f"统一批次 start：输入={source}；输出根目录={output_dir}；"
-                f"流程=OA→机构→失败自动 Zotero；library-id={library_id}；wait-seconds={wait_seconds}。"
+                "流程=项目下载→有限 OA 补救→失败清单；不自动启动 Zotero 桥接。"
             )
         elif action == "resume":
             summary = f"统一批次 resume（兼容）：run-dir={run_dir}；仅重试一次登录/验证码失败项。"
@@ -524,11 +522,6 @@ class PaperScraperUI:
             wait_text = self.batch_login_wait_var.get().strip()
             if wait_text and wait_text != "0":
                 self._append_value(cmd, "--login-wait-seconds", wait_text)
-            library_id = self.batch_library_id_var.get().strip() or "1"
-            self._append_value(cmd, "--library-id", library_id)
-            wait_seconds = self.batch_wait_seconds_var.get().strip() or "0"
-            if wait_seconds and wait_seconds != "0":
-                self._append_value(cmd, "--wait-seconds", wait_seconds)
             return cmd
 
         self._append_value(cmd, "--run-dir", self.batch_run_dir_var.get())
@@ -808,7 +801,7 @@ class PaperScraperUI:
                     f"报告：{run_dir / 'reports'}；"
                     f"人工重试：{run_dir / 'working' / 'manual_retry.csv'}；"
                     f"Zotero 回退：{run_dir / 'working' / 'zotero_fallback.csv'}。"
-                    "默认已自动排队 Zotero；若需确认或继续，将运行目录填入「已有批次目录」后执行 zotero。"
+                    "start 默认不排队 Zotero；需要手动补下载或继续旧桥接时，再选择 zotero。"
                 )
                 self._update_result_buttons()
                 return

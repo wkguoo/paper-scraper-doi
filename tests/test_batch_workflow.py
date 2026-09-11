@@ -4916,7 +4916,7 @@ class BatchCliTests(unittest.TestCase):
         self.assertEqual(bridge.call_args.kwargs, {"library_id": 7, "wait_seconds": 0})
         self.assertIn("已自动将失败项排队", stdout.getvalue())
 
-    def test_start_default_auto_queues_zotero_bridge(self) -> None:
+    def test_start_default_does_not_queue_zotero_bridge(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
 
@@ -4946,7 +4946,7 @@ class BatchCliTests(unittest.TestCase):
                         ])
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(bridge.call_count, 1)
+        bridge.assert_not_called()
 
     def test_start_no_auto_zotero_skips_bridge(self) -> None:
         from contextlib import redirect_stdout

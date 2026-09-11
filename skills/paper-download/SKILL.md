@@ -1,6 +1,6 @@
 ---
 name: paper-download
-description: Use when Codex needs ScienceDirect, institutional, or open-access PDF downloads from DOI/title lists, including a project-first batch that may require a connected Zotero fallback.
+description: Use when Codex needs ScienceDirect, institutional, or open-access PDF downloads from DOI/title lists, with project-first downloads, official Codex Zotero local PDF reuse, and optional manual bridge recovery.
 ---
 
 # Paper Download
@@ -14,35 +14,14 @@ Recommended entry / default product entry for agents and users: `paper_batch.py`
 | --- | --- | --- |
 | DOI metadata preflight only (no PDF) | `preflight_doi_metadata.py` (parallel Crossref) | in-batch `start` DOI preflight (`doi_preflight.py`) |
 | New literature list (any publisher mix) | `paper_batch.py start --no-doi-preflight` after parallel Crossref when the list already has DOIs | `paper_skill.py`, `sd_scraper.py` |
-| Continue / collect Zotero results | `paper_batch.py zotero --run-dir` | direct Zotero MCP for normal runs |
+| Reuse existing Zotero PDFs | Official Codex Zotero helper + `collect_existing_pdfs.py`, then `finalize` | custom bridge or `llm_for_zotero` for ordinary lookup |
+| Continue queued bridge / explicit native PDF recovery | `paper_batch.py zotero --run-dir` after reading the manual bridge reference | restarting downloads or migrating the queue |
 | Optional one-shot login/CAPTCHA retry (compat) | `paper_batch.py resume --run-dir` only with `--enable-manual-retry` batches | restart `start` unnecessarily |
 | GUI | UI tab **统一批次（推荐）**; use **运行日志** to inspect progress | Expect DOI/OA compatibility tabs or GUI email/Cookie fields |
 
 Use this as the single entry point for a mixed DOI/title paper list. Run the
-project workflow first. Only `zotero_fallback.csv` rows enter the bridge. Never
-send the complete input list to Zotero again.
-
-## Mandatory existing run-dir route
-
-This rule overrides every later section, including prerequisites, recovery,
-and direct routes. It applies when the user supplies an existing `<run-dir>`
-and OA/institutional stages are already done (default path skips manual
-resume; `manual_retry.csv` is usually empty).
-
-Do not inspect `paper_skill.py --help`. Never run `paper_skill.py` for an existing batch run directory.
-Do not invent `zotero-fallback`, `--input`, or `--wait`. Do not run `start`,
-`resume`, or a normal-path `finalize`. After a read-only check of
-`<run-dir>\working\zotero_fallback.csv`, the first and only executable command
-is exactly:
-
-```powershell
-.\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
-```
-
-If it returns exit code `3`, keep Zotero open with plugin **0.2.0+** (auto-confirm
-by default). After the plugin finishes, rerun exactly that same command—no other
-downloader command and no direct Zotero write. Do not ask the user to click a
-confirmation modal unless they disabled auto-confirm.
+project workflow first. Only `zotero_fallback.csv` rows enter the Zotero lookup.
+Never send the complete input list to Zotero again.
 
 ## Repository and prerequisites
 
@@ -54,16 +33,11 @@ Locate the repository in this order:
 3. A packaged folder containing the same scripts.
 4. Otherwise ask the user for the repository path.
 
-Use `.venv\Scripts\python.exe` when present. For bridge fallback, keep Zotero 9
-open with the local “文献下载桥接” plugin enabled. Never expose cookies, passwords,
-or session data, and never automate a CAPTCHA.
-
-For login or verification, try the Codex in-app browser first when it is
-available. If the in-app browser cannot be called or cannot provide a session
-usable by the local project, let the external browser fallback run. On Windows
-the fallback order is Google Chrome, Edge Stable/Beta/Dev/Canary, then
-Playwright Chromium. An explicit `--browser-exe` or
-`PAPER_SCRAPER_BROWSER_EXE` override always takes precedence.
+Use `.venv\Scripts\python.exe` when present. Normal lookup needs the official
+Codex Zotero plugin and an available Zotero local API; the custom XPI is needed
+only for the manual route. Never expose credentials or automate CAPTCHA.
+Follow the project's browser-access rules: Codex in-app browser first; external
+browser launch or desktop cookie access requires explicit user authorization.
 
 ## Parallel Crossref DOI preflight (default metadata check)
 
@@ -113,7 +87,7 @@ automatically uses this fixed order:
 3. Existing browser institutional access for only the DOI rows that still did
    not succeed through the API.
 4. Bounded OA recovery.
-5. Zotero fallback for the remaining DOI-bearing failures.
+5. Zotero fallback: official-plugin local PDF lookup for remaining DOI-bearing failures; native PDF retrieval is manual only.
 
 This is an internal stage of the unified batch. Do not call
 `paper_automation/elsevier_api.py`, `sd_institutional_skill.py`, or a hand-made
@@ -187,120 +161,68 @@ Reject physical blank records after the header, all-whitespace data rows,
 rows with other than five fields, decoding/CSV errors, duplicate or unknown
 task IDs, and non-exact headers. Stop on validation failure; do not guess.
 
-## Bridge-first batch protocol
+## Official Codex Zotero lookup (default after project downloads)
 
-Keep the CLI's printed run directory as `<run-dir>`. Do not edit the original
-input or any project-generated pending CSV.
+`start`, `retry-failed`, and `recover-oa` do not queue or wait for the custom
+bridge by default. After project downloads and bounded OA recovery, use the
+installed Codex Zotero plugin to reuse existing local PDFs for the current
+`working/zotero_fallback.csv` rows only. Do not repeat the download stages or
+search the full input list again.
 
-1. Prefer a **DOI-only** list (one DOI per line, or a CSV/XLSX with a DOI column).
-   Markdown is allowed, but by default only explicit DOIs become tasks; section
-   headers and notes are dropped. Use `--resolve-title-metadata` only when the
-   user explicitly wants title-only rows.
-
-2. For DOI lists, run `preflight_doi_metadata.py` first (see Parallel Crossref
-   DOI preflight). Then run the project download with **`--no-doi-preflight`**
-   (no manual resume; failures with DOI go to Zotero; `start` auto-queues the
-   bridge and waits):
+1. Locate and read the installed `zotero:Zotero` skill. Resolve its official
+   `scripts/zotero.py` from that skill's actual location, without hard-coding a
+   plugin cache version. This is not `llm_for_zotero` MCP.
+2. From the downloader repository root, run the script from this skill folder:
 
    ```powershell
-   .\.venv\Scripts\python.exe paper_batch.py start --input "papers.xlsx" --out "results" --no-doi-preflight
+   .\.venv\Scripts\python.exe "<paper-download-skill>/scripts/collect_existing_pdfs.py" --run-dir "<run-dir>" --zotero-helper "<official-plugin>/skills/zotero/scripts/zotero.py"
    ```
 
-   Keep Zotero 9 open with the bridge plugin **0.2.0+** enabled before or during
-   `start`. Defaults: auto-Zotero + `--wait-seconds 600`. Use `--no-auto-zotero`
-   only if the user asks to queue later; `--enable-manual-retry` only for the
-   old one-shot login/CAPTCHA path. Do not leave in-batch sequential DOI
-   preflight on for large lists.
-
-3. Default batches write empty `manual_retry.csv`. Skip `resume` unless the
-   user explicitly started with `--enable-manual-retry` and that file has data
-   rows. For that compat path only: pause once for the browser action, then
-   run exactly one `resume`. Never run `resume` a second time.
-
-4. Only DOI-bearing bridge-eligible failures enter `zotero_fallback.csv`
-   (`unsupported_publisher`, network/capture errors, etc.). Rows that are
-   `metadata_uncertain` / no DOI stay in reports only and are **not** sent to
-   Zotero. Do not use direct Zotero MCP writes for normal bridge execution.
-
-5. If auto-queue was disabled (`--no-auto-zotero`) or bridge was not run yet,
-   run the local bridge command once after `start`:
+   The script loads the official helper's request functions. It reads the local
+   personal library (`users/0`), matches normalized DOI exactly, enumerates
+   attachments, converts file URLs, and uses the project's PDF validation.
+   It does not create its own HTTP client, query full text, import items, build
+   collections, call native PDF download, edit preferences or restart Zotero.
+   No group-library support is added by this workflow.
+3. Read the printed JSON and query report. The script creates UTF-8-SIG files
+   exclusively: `working/zotero_results_existing_<timestamp>.csv` contains only
+   confirmed `existing_pdf` successes; `reports/zotero_lookup_<timestamp>.csv`
+   records all inspected tasks, candidates, prior failure reasons and misses.
+   `zotero_item_id` uses `users/0/items/<item-key>`; legacy bridge numeric IDs
+   remain supported. Attachment paths are local absolute paths, not file URLs.
+4. If `ready_to_finalize` is true, use the exact printed results path:
 
    ```powershell
-   .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
+   .\.venv\Scripts\python.exe paper_batch.py finalize --run-dir "<run-dir>" --zotero-results "<printed-results.csv>"
    ```
 
-   The project publishes strict version-1 JSON jobs only under
-   `%LOCALAPPDATA%\PaperScraperDOI\zotero-bridge\v1`. It sends no cookies,
-   credentials, arbitrary commands, URLs, or caller-selected output paths.
+   Exit 0 from lookup means all rows matched; exit 2 means incomplete or invalid
+   input. A partial lookup can still have valid successes: finalize those when
+   the JSON says so. If there are no successes, stop with the lookup report;
+   do not finalize misses, overwrite the prior institution/OA failure reasons,
+   or present the batch as completed. Finish the User delivery package below.
 
-6. Exit code `3` means the batch is queued and waiting for the plugin to finish.
-   Plugin **0.2.0+** auto-confirms (one Zotero confirmation per batch is applied
-   automatically; no modal unless the user disabled auto-confirm). Keep Zotero
-   open. Do not rerun `start` or `resume`, and do not import items manually while
-   the batch is active.
+Duplicate DOI matches and multiple distinct main PDF candidates are review
+cases, not guesses. Explicit supplements are excluded from main-PDF reuse.
+The original Zotero attachments are never moved or renamed. Official helper
+or API unavailability must be reported precisely; do not silently switch to
+`llm_for_zotero`, custom bridge, SQLite, imports, or another download round.
+The official helper's `status` may encounter profile-file permissions even
+when the HTTP API works; this script probes through the helper's GET functions
+and never invokes `enable --restart` automatically.
 
-7. After the plugin writes every outbox result for the run, rerun only the same
-   command (or rely on `start --wait-seconds` already polling):
+## Manual bridge / existing queued batches
 
-   ```powershell
-   .\.venv\Scripts\python.exe paper_batch.py zotero --run-dir "<run-dir>"
-   ```
+If `working/zotero_bridge_jobs.json` exists, preserve the original queue and
+use [manual bridge recovery](references/manual-zotero-bridge.md). The official
+lookup script refuses these runs. An existing batch without that manifest uses
+the default lookup above. Do not delete the manifest to change routes.
 
-   The command validates every request/result identity and SHA-256, creates one
-   strict `zotero_results.csv` (or an exclusive retry filename), and finalizes
-   automatically. Do not call `paper_batch.py finalize` on the normal bridge
-   path and do not construct plugin results by hand.
-
-8. Report `<run-dir>\结果\pdf\` as the final user PDF directory and
-   `<run-dir>\reports\` as the audit trail. Never report unresolved rows as
-   complete. Local checks do not certify an attachment path: finalize revalidates PDF content and reparse-point safety
-   before copying.
-
-## Failure routing (non-Elsevier)
-
-| Situation | Next hop |
-| --- | --- |
-| No DOI / `metadata_uncertain` | Reports only (not Zotero) |
-| `unsupported_publisher` | Zotero fallback (DOI required); no browser retry |
-| `not_pdf_response` / network `error` | `retry-failed` (default whitelist) then Zotero |
-| Gold OA / metadata OA signal | Bounded OA first / `recover-oa` (no deep multi-source) |
-
-`retry-failed` defaults to network-class failures only; use `--retry-all-failed`
-only when the user asks for the broader set.
-
-## Bridge unavailable or plugin not installed
-
-Use this section only when the local bridge cannot run, Zotero is unavailable,
-or the plugin is not installed. Do not fall back to direct Zotero MCP writes,
-custom Zotero scripts, repeated imports, or SQLite edits.
-
-- Preserve `<run-dir>`, `manual_retry.csv`, `zotero_fallback.csv`, existing
-  PDFs, reports, queue jobs, and prior result files. Do not rerun project
-  downloads or a second `resume`.
-- Report `zotero_unavailable` for current fallback rows and keep the batch
-  recoverable. This is not success.
-- If a local recovery CSV is necessary, build the complete five-column row set
-  in memory, validate all current task IDs, and use Python standard-library
-  `csv.writer` with open mode `x`, `newline=""`, and
-  `encoding="utf-8-sig"`. Never truncate, overwrite, append, or partially
-  publish an earlier file.
-- Prefer `<run-dir>\working\zotero_results.csv` only when it does not exist.
-  On collision or a changed task set, create
-  `zotero_results_retry_YYYYMMDD_HHMMSS.csv` exclusively.
-- Pass only that validated recovery file to:
-
-  ```powershell
-  .\.venv\Scripts\python.exe paper_batch.py finalize --run-dir "<run-dir>" --zotero-results "<selected-zotero-results.csv>"
-  ```
-
-- When Zotero later becomes available, rerun the bridge for still-unresolved
-  fallback rows. Never replace immutable prior evidence.
-
-The bridge/plugin may return `existing_pdf`, `downloaded`, `no_pdf`,
-`metadata_uncertain`, `not_found`, `no_attachment`, `download_failed`,
-`zotero_unavailable`, `zotero_api_unavailable`, `user_cancelled`,
-`job_expired`, `job_id_conflict`, or `plugin_error`. Preserve the precise
-reason and let project finalization decide the final batch state.
+Use `paper_batch.py zotero --run-dir` only for explicit native PDF recovery or
+continuing queued jobs. Read the linked reference before executing it. The
+custom XPI is not required for normal Codex lookup. Independently launched GUI
+and CLI perform downloads and retain the manual bridge entry; they do not
+launch Codex or perform the official-plugin lookup themselves.
 
 ## OA 直下 + limited recovery (unsupported / capture miss)
 
@@ -325,7 +247,7 @@ Optional second chance after `start`:
 - Other failure classes (not unsupported/not_pdf) still need an OA signal unless `recover-oa` is used with broader flags.
 - Early stop on first valid `%PDF`; host unreachable is cached for the run.
 - Repository landing with no PDF URL → `repo_metadata_only`, stop.
-- On failure: keep prior reason, then Zotero; do not start a long multi-source chase.
+- On failure: keep prior reason, then official-plugin local PDF lookup; do not start a long multi-source chase.
 
 ## PDF delivery naming (mandatory)
 
@@ -403,7 +325,7 @@ Crossref preflight when the list already has DOIs). Do not expose
 or select `paper_skill.py` or `sd_institutional_skill.py` as standalone user
 routes. They are internal adapters used by the unified batch implementation;
 direct execution would bypass the shared state, failure classification, and
-Zotero fallback queue.
+Zotero fallback list.
 
 The unified batch may still write separate OA, ScienceDirect, and institutional
 stage reports internally. Those are implementation details, not separate user
@@ -416,5 +338,5 @@ supplementary files are published only under `结果/补充材料/`.
 - Do not automatically solve CAPTCHA or bypass publisher access controls.
 - Do not overwrite original inputs, result files, PDFs, Zotero attachments,
   collections, items, or the only copy of a queue/result artifact.
-- Do not use direct Zotero MCP writes for normal bridge execution.
+- Normal lookup is read-only; never silently use `llm_for_zotero` or the custom bridge.
 - Never report unavailable or unresolved Zotero fallback as complete.

@@ -1,7 +1,8 @@
 # Zotero 9 本地桥接新手指南
 
-这套流程用于“项目先下载，Zotero 9 只补失败项”。插件安装并通过测试后，
-你通常只需提供文献清单、在 Zotero 中确认一次，最后到批次的 `pdfs\` 取 PDF。
+本指南仅用于明确要求 Zotero 原生补下载或已有桥接批次续作。新任务默认不启动
+桥接；Codex 通过官方 Zotero 插件只读复用已有 PDF。手动桥接安装并通过测试后，
+只处理项目失败项；内部缓存位于 `pdfs\`，用户交付目录沿用主流程约定。
 
 ## 运行前准备
 
@@ -23,14 +24,13 @@
 
 按下面规则执行：
 
-1. `paper_batch.py start` 先运行项目已有的 ScienceDirect、机构权限和公开资源流程。
+1. `paper_batch.py start` 先运行项目已有的 ScienceDirect、机构权限和公开资源流程，默认不启动桥接。
 2. 只有 `working\manual_retry.csv` 有数据、且你已经完成项目提示的浏览器操作时，
    才运行一次 `paper_batch.py resume`；永远不要运行第二次。
 3. 只有 `working\zotero_fallback.csv` 的剩余行会进入 Zotero 桥接，不会再次发送
    整份原始清单。
 4. 第一次运行 `paper_batch.py zotero` 若返回退出码 `3`，表示已排队。保持
-   Zotero 打开，并接受 one confirmation（一次确认）；即使内部有多个分块，仍然
-   是 one confirmation per batch。
+   Zotero 打开；插件 0.2.0+ 默认自动接受 one confirmation（一次确认），只有关闭自动确认时才弹窗。即使内部有多个分块，仍然是 one confirmation per batch。
 5. Zotero 完成后，只重跑同一条 `paper_batch.py zotero` 命令。项目会校验所有
    JSON 身份和摘要、生成严格 CSV，并自动完成 PDF 复核与复制。
 
