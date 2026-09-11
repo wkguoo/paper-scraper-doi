@@ -76,7 +76,7 @@ class ExistingPDFTests(unittest.TestCase):
     def test_exact_doi_case_parentheses_and_scoped_key(self):
         successes, reports = collector.lookup([row()], self.read)
         self.assertEqual(successes[0]["zotero_item_id"], "users/0/items/PAPER001")
-        self.assertEqual(Path(successes[0]["attachment_path"]), self.pdf)
+        self.assertTrue(Path(successes[0]["attachment_path"]).samefile(self.pdf))
         self.assertEqual(reports[0]["prior_reason"], "original_institutional_reason")
         self.assertEqual(len(self.calls), 3)
 
@@ -154,7 +154,7 @@ class ExistingPDFTests(unittest.TestCase):
                         self.assertNotIn("/api/users/0/items/ATTACH02/file/view/url", self.calls)
                         if main_exists:
                             self.assertEqual(len(successes), 1)
-                            self.assertEqual(Path(successes[0]["attachment_path"]), self.pdf)
+                            self.assertTrue(Path(successes[0]["attachment_path"]).samefile(self.pdf))
                         else:
                             self.assertEqual(successes, [])
                             self.assertEqual(reports[0]["status"], "no_pdf")
